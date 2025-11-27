@@ -46,10 +46,63 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     extern const uint8_t bootstrap_css_start[] asm("_binary_index_html_start");
     extern const uint8_t bootstrap_css_end[] asm("_binary_index_html_end");
     const size_t bootcss_size = ((bootstrap_css_end - 1) - bootstrap_css_start);
-    httpd_resp_set_hdr(req, "Location", "index_html");
     httpd_resp_send(req, (const char *)bootstrap_css_start, bootcss_size);
 
     return ESP_OK;
+}
+
+static esp_err_t write_app_js(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Serve js");
+
+    httpd_resp_set_type(req, "application/javascript");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
+
+    extern const uint8_t js_file_start[] asm("_binary_app_js_start");
+    extern const uint8_t js_file_end[] asm("_binary_app_js_end");
+    const size_t js_file_size = ((js_file_end - 1) - js_file_start);
+    httpd_resp_send(req, (const char *)js_file_start, js_file_size);
+
+    return ESP_OK;
+}
+
+static esp_err_t write_app_css(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Serve css");
+
+    httpd_resp_set_type(req, "text/css");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
+
+    extern const uint8_t css_file_start[] asm("_binary_app2_css_start");
+    extern const uint8_t css_file_end[] asm("_binary_app2_css_end");
+    const size_t css_file_size = ((css_file_end - 1) - css_file_start);
+    httpd_resp_send(req, (const char *)css_file_start, css_file_size);
+
+    return ESP_OK;
+}
+
+static esp_err_t wildcard_get_handler(httpd_req_t *req)
+{
+    const char *filename = req->uri;
+
+    if (!filename)
+    {
+        ESP_LOGE(TAG, "Filename is too long");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
+        return ESP_FAIL;
+    }
+
+    if (strcmp(filename, "/") == 0) {
+        return root_get_handler(req);
+    } else if(strcmp(filename, "/app.js") == 0) {
+        return write_app_js(req);
+    } else if(strcmp(filename, "/app2.css") == 0) {
+        return write_app_css(req);
+    }
+
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+
+    return ESP_FAIL;
 }
 
 static httpd_handle_t start_webserver(void)
@@ -71,11 +124,18 @@ static httpd_handle_t start_webserver(void)
         .handler = root_get_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t wildcard_uri = {
+        .uri = "/*", // Match all URIs of type /path/to/file
+        .method = HTTP_GET,
+        .handler = wildcard_get_handler,
+        .user_ctx = NULL
+    };
+
     if (httpd_start(&server, &config) == ESP_OK)
     {
         ESP_LOGI(TAG, "Registering URI handlers");
 
-        httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &wildcard_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
 
