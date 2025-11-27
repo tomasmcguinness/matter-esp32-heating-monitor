@@ -1,7 +1,8 @@
 idf_component_register(SRC_DIRS          "."
                        INCLUDE_DIRS      "."
                        PRIV_INCLUDE_DIRS  "." "${ESP_MATTER_PATH}/examples/common/utils"
-                       LDFRAGMENTS "linker.lf")
+                       LDFRAGMENTS "linker.lf"
+                       EMBED_FILES       "../html_data/index.html")
 
 if(CONFIG_SPIFFS_ATTESTATION_TRUST_STORE)
     spiffs_create_partition_image(paa_cert ${CMAKE_SOURCE_DIR}/paa_cert FLASH_IN_PROJECT)

@@ -28,8 +28,66 @@
 #include <app/server/Server.h>
 #include <credentials/FabricTable.h>
 
+#include <esp_http_server.h>
+
 static const char *TAG = "app_main";
 uint16_t switch_endpoint_id = 0;
+
+#pragma region WebServer
+
+static esp_err_t root_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Serve root");
+
+    httpd_resp_set_type(req, "text/html");
+
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
+
+    extern const uint8_t bootstrap_css_start[] asm("_binary_index_html_start");
+    extern const uint8_t bootstrap_css_end[] asm("_binary_index_html_end");
+    const size_t bootcss_size = ((bootstrap_css_end - 1) - bootstrap_css_start);
+    httpd_resp_set_hdr(req, "Location", "index_html");
+    httpd_resp_send(req, (const char *)bootstrap_css_start, bootcss_size);
+
+    return ESP_OK;
+}
+
+static httpd_handle_t start_webserver(void)
+{
+    ESP_LOGI(TAG, "Configuring webserver...");
+
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    config.max_uri_handlers = 11;
+    config.lru_purge_enable = true;
+    config.uri_match_fn = httpd_uri_match_wildcard;
+
+    ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
+
+    const httpd_uri_t root_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = root_get_handler,
+        .user_ctx = NULL};
+
+    if (httpd_start(&server, &config) == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Registering URI handlers");
+
+        httpd_register_uri_handler(server, &root_uri);
+
+        ESP_LOGI(TAG, "WebService is up and running!");
+
+        return server;
+    }
+
+    ESP_LOGI(TAG, "Error starting server!");
+
+    return NULL;
+}
+
+#pragma endregion
 
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
@@ -40,6 +98,9 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     case chip::DeviceLayer::DeviceEventType::kESPSystemEvent:
         if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
             event->Platform.ESPSystemEvent.Id == IP_EVENT_STA_GOT_IP) {
+
+                start_webserver();
+
 #if CONFIG_OPENTHREAD_BORDER_ROUTER
             static bool sThreadBRInitialized = false;
             if (!sThreadBRInitialized) {
