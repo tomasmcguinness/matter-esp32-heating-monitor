@@ -30,6 +30,8 @@
 
 #include <esp_http_server.h>
 
+#include <string>
+
 static const char *TAG = "app_main";
 uint16_t switch_endpoint_id = 0;
 
@@ -92,11 +94,16 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    if (strcmp(filename, "/") == 0) {
+    if (strcmp(filename, "/") == 0)
+    {
         return root_get_handler(req);
-    } else if(strcmp(filename, "/app.js") == 0) {
+    }
+    else if (strcmp(filename, "/app.js") == 0)
+    {
         return write_app_js(req);
-    } else if(strcmp(filename, "/app2.css") == 0) {
+    }
+    else if (strcmp(filename, "/app2.css") == 0)
+    {
         return write_app_css(req);
     }
 
@@ -128,8 +135,7 @@ static httpd_handle_t start_webserver(void)
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
         .handler = wildcard_get_handler,
-        .user_ctx = NULL
-    };
+        .user_ctx = NULL};
 
     if (httpd_start(&server, &config) == ESP_OK)
     {
@@ -151,19 +157,24 @@ static httpd_handle_t start_webserver(void)
 
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
-    switch (event->Type) {
+    switch (event->Type)
+    {
     case chip::DeviceLayer::DeviceEventType::PublicEventTypes::kInterfaceIpAddressChanged:
-        ESP_LOGI(TAG, "Interface IP Address changed");
+        ESP_LOGI(TAG, "kInterfaceIpAddressChanged");
         break;
     case chip::DeviceLayer::DeviceEventType::kESPSystemEvent:
-        if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
-            event->Platform.ESPSystemEvent.Id == IP_EVENT_STA_GOT_IP) {
+        ESP_LOGI(TAG, "kESPSystemEvent");
 
-                start_webserver();
+        if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
+            event->Platform.ESPSystemEvent.Id == IP_EVENT_STA_GOT_IP)
+        {
+
+            start_webserver();
 
 #if CONFIG_OPENTHREAD_BORDER_ROUTER
             static bool sThreadBRInitialized = false;
-            if (!sThreadBRInitialized) {
+            if (!sThreadBRInitialized)
+            {
                 esp_openthread_set_backbone_netif(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"));
                 esp_openthread_lock_acquire(portMAX_DELAY);
                 esp_openthread_border_router_init();
@@ -200,7 +211,8 @@ extern "C" void app_main()
 #ifdef CONFIG_AUTO_UPDATE_RCP
     esp_vfs_spiffs_conf_t rcp_fw_conf = {
         .base_path = "/rcp_fw", .partition_label = "rcp_fw", .max_files = 10, .format_if_mount_failed = false};
-    if (ESP_OK != esp_vfs_spiffs_register(&rcp_fw_conf)) {
+    if (ESP_OK != esp_vfs_spiffs_register(&rcp_fw_conf))
+    {
         ESP_LOGE(TAG, "Failed to mount rcp firmware storage");
         return;
     }
@@ -220,9 +232,23 @@ extern "C" void app_main()
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
 
 #if CONFIG_ESP_MATTER_COMMISSIONER_ENABLE
+
+    ESP_LOGI(TAG, "Setup controller client and commissioner...");
+
     esp_matter::lock::chip_stack_lock(portMAX_DELAY);
     esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
     esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
     esp_matter::lock::chip_stack_unlock();
+
+    ESP_LOGI(TAG, "Getting fabric table...");
+
+    auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+
+    auto fabricTable = controller_instance.get_commissioner()->GetFabricTable();
+
+    uint8_t fabricCount = fabricTable->FabricCount();
+
+    ESP_LOGI(TAG, "There are %u fabrics", fabricCount);
+
 #endif // CONFIG_ESP_MATTER_COMMISSIONER_ENABLE
 }
