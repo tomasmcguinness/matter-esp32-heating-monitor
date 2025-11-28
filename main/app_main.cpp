@@ -15,6 +15,7 @@
 #include <esp_matter_controller_client.h>
 #include <esp_matter_controller_console.h>
 #include <esp_matter_controller_utils.h>
+#include <esp_matter_controller_pairing_command.h>
 #include <esp_matter_ota.h>
 #if CONFIG_OPENTHREAD_BORDER_ROUTER
 #include <esp_openthread_border_router.h>
@@ -32,12 +33,79 @@
 
 #include <string>
 
+#include <esp_matter.h>
+#include <lib/dnssd/Types.h>
+
 static const char *TAG = "app_main";
 uint16_t switch_endpoint_id = 0;
 
+using chip::NodeId;
+using chip::ScopedNodeId;
+using chip::SessionHandle;
+using chip::Controller::CommissioningParameters;
+using chip::Messaging::ExchangeManager;
+
+void vTaskCode(void *pvParameters)
+{
+    esp_matter::controller::pairing_command cmd = esp_matter::controller::pairing_command::get_instance();
+
+    NodeId node_id = 0x1234;
+    uint32_t pincode = 20202021;
+    uint16_t disc = 3840;
+
+    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
+    uint8_t *dataset_tlvs = (uint8_t *)dataset;
+    uint8_t dataset_len = 198;
+
+    esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs, dataset_len);
+}
+
 #pragma region WebServer
 
-static esp_err_t root_get_handler(httpd_req_t *req)
+#define STACK_SIZE 200
+
+static esp_err_t commissioning_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Handling commissioning post root");
+
+    static uint8_t ucParameterToPass;
+    TaskHandle_t xHandle = NULL;
+
+    // Create the task, storing the handle.  Note that the passed parameter ucParameterToPass
+    // must exist for the lifetime of the task, so in this case is declared static.  If it was just an
+    // an automatic stack variable it might no longer exist, or at least have been corrupted, by the time
+    // the new task attempts to access it.
+    xTaskCreate(vTaskCode, "COMMISSION", STACK_SIZE, &ucParameterToPass, tskIDLE_PRIORITY, &xHandle);
+    configASSERT(xHandle);
+
+    // RendezvousParameters params = RendezvousParameters().SetSetupPINCode(pincode).SetDiscriminator(disc).SetPeerAddress(Transport::PeerAddress::BLE());
+    // auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+
+    // ESP_RETURN_ON_FALSE(controller_instance.get_commissioner()->GetPairingDelegate() == nullptr, ESP_ERR_INVALID_STATE, TAG, "There is already a pairing process");
+
+    // // THIS IS KEY!
+    // //controller_instance.get_commissioner()->RegisterPairingDelegate(&pairing_command::get_instance());
+
+    // ByteSpan dataset_span(dataset_tlvs, dataset_len);
+    // CommissioningParameters commissioning_params = CommissioningParameters().SetThreadOperationalDataset(dataset_span);
+    // NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
+
+    // // if (pairing_command::get_instance().m_icd_registration) {
+    // //     pairing_command::get_instance().m_device_is_icd = false;
+    // //     commissioning_params.SetICDRegistrationStrategy(pairing_command::get_instance().m_icd_registration_strategy)
+    // //         .SetICDClientType(app::Clusters::IcdManagement::ClientTypeEnum::kPermanent)
+    // //         .SetICDCheckInNodeId(commissioner_node_id)
+    // //         .SetICDMonitoredSubject(commissioner_node_id)
+    // //         .SetICDSymmetricKey(pairing_command::get_instance().m_icd_symmetric_key);
+    // //}
+    // controller_instance.get_commissioner()->PairDevice(node_id, params, commissioning_params);
+
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+
+    return ESP_OK;
+}
+
+static esp_err_t write_index_html(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve root");
 
@@ -75,8 +143,8 @@ static esp_err_t write_app_css(httpd_req_t *req)
     httpd_resp_set_type(req, "text/css");
     httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
 
-    extern const uint8_t css_file_start[] asm("_binary_app2_css_start");
-    extern const uint8_t css_file_end[] asm("_binary_app2_css_end");
+    extern const uint8_t css_file_start[] asm("_binary_app_css_start");
+    extern const uint8_t css_file_end[] asm("_binary_app_css_end");
     const size_t css_file_size = ((css_file_end - 1) - css_file_start);
     httpd_resp_send(req, (const char *)css_file_start, css_file_size);
 
@@ -91,25 +159,25 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
     {
         ESP_LOGE(TAG, "Filename is too long");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
-        return ESP_FAIL;
+        return ESP_OK;
     }
 
     if (strcmp(filename, "/") == 0)
     {
-        return root_get_handler(req);
+        return write_index_html(req);
     }
     else if (strcmp(filename, "/app.js") == 0)
     {
         return write_app_js(req);
     }
-    else if (strcmp(filename, "/app2.css") == 0)
+    else if (strcmp(filename, "/app.css") == 0)
     {
         return write_app_css(req);
     }
 
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
 
-    return ESP_FAIL;
+    return ESP_OK;
 }
 
 static httpd_handle_t start_webserver(void)
@@ -125,13 +193,13 @@ static httpd_handle_t start_webserver(void)
 
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
-    const httpd_uri_t root_uri = {
-        .uri = "/",
-        .method = HTTP_GET,
-        .handler = root_get_handler,
+    const httpd_uri_t commissioning_post_uri = {
+        .uri = "/commissioning",
+        .method = HTTP_POST,
+        .handler = commissioning_post_handler,
         .user_ctx = NULL};
 
-    const httpd_uri_t wildcard_uri = {
+    const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
         .handler = wildcard_get_handler,
@@ -141,7 +209,8 @@ static httpd_handle_t start_webserver(void)
     {
         ESP_LOGI(TAG, "Registering URI handlers");
 
-        httpd_register_uri_handler(server, &wildcard_uri);
+        httpd_register_uri_handler(server, &commissioning_post_uri);
+        httpd_register_uri_handler(server, &wildcard_get_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
 

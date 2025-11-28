@@ -2,12 +2,13 @@ import { NavLink, Routes, Route } from "react-router";
 import './App.css'
 import Home from './Home.tsx'
 import Devices from './Devices.tsx'
+import AddDevice from './AddDevice.tsx'
 
 function App() {
 
   return (
     <>
-      <nav className="navbar navbar-expand-lg bg-body-tertiary">
+      <nav className="navbar navbar-expand-lg">
         <div className="container">
           <a className="navbar-brand" href="#">Heating Monitor</a>
           <button className="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
@@ -29,6 +30,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/devices" element={<Devices />} />
+          <Route path="/devices/add" element={<AddDevice />} />
         </Routes>
       </div>
     </>
