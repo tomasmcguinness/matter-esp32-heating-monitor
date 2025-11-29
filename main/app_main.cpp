@@ -68,39 +68,20 @@ static esp_err_t commissioning_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Handling commissioning post root");
 
-    static uint8_t ucParameterToPass;
-    TaskHandle_t xHandle = NULL;
+    esp_matter::controller::pairing_command cmd = esp_matter::controller::pairing_command::get_instance();
 
-    // Create the task, storing the handle.  Note that the passed parameter ucParameterToPass
-    // must exist for the lifetime of the task, so in this case is declared static.  If it was just an
-    // an automatic stack variable it might no longer exist, or at least have been corrupted, by the time
-    // the new task attempts to access it.
-    xTaskCreate(vTaskCode, "COMMISSION", STACK_SIZE, &ucParameterToPass, tskIDLE_PRIORITY, &xHandle);
-    configASSERT(xHandle);
+    NodeId node_id = 0x1234;
+    uint32_t pincode = 20202021;
+    uint16_t disc = 3840;
 
-    // RendezvousParameters params = RendezvousParameters().SetSetupPINCode(pincode).SetDiscriminator(disc).SetPeerAddress(Transport::PeerAddress::BLE());
-    // auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
+    uint8_t *dataset_tlvs = (uint8_t *)dataset;
+    uint8_t dataset_len = 198;
 
-    // ESP_RETURN_ON_FALSE(controller_instance.get_commissioner()->GetPairingDelegate() == nullptr, ESP_ERR_INVALID_STATE, TAG, "There is already a pairing process");
+    esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs, dataset_len);
 
-    // // THIS IS KEY!
-    // //controller_instance.get_commissioner()->RegisterPairingDelegate(&pairing_command::get_instance());
-
-    // ByteSpan dataset_span(dataset_tlvs, dataset_len);
-    // CommissioningParameters commissioning_params = CommissioningParameters().SetThreadOperationalDataset(dataset_span);
-    // NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
-
-    // // if (pairing_command::get_instance().m_icd_registration) {
-    // //     pairing_command::get_instance().m_device_is_icd = false;
-    // //     commissioning_params.SetICDRegistrationStrategy(pairing_command::get_instance().m_icd_registration_strategy)
-    // //         .SetICDClientType(app::Clusters::IcdManagement::ClientTypeEnum::kPermanent)
-    // //         .SetICDCheckInNodeId(commissioner_node_id)
-    // //         .SetICDMonitoredSubject(commissioner_node_id)
-    // //         .SetICDSymmetricKey(pairing_command::get_instance().m_icd_symmetric_key);
-    // //}
-    // controller_instance.get_commissioner()->PairDevice(node_id, params, commissioning_params);
-
-    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_send(req, "Commissioning Started", 21);
 
     return ESP_OK;
 }
@@ -190,7 +171,8 @@ static httpd_handle_t start_webserver(void)
     config.max_uri_handlers = 11;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
-
+    config.stack_size=20480;
+    
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
     const httpd_uri_t commissioning_post_uri = {
