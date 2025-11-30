@@ -45,24 +45,51 @@ using chip::SessionHandle;
 using chip::Controller::CommissioningParameters;
 using chip::Messaging::ExchangeManager;
 
-void vTaskCode(void *pvParameters)
-{
-    esp_matter::controller::pairing_command cmd = esp_matter::controller::pairing_command::get_instance();
-
-    NodeId node_id = 0x1234;
-    uint32_t pincode = 20202021;
-    uint16_t disc = 3840;
-
-    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
-    uint8_t *dataset_tlvs = (uint8_t *)dataset;
-    uint8_t dataset_len = 198;
-
-    esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs, dataset_len);
-}
-
 #pragma region WebServer
 
 #define STACK_SIZE 200
+
+static int char_to_int(char ch)
+{
+    if ('A' <= ch && ch <= 'F')
+    {
+        return 10 + ch - 'A';
+    }
+    else if ('a' <= ch && ch <= 'f')
+    {
+        return 10 + ch - 'a';
+    }
+    else if ('0' <= ch && ch <= '9')
+    {
+        return ch - '0';
+    }
+    return -1;
+}
+
+static bool convert_hex_str_to_bytes(const char *hex_str, uint8_t *bytes, uint8_t &bytes_len)
+{
+    if (!hex_str)
+    {
+        return false;
+    }
+    size_t hex_str_len = strlen(hex_str);
+    if (hex_str_len == 0 || hex_str_len % 2 != 0 || hex_str_len / 2 > bytes_len)
+    {
+        return false;
+    }
+    bytes_len = hex_str_len / 2;
+    for (size_t i = 0; i < bytes_len; ++i)
+    {
+        int byte_h = char_to_int(hex_str[2 * i]);
+        int byte_l = char_to_int(hex_str[2 * i + 1]);
+        if (byte_h < 0 || byte_l < 0)
+        {
+            return false;
+        }
+        bytes[i] = (byte_h << 4) + byte_l;
+    }
+    return true;
+}
 
 static esp_err_t commissioning_post_handler(httpd_req_t *req)
 {
@@ -74,11 +101,17 @@ static esp_err_t commissioning_post_handler(httpd_req_t *req)
     uint32_t pincode = 20202021;
     uint16_t disc = 3840;
 
-    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
-    uint8_t *dataset_tlvs = (uint8_t *)dataset;
-    uint8_t dataset_len = 198;
+    uint8_t dataset_tlvs_buf[254];
+    uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
 
-    esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs, dataset_len);
+    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
+
+    if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
 
     httpd_resp_set_status(req, "200 OK");
     httpd_resp_send(req, "Commissioning Started", 21);
@@ -171,8 +204,8 @@ static httpd_handle_t start_webserver(void)
     config.max_uri_handlers = 11;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.stack_size=20480;
-    
+    config.stack_size = 20480;
+
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
     const httpd_uri_t commissioning_post_uri = {
