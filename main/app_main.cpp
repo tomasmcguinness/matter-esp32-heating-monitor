@@ -36,6 +36,10 @@
 #include <esp_matter.h>
 #include <lib/dnssd/Types.h>
 
+#include "esp_spiffs.h"
+
+#include <pairing_command.h>
+
 static const char *TAG = "app_main";
 uint16_t switch_endpoint_id = 0;
 
@@ -91,19 +95,88 @@ static bool convert_hex_str_to_bytes(const char *hex_str, uint8_t *bytes, uint8_
     return true;
 }
 
-static esp_err_t commissioning_post_handler(httpd_req_t *req)
+static esp_err_t nodes_post_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Handling commissioning post root");
+    ESP_LOGI(TAG, "Commissioning a node");
 
-    esp_matter::controller::pairing_command cmd = esp_matter::controller::pairing_command::get_instance();
+    /*
+    // This needs to be random
+    NodeId node_id = 0x1234;
+
+    // Get from the request
+    uint32_t pincode = 20202021;
+    uint16_t disc = 3840;
+
+    chip::RendezvousParameters params = chip::RendezvousParameters().SetSetupPINCode(pincode).SetDiscriminator(disc).SetPeerAddress(chip::Transport::PeerAddress::BLE());
+    auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+
+    ESP_RETURN_ON_FALSE(controller_instance.get_commissioner()->GetPairingDelegate() == nullptr, ESP_ERR_INVALID_STATE, TAG, "There is already a pairing process");
+
+    //controller_instance.get_commissioner()->RegisterPairingDelegate(&pairing_command::get_instance());
+
+    uint8_t dataset_tlvs_buf[254];
+    uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
+
+    // TODO Get this from configuration.
+    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
+
+    if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    chip::ByteSpan dataset_span(dataset_tlvs_buf, dataset_tlvs_len);
+    chip::Controller::CommissioningParameters commissioning_params = CommissioningParameters().SetThreadOperationalDataset(dataset_span);
+    chip::NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
+
+    // if (pairing_command::get_instance().m_icd_registration) {
+    //     pairing_command::get_instance().m_device_is_icd = false;
+    //     commissioning_params.SetICDRegistrationStrategy(pairing_command::get_instance().m_icd_registration_strategy)
+    //         .SetICDClientType(app::Clusters::IcdManagement::ClientTypeEnum::kPermanent)
+    //         .SetICDCheckInNodeId(commissioner_node_id)
+    //         .SetICDMonitoredSubject(commissioner_node_id)
+    //         .SetICDSymmetricKey(pairing_command::get_instance().m_icd_symmetric_key);
+    // }
+
+    // controller_instance.get_commissioner()->PairDevice(node_id, params, commissioning_params);
+    */
 
     NodeId node_id = 0x1234;
+
+    // Get from the request
     uint32_t pincode = 20202021;
     uint16_t disc = 3840;
 
     uint8_t dataset_tlvs_buf[254];
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
 
+    // TODO Get this from configuration.
+    char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
+
+    if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    heating_monitor::controller::pairing_command cmd = heating_monitor::controller::pairing_command::get_instance();
+
+    esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
+
+    // Old way
+    /*
+    esp_matter::controller::pairing_command cmd = esp_matter::controller::pairing_command::get_instance();
+
+    // TODO Random
+    NodeId node_id = 0x1234;
+
+    // Get from the request
+    uint32_t pincode = 20202021;
+    uint16_t disc = 3840;
+
+    uint8_t dataset_tlvs_buf[254];
+    uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
+
+    // TODO Get this from configuration.
     char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
 
     if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
@@ -112,6 +185,8 @@ static esp_err_t commissioning_post_handler(httpd_req_t *req)
     }
 
     esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
+
+    */
 
     httpd_resp_set_status(req, "200 OK");
     httpd_resp_send(req, "Commissioning Started", 21);
@@ -208,11 +283,17 @@ static httpd_handle_t start_webserver(void)
 
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
-    const httpd_uri_t commissioning_post_uri = {
-        .uri = "/commissioning",
+    const httpd_uri_t nodes_post_uri = {
+        .uri = "/nodes",
         .method = HTTP_POST,
-        .handler = commissioning_post_handler,
+        .handler = nodes_post_handler,
         .user_ctx = NULL};
+
+    // const httpd_uri_t nodes_get_uri = {
+    //     .uri = "/nodes",
+    //     .method = HTTP_GET,
+    //     .handler = nodes_get_handler,
+    //     .user_ctx = NULL};
 
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
@@ -224,7 +305,8 @@ static httpd_handle_t start_webserver(void)
     {
         ESP_LOGI(TAG, "Registering URI handlers");
 
-        httpd_register_uri_handler(server, &commissioning_post_uri);
+        httpd_register_uri_handler(server, &nodes_post_uri);
+        // httpd_register_uri_handler(server, &nodes_get_uri);
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
@@ -279,6 +361,33 @@ extern "C" void app_main()
 
     /* Initialize the ESP NVS layer */
     nvs_flash_init();
+
+    /* Initialize SPIFFS */
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = "storage",
+        .max_files = 5,
+        .format_if_mount_failed = true};
+
+    err = esp_vfs_spiffs_register(&conf);
+
+    if (err != ESP_OK)
+    {
+        if (err == ESP_FAIL)
+        {
+            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+        }
+        else if (err == ESP_ERR_NOT_FOUND)
+        {
+            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(err));
+        }
+        return;
+    }
+
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
     esp_matter::console::wifi_register_commands();

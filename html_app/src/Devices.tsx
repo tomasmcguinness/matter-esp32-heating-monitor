@@ -5,7 +5,7 @@ function Devices() {
   return (
     <>
     <h1>Devices!</h1>
-    <NavLink className="nav-link" to="/devices/add">Add Device</NavLink>
+    <NavLink className="btn btn-primary" to="/devices/add">Add Device</NavLink>
     </>
   )
 }
