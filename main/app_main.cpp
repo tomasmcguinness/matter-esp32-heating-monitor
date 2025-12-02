@@ -16,6 +16,7 @@
 #include <esp_matter_controller_console.h>
 #include <esp_matter_controller_utils.h>
 #include <esp_matter_controller_pairing_command.h>
+#include <esp_matter_controller_read_command.h>
 #include <esp_matter_ota.h>
 #if CONFIG_OPENTHREAD_BORDER_ROUTER
 #include <esp_openthread_border_router.h>
@@ -47,11 +48,60 @@ using chip::SessionHandle;
 using chip::Controller::CommissioningParameters;
 using chip::Messaging::ExchangeManager;
 
+using namespace esp_matter;
+using namespace esp_matter::controller;
+using namespace chip;
+using namespace chip::app::Clusters;
+
 #pragma region Command Callbacks
+
+static void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
+{
+    ChipLogProgress(chipTool, "Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
+                    remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
+                    path.mDataVersion.ValueOr(0));
+
+    if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
+    {
+        //cb_data *_data = new callback_data(remote_node_id, path, data);
+        //parse_cb_response(_data);
+    }
+
+    else if (path.mEndpointId != 0x0)
+    {
+        //callback_data *_data = new callback_data(remote_node_id, path, data);
+        //parse_cb_response(_data);
+    }
+}
+
+static void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path)
+{
+    ESP_LOGI(TAG, "\nRead Info done for Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI "\n",
+             remote_node_id, attr_path[0].mEndpointId, ChipLogValueMEI(attr_path[0].mClusterId), ChipLogValueMEI(attr_path[0].mAttributeId));
+
+    //node_id_list_index++;
+
+    // if (node_id_list_index < node_id_list.size())
+    //     //_read_node_wild_info(node_id_list[node_id_list_index]);
+    // else
+    //     //print_data_model();
+}
 
 static void on_commissioning_success_callback(ScopedNodeId peer_id)
 {
     ESP_LOGI(TAG, "commissioning_success_callback invoked!");
+
+    uint64_t nodeId = peer_id.GetNodeId();
+    uint16_t endpointId = 0x0000;
+    uint32_t clusterId = Descriptor::Id;
+    uint32_t attributeId = Descriptor::Attributes::PartsList::Id;
+
+    esp_matter::controller::read_command *read_descriptor_command = chip::Platform::New<read_command>(nodeId, endpointId, clusterId, attributeId, 
+                                                                                                      esp_matter::controller::READ_ATTRIBUTE, 
+                                                                                                      attribute_data_cb, 
+                                                                                                      attribute_data_read_done, 
+                                                                                                      nullptr);
+    read_descriptor_command->send_command();
 }
 
 #pragma endregion
@@ -124,17 +174,14 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_matter::controller::pairing_command cmd = esp_matter::controller::pairing_command::get_instance();
-
     esp_matter::controller::pairing_command_callbacks_t callbacks = {
         .commissioning_success_callback = on_commissioning_success_callback
     };
 
     esp_matter::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
-    //esp_err_t result = cmd.pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
-
-    esp_err_t err = esp_matter::controller::pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
+    // TODO Use returned status
+    esp_matter::controller::pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
 
     // This process is asynchronous, so we return 202 Accepted
     httpd_resp_set_status(req, "202 Accepted");
