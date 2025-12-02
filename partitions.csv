@@ -8,4 +8,3 @@ phy_init, data, phy,     ,          0x1000,
 ota_0,    app,  ota_0,   0x20000,   0x300000,
 ota_1,    app,  ota_1,   0x320000,  0x300000,
 paa_cert, data, spiffs,  ,          0x20000
-storage,  data, spiffs,  ,          0x20000

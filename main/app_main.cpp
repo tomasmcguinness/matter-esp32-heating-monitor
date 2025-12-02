@@ -8,7 +8,8 @@
 
 #include <esp_err.h>
 #include <esp_log.h>
-#include <nvs_flash.h>
+#include "nvs_flash.h"
+#include "nvs.h"
 
 #include <esp_matter.h>
 #include <esp_matter_console.h>
@@ -37,10 +38,12 @@
 #include <esp_matter.h>
 #include <lib/dnssd/Types.h>
 
-#include "esp_spiffs.h"
+#include "cJSON.h"
 
 static const char *TAG = "app_main";
-uint16_t switch_endpoint_id = 0;
+
+#define NVS_NAMESPACE "matter"
+#define NVS_NODE_LIST_KEY "node_list"
 
 using chip::NodeId;
 using chip::ScopedNodeId;
@@ -63,14 +66,14 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
 
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
-        //cb_data *_data = new callback_data(remote_node_id, path, data);
-        //parse_cb_response(_data);
+        // cb_data *_data = new callback_data(remote_node_id, path, data);
+        // parse_cb_response(_data);
     }
 
     else if (path.mEndpointId != 0x0)
     {
-        //callback_data *_data = new callback_data(remote_node_id, path, data);
-        //parse_cb_response(_data);
+        // callback_data *_data = new callback_data(remote_node_id, path, data);
+        // parse_cb_response(_data);
     }
 }
 
@@ -79,7 +82,7 @@ static void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemory
     ESP_LOGI(TAG, "\nRead Info done for Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI "\n",
              remote_node_id, attr_path[0].mEndpointId, ChipLogValueMEI(attr_path[0].mClusterId), ChipLogValueMEI(attr_path[0].mAttributeId));
 
-    //node_id_list_index++;
+    // node_id_list_index++;
 
     // if (node_id_list_index < node_id_list.size())
     //     //_read_node_wild_info(node_id_list[node_id_list_index]);
@@ -92,14 +95,34 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     ESP_LOGI(TAG, "commissioning_success_callback invoked!");
 
     uint64_t nodeId = peer_id.GetNodeId();
+    char nodeIdStr[32];
+    snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS node!");
+        return;
+    }
+
+    err = nvs_set_i32(nvs_handle, nodeIdStr, 1);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to write node!");
+        return;
+    }
+
     uint16_t endpointId = 0x0000;
     uint32_t clusterId = Descriptor::Id;
     uint32_t attributeId = Descriptor::Attributes::PartsList::Id;
 
-    esp_matter::controller::read_command *read_descriptor_command = chip::Platform::New<read_command>(nodeId, endpointId, clusterId, attributeId, 
-                                                                                                      esp_matter::controller::READ_ATTRIBUTE, 
-                                                                                                      attribute_data_cb, 
-                                                                                                      attribute_data_read_done, 
+    esp_matter::controller::read_command *read_descriptor_command = chip::Platform::New<read_command>(nodeId, endpointId, clusterId, attributeId,
+                                                                                                      esp_matter::controller::READ_ATTRIBUTE,
+                                                                                                      attribute_data_cb,
+                                                                                                      attribute_data_read_done,
                                                                                                       nullptr);
     read_descriptor_command->send_command();
 }
@@ -175,8 +198,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     }
 
     esp_matter::controller::pairing_command_callbacks_t callbacks = {
-        .commissioning_success_callback = on_commissioning_success_callback
-    };
+        .commissioning_success_callback = on_commissioning_success_callback};
 
     esp_matter::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
@@ -186,6 +208,40 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     // This process is asynchronous, so we return 202 Accepted
     httpd_resp_set_status(req, "202 Accepted");
     httpd_resp_send(req, "Commissioning Started", 21);
+
+    return ESP_OK;
+}
+
+static esp_err_t nodes_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting all nodes...");
+
+    nvs_iterator_t it = NULL;
+    esp_err_t res = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_ANY, &it);
+
+    cJSON *root = cJSON_CreateArray();
+
+    while (res == ESP_OK)
+    {
+        cJSON *jNode = cJSON_CreateObject();
+
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        ESP_LOGI(TAG, "Key: '%s'", info.key);
+        res = nvs_entry_next(&it);
+
+        cJSON_AddStringToObject(jNode, "nodeId", info.key);
+        cJSON_AddItemToArray(root, jNode);
+    }
+    nvs_release_iterator(it);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 Accepted");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
 
     return ESP_OK;
 }
@@ -247,17 +303,17 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    if (strcmp(filename, "/") == 0)
-    {
-        return write_index_html(req);
-    }
-    else if (strcmp(filename, "/app.js") == 0)
+    if (strcmp(filename, "/app.js") == 0)
     {
         return write_app_js(req);
     }
     else if (strcmp(filename, "/app.css") == 0)
     {
         return write_app_css(req);
+    }
+    else 
+    {
+        return write_index_html(req);
     }
 
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
@@ -285,11 +341,11 @@ static httpd_handle_t start_webserver(void)
         .handler = nodes_post_handler,
         .user_ctx = NULL};
 
-    // const httpd_uri_t nodes_get_uri = {
-    //     .uri = "/nodes",
-    //     .method = HTTP_GET,
-    //     .handler = nodes_get_handler,
-    //     .user_ctx = NULL};
+    const httpd_uri_t nodes_get_uri = {
+        .uri = "/nodes",
+        .method = HTTP_GET,
+        .handler = nodes_get_handler,
+        .user_ctx = NULL};
 
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
@@ -302,7 +358,7 @@ static httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Registering URI handlers");
 
         httpd_register_uri_handler(server, &nodes_post_uri);
-        // httpd_register_uri_handler(server, &nodes_get_uri);
+        httpd_register_uri_handler(server, &nodes_get_uri);
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
@@ -356,33 +412,11 @@ extern "C" void app_main()
     esp_err_t err = ESP_OK;
 
     /* Initialize the ESP NVS layer */
-    nvs_flash_init();
-
-    /* Initialize SPIFFS */
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/spiffs",
-        .partition_label = "storage",
-        .max_files = 5,
-        .format_if_mount_failed = true};
-
-    err = esp_vfs_spiffs_register(&conf);
-
-    if (err != ESP_OK)
-    {
-        if (err == ESP_FAIL)
-        {
-            ESP_LOGE(TAG, "Failed to mount or format filesystem");
-        }
-        else if (err == ESP_ERR_NOT_FOUND)
-        {
-            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
-        }
-        else
-        {
-            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(err));
-        }
-        return;
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGE(TAG, "nvs_flash_init error");
     }
+    ESP_ERROR_CHECK(err);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
@@ -438,6 +472,23 @@ extern "C" void app_main()
     uint8_t fabricCount = fabricTable->FabricCount();
 
     ESP_LOGI(TAG, "There are %u fabrics", fabricCount);
+
+    nvs_handle_t nvs_handle;
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS storage [%s]!", esp_err_to_name(err));
+        return;
+    }
+
+    err = nvs_set_i32(nvs_handle, "0x1234", 1);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to write node!");
+        return;
+    }
 
 #endif // CONFIG_ESP_MATTER_COMMISSIONER_ENABLE
 }
