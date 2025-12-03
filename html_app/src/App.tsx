@@ -3,6 +3,7 @@ import './App.css'
 import Home from './Home.tsx'
 import Devices from './Devices.tsx'
 import AddDevice from './AddDevice.tsx'
+import Device from './Device.tsx'
 
 function App() {
 
@@ -29,8 +30,9 @@ function App() {
       <div className="container">
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/devices" element={<Devices />} />
+          <Route path="/devices/" element={<Devices />} />
           <Route path="/devices/add" element={<AddDevice />} />
+          <Route path="/devices/:nodeId" element={<Device />} />
         </Routes>
       </div>
     </>

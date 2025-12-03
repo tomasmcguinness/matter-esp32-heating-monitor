@@ -24,8 +24,15 @@ function Devices() {
     <>
       <h1>Devices</h1>
       <hr />
-      <table>
-        {nodes}
+      <table className="table table-striped table-bordered">
+        <thead>
+          <tr>
+            <th>Node ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {nodes}
+        </tbody>
       </table>
       <NavLink className="btn btn-primary" to="/devices/add">Add Device</NavLink>
     </>
