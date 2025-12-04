@@ -58,18 +58,70 @@ using namespace chip::app::Clusters;
 
 #pragma region Command Callbacks
 
+static void process_parts_list_attribute_response(uint64_t remote_node_id,
+                                                           const chip::app::ConcreteDataAttributePath &path,
+                                                           chip::TLV::TLVReader *data)
+{
+    ESP_LOGI(TAG, "Endpoint %u: Descriptor->PartsList (endpoint's list)", path.mEndpointId);
+    if (!data)
+    {
+        ESP_LOGE(TAG, "TLVReader is null");
+        return;
+    }
+
+    chip::TLV::TLVType outerType;
+    if (data->EnterContainer(outerType) != CHIP_NO_ERROR)
+    {
+        ESP_LOGE(TAG, "Failed to enter TLV container");
+        return;
+    }
+
+    int idx = 0;
+    while (data->Next() == CHIP_NO_ERROR)
+    {
+        if (data->GetType() == chip::TLV::kTLVType_UnsignedInteger)
+        {
+            uint16_t endpoint = 0;
+            if (data->Get(endpoint) == CHIP_NO_ERROR)
+            {
+                ESP_LOGI(TAG, "  [%d] Endpoint ID: %u", ++idx, endpoint);
+
+                // Read Device Type List
+                if (readClustersForEndpoint(node_id, endpoint, "0x0000") != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to read device clusters for endpoint %u", endpoint);
+                }
+
+                // Read Server clusters
+                if (readClustersForEndpoint(node_id, endpoint, "0x0001") != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to read server clusters for endpoint %u", endpoint);
+                }
+
+                // Read Client clusters
+                if (readClustersForEndpoint(node_id, endpoint, "0x0002") != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to read client clusters for endpoint %u", endpoint);
+                }
+            }
+        }
+    }
+
+    data->ExitContainer(outerType);
+}
+
 static void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
 {
     ChipLogProgress(chipTool, "Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
 
+    // If we get a Descriptor PartsList attribute response, parse it
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
-        // cb_data *_data = new callback_data(remote_node_id, path, data);
-        // parse_cb_response(_data);
+        ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
+        process_parts_list_attribute_response(remote_node_id, path, data);
     }
-
     else if (path.mEndpointId != 0x0)
     {
         // callback_data *_data = new callback_data(remote_node_id, path, data);
@@ -127,45 +179,45 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     read_descriptor_command->send_command();
 }
 
-static void on_unpair_callback(chip::NodeId remoteNodeId, CHIP_ERROR status)
-{
-    if (status == CHIP_NO_ERROR)
-    {
-        ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", remoteNodeId);
+// static void on_unpair_callback(chip::NodeId remoteNodeId, CHIP_ERROR status)
+// {
+//     if (status == CHIP_NO_ERROR)
+//     {
+//         ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", remoteNodeId);
 
-        char nodeIdStr[32];
-        snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, remoteNodeId);
+//         char nodeIdStr[32];
+//         snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, remoteNodeId);
 
-        nvs_handle_t nvs_handle;
-        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+//         nvs_handle_t nvs_handle;
+//         esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
 
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to open NVS node!");
-            return;
-        }
+//         if (err != ESP_OK)
+//         {
+//             ESP_LOGE(TAG, "Failed to open NVS node!");
+//             return;
+//         }
 
-        err = nvs_erase_key(nvs_handle, nodeIdStr);
+//         err = nvs_erase_key(nvs_handle, nodeIdStr);
 
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to erase node!");
-            return;
-        }
+//         if (err != ESP_OK)
+//         {
+//             ESP_LOGE(TAG, "Failed to erase node!");
+//             return;
+//         }
 
-        err = nvs_commit(nvs_handle);
+//         err = nvs_commit(nvs_handle);
 
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to commit NVS changes!");
-            return;
-        }
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", remoteNodeId, ErrorStr(status));
-    }
-}
+//         if (err != ESP_OK)
+//         {
+//             ESP_LOGE(TAG, "Failed to commit NVS changes!");
+//             return;
+//         }
+//     }
+//     else
+//     {
+//         ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", remoteNodeId, ErrorStr(status));
+//     }
+// }
 
 #pragma endregion
 
@@ -219,8 +271,19 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Commissioning a node");
 
-    // TODO: This should be random!
-    NodeId node_id = 0x1234;
+    nvs_iterator_t it = NULL;
+    esp_err_t res = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_ANY, &it);
+
+    uint64_t node_id = 0;
+
+    while (res == ESP_OK)
+    {
+        node_id++;
+        res = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+
+    ESP_LOGI(TAG, "Commissioning a node with NodeID: %llu", node_id);
 
     // Get from the request
     uint32_t pincode = 20202021;
@@ -275,6 +338,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     }
     nvs_release_iterator(it);
 
+    // TODO Add caching!!
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 Accepted");
 
@@ -286,7 +350,17 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// static esp_err_t node_get_handler(httpd_req_t *req)
+static esp_err_t node_refresh_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Refreshing node...");
+
+    // TODO
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "202 Accepted");
+
+    return ESP_OK;
+}
 
 static esp_err_t node_delete_handler(httpd_req_t *req)
 {
@@ -320,6 +394,34 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     }
     else
     {
+        char nodeIdStr[32];
+        snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, node_id);
+
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to open NVS node!");
+            return;
+        }
+
+        err = nvs_erase_key(nvs_handle, nodeIdStr);
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to erase node!");
+            return;
+        }
+
+        err = nvs_commit(nvs_handle);
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to commit NVS changes!");
+            return;
+        }
+
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "202 Accepted");
     }
@@ -428,11 +530,11 @@ static httpd_handle_t start_webserver(void)
         .handler = nodes_get_handler,
         .user_ctx = NULL};
 
-    // const httpd_uri_t node_get_uri = {
-    //     .uri = "/nodes/*",
-    //     .method = HTTP_GET,
-    //     .handler = node_get_handler,
-    //     .user_ctx = NULL};
+    const httpd_uri_t node_get_uri = {
+        .uri = "/nodes/*/refresh",
+        .method = HTTP_POST,
+        .handler = node_refresh_post_handler,
+        .user_ctx = NULL};
 
     const httpd_uri_t node_delete_uri = {
         .uri = "/nodes/*",
