@@ -127,6 +127,46 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     read_descriptor_command->send_command();
 }
 
+static void on_unpair_callback(chip::NodeId remoteNodeId, CHIP_ERROR status)
+{
+    if (status == CHIP_NO_ERROR)
+    {
+        ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", remoteNodeId);
+
+        char nodeIdStr[32];
+        snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, remoteNodeId);
+
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to open NVS node!");
+            return;
+        }
+
+        err = nvs_erase_key(nvs_handle, nodeIdStr);
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to erase node!");
+            return;
+        }
+
+        err = nvs_commit(nvs_handle);
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to commit NVS changes!");
+            return;
+        }
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", remoteNodeId, ErrorStr(status));
+    }
+}
+
 #pragma endregion
 
 #pragma region WebServer
@@ -246,6 +286,47 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// static esp_err_t node_get_handler(httpd_req_t *req)
+
+static esp_err_t node_delete_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Unpairing node...");
+
+    size_t size = strlen(req->uri);
+
+    char *pch = strrchr(req->uri, '/');
+    int index_of_last_slash = pch - req->uri + 1;
+
+    int length_of_nodeId = size - index_of_last_slash;
+
+    char node_id_str[length_of_nodeId + 1];
+
+    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
+
+    node_id_str[length_of_nodeId] = '\0';
+
+    ESP_LOGI(TAG, "Unpairing node  %s", node_id_str);
+
+    uint64_t node_id = strtoull(node_id_str, NULL, 10);
+
+    lock::chip_stack_lock(portMAX_DELAY);
+    esp_err_t err = esp_matter::controller::unpair_device(node_id); //, on_unpair_callback);
+    lock::chip_stack_unlock();
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Unpairing failed");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+    }
+    else
+    {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "202 Accepted");
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t write_index_html(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve root");
@@ -311,7 +392,7 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
     {
         return write_app_css(req);
     }
-    else 
+    else
     {
         return write_index_html(req);
     }
@@ -347,6 +428,18 @@ static httpd_handle_t start_webserver(void)
         .handler = nodes_get_handler,
         .user_ctx = NULL};
 
+    // const httpd_uri_t node_get_uri = {
+    //     .uri = "/nodes/*",
+    //     .method = HTTP_GET,
+    //     .handler = node_get_handler,
+    //     .user_ctx = NULL};
+
+    const httpd_uri_t node_delete_uri = {
+        .uri = "/nodes/*",
+        .method = HTTP_DELETE,
+        .handler = node_delete_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -359,6 +452,8 @@ static httpd_handle_t start_webserver(void)
 
         httpd_register_uri_handler(server, &nodes_post_uri);
         httpd_register_uri_handler(server, &nodes_get_uri);
+        // httpd_register_uri_handler(server, &node_get_uri);
+        httpd_register_uri_handler(server, &node_delete_uri);
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
@@ -413,7 +508,8 @@ extern "C" void app_main()
 
     /* Initialize the ESP NVS layer */
     err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
         ESP_LOGE(TAG, "nvs_flash_init error");
     }
     ESP_ERROR_CHECK(err);

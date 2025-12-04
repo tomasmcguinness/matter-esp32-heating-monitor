@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react"
-import { NavLink } from "react-router"
-
+import { NavLink, useNavigate } from "react-router"
 function Devices() {
 
-  var [nodeList, setNodeList] = useState<any>([]);
+  let navigate = useNavigate();
+
+  let [nodeList, setNodeList] = useState<any>([]);
 
   useEffect(() => {
     const fetchNodes = async () => {
@@ -18,7 +19,7 @@ function Devices() {
     fetchNodes();
   }, []);
 
-  let nodes = nodeList.map((n: any) => <tr key={n.nodeId}><td>{n.nodeId}</td></tr>);
+  let nodes = nodeList.map((n: any) => <tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)}><td>{n.nodeId}</td></tr>);
 
   return (
     <>
