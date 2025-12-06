@@ -41,6 +41,7 @@
 #include "cJSON.h"
 
 #include "app_main.h"
+#include "controller/controller.h"
 
 static const char *TAG = "app_main";
 
@@ -58,9 +59,11 @@ using namespace esp_matter::controller;
 using namespace chip;
 using namespace chip::app::Clusters;
 
+matter_controller_t g_controller = {0};
+
 #pragma region Command Callbacks
 
-static void process_parts_list_attribute_response(uint64_t remote_node_id,
+static void process_parts_list_attribute_response(uint64_t node_id,
                                                   const chip::app::ConcreteDataAttributePath &path,
                                                   chip::TLV::TLVReader *data)
 {
@@ -79,36 +82,42 @@ static void process_parts_list_attribute_response(uint64_t remote_node_id,
         return;
     }
 
+    matter_node_t *node = find_node(&g_controller, node_id);
+
     int idx = 0;
     while (data->Next() == CHIP_NO_ERROR)
     {
         if (data->GetType() == chip::TLV::kTLVType_UnsignedInteger)
         {
-            uint16_t endpointId = 0;
+            uint16_t endpoint_id = 0;
 
-            if (data->Get(endpointId) == CHIP_NO_ERROR)
+            if (data->Get(endpoint_id) == CHIP_NO_ERROR)
             {
-                ESP_LOGI(TAG, "[%d] Endpoint ID: %u", ++idx, endpointId);
+                ESP_LOGI(TAG, "[%d] Endpoint ID: %u", ++idx, endpoint_id);
 
-                auto *args = new std::tuple<uint64_t, uint16_t>(remote_node_id, endpointId);
+                add_endpoint(node, endpoint_id);
+
+                save_nodes_to_nvs(&g_controller);
+
+                auto *args = new std::tuple<uint64_t, uint16_t>(node_id, endpoint_id);
 
                 chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                {
-                    auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
+                                                              {
+                                                                  auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
 
-                    uint32_t clusterId = Descriptor::Id;
-                    uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
+                                                                  uint32_t clusterId = Descriptor::Id;
+                                                                  uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
 
-                    esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
-                                                                                                                std::get<1>(*args),
-                                                                                                                clusterId, 
-                                                                                                                attributeId,
-                                                                                                                esp_matter::controller::READ_ATTRIBUTE,
-                                                                                                                attribute_data_cb,
-                                                                                                                attribute_data_read_done,
-                                                                                                                nullptr);
-                    read_attr_command->send_command();
-                }, reinterpret_cast<intptr_t>(args));
+                                                                  esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
+                                                                                                                                                              std::get<1>(*args),
+                                                                                                                                                              clusterId,
+                                                                                                                                                              attributeId,
+                                                                                                                                                              esp_matter::controller::READ_ATTRIBUTE,
+                                                                                                                                                              attribute_data_cb,
+                                                                                                                                                              attribute_data_read_done,
+                                                                                                                                                              nullptr);
+                                                                  read_attr_command->send_command(); },
+                                                              reinterpret_cast<intptr_t>(args));
             }
         }
     }
@@ -122,9 +131,11 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
 
-    // If we get a Descriptor PartsList attribute response, parse it
+    // If we get a Descriptor::PartsList attribute response, parse it
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
+        save_nodes_to_nvs(&g_controller);
+
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
         process_parts_list_attribute_response(remote_node_id, path, data);
     }
@@ -151,30 +162,15 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     char nodeIdStr[32];
     snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
 
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to open NVS node!");
-        return;
-    }
-
-    err = nvs_set_i32(nvs_handle, nodeIdStr, 1);
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to write node!");
-        return;
-    }
+    add_node(&g_controller, nodeId);
 
     uint16_t endpointId = 0x0000;
     uint32_t clusterId = Descriptor::Id;
     uint32_t attributeId = Descriptor::Attributes::PartsList::Id;
 
-    esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(nodeId, 
-                                                                                                endpointId, 
-                                                                                                clusterId, 
+    esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(nodeId,
+                                                                                                endpointId,
+                                                                                                clusterId,
                                                                                                 attributeId,
                                                                                                 esp_matter::controller::READ_ATTRIBUTE,
                                                                                                 attribute_data_cb,
@@ -183,45 +179,49 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     read_attr_command->send_command();
 }
 
-// static void on_unpair_callback(chip::NodeId remoteNodeId, CHIP_ERROR status)
-// {
-//     if (status == CHIP_NO_ERROR)
-//     {
-//         ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", remoteNodeId);
+/*
+* This callback is defined in the esp-matter SDK.
+* I added it as a test, but it's not currently used.
+static void on_unpair_callback(chip::NodeId remoteNodeId, CHIP_ERROR status)
+{
+    if (status == CHIP_NO_ERROR)
+    {
+        ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", remoteNodeId);
 
-//         char nodeIdStr[32];
-//         snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, remoteNodeId);
+        char nodeIdStr[32];
+        snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, remoteNodeId);
 
-//         nvs_handle_t nvs_handle;
-//         esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
 
-//         if (err != ESP_OK)
-//         {
-//             ESP_LOGE(TAG, "Failed to open NVS node!");
-//             return;
-//         }
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to open NVS node!");
+            return;
+        }
 
-//         err = nvs_erase_key(nvs_handle, nodeIdStr);
+        err = nvs_erase_key(nvs_handle, nodeIdStr);
 
-//         if (err != ESP_OK)
-//         {
-//             ESP_LOGE(TAG, "Failed to erase node!");
-//             return;
-//         }
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to erase node!");
+            return;
+        }
 
-//         err = nvs_commit(nvs_handle);
+        err = nvs_commit(nvs_handle);
 
-//         if (err != ESP_OK)
-//         {
-//             ESP_LOGE(TAG, "Failed to commit NVS changes!");
-//             return;
-//         }
-//     }
-//     else
-//     {
-//         ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", remoteNodeId, ErrorStr(status));
-//     }
-// }
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to commit NVS changes!");
+            return;
+        }
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", remoteNodeId, ErrorStr(status));
+    }
+}
+*/
 
 #pragma endregion
 
@@ -321,26 +321,41 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
 static esp_err_t nodes_get_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Getting all nodes...");
+    ESP_LOGI(TAG, "Getting all nodes ...");
 
-    nvs_iterator_t it = NULL;
-    esp_err_t res = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_ANY, &it);
+    ESP_LOGI(TAG, "There are %u node(s)", g_controller.node_count);
 
     cJSON *root = cJSON_CreateArray();
 
-    while (res == ESP_OK)
+    for (int i = 0; i < g_controller.node_count; i++)
     {
         cJSON *jNode = cJSON_CreateObject();
 
-        nvs_entry_info_t info;
-        nvs_entry_info(it, &info);
-        ESP_LOGI(TAG, "Key: '%s'", info.key);
-        res = nvs_entry_next(&it);
+        matter_node_t *node = &g_controller.node_list[i];
 
-        cJSON_AddStringToObject(jNode, "nodeId", info.key);
+        ESP_LOGI(TAG, "Node ID: %llu", node->node_id);
+
+        cJSON_AddStringToObject(jNode, "nodeId", std::to_string(node->node_id).c_str());
+
+        cJSON *endpoints_array = cJSON_CreateArray();
+
+        for (int j = 0; j < node->endpoints_count; j++)
+        {
+            endpoint_entry_t endpoint = node->endpoints[j];
+
+            ESP_LOGI(TAG, "Endpoint ID: %lu", endpoint.endpoint_id);
+
+            cJSON *jEndpoint = cJSON_CreateObject();
+
+            cJSON_AddNumberToObject(jEndpoint, "endpointId", endpoint.endpoint_id);
+
+            cJSON_AddItemToArray(endpoints_array, jEndpoint);
+        }
+
+        cJSON_AddItemToObject(jNode, "endpoints", endpoints_array);
+
         cJSON_AddItemToArray(root, jNode);
     }
-    nvs_release_iterator(it);
 
     // TODO Add caching!!
     httpd_resp_set_type(req, "application/json");
@@ -354,17 +369,19 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// static esp_err_t node_refresh_post_handler(httpd_req_t *req)
-// {
-//     ESP_LOGI(TAG, "Refreshing node...");
+/*
+static esp_err_t node_refresh_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Refreshing node...");
 
-//     // TODO
+    // TODO
 
-//     httpd_resp_set_type(req, "application/json");
-//     httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "202 Accepted");
 
-//     return ESP_OK;
-// }
+    return ESP_OK;
+}
+*/
 
 static esp_err_t node_delete_handler(httpd_req_t *req)
 {
@@ -398,33 +415,7 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     }
     else
     {
-        char nodeIdStr[32];
-        snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, node_id);
-
-        nvs_handle_t nvs_handle;
-        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to open NVS node!");
-            return err;
-        }
-
-        err = nvs_erase_key(nvs_handle, nodeIdStr);
-
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to erase node!");
-            return err;
-        }
-
-        err = nvs_commit(nvs_handle);
-
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to commit NVS changes!");
-            return err;
-        }
+        remove_node(&g_controller, node_id);
 
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "202 Accepted");
@@ -619,6 +610,8 @@ extern "C" void app_main()
         ESP_LOGE(TAG, "nvs_flash_init error");
     }
     ESP_ERROR_CHECK(err);
+
+    matter_controller_init(&g_controller);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
