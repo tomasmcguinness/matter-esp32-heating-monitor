@@ -125,6 +125,68 @@ static void process_parts_list_attribute_response(uint64_t node_id,
     data->ExitContainer(containerType);
 }
 
+static void process_device_type_list_attribute_response(uint64_t node_id,
+                                                        const chip::app::ConcreteDataAttributePath &path,
+                                                        chip::TLV::TLVReader *data)
+{
+    ESP_LOGI(TAG, "Endpoint %u: Descriptor->DeviceTypeList", path.mEndpointId);
+    if (!data)
+    {
+        ESP_LOGE(TAG, "TLVReader is null");
+        return;
+    }
+
+    chip::TLV::TLVType containerType;
+
+    if (data->EnterContainer(containerType) != CHIP_NO_ERROR)
+    {
+        ESP_LOGE(TAG, "Failed to enter TLV container");
+        return;
+    }
+
+    matter_node_t *node = find_node(&g_controller, node_id);
+
+    int idx = 0;
+    while (data->Next() == CHIP_NO_ERROR)
+    {
+        if (data->GetType() == chip::TLV::kTLVType_UnsignedInteger)
+        {
+            uint32_t device_type_id = 0;
+
+            if (data->Get(endpoint_id) == CHIP_NO_ERROR)
+            {
+                ESP_LOGI(TAG, "[%d] Endpoint ID: %u", ++idx, endpoint_id);
+
+                add_device_type(node, endpoint_id);
+
+                save_nodes_to_nvs(&g_controller);
+
+                auto *args = new std::tuple<uint64_t, uint16_t>(node_id, endpoint_id);
+
+                chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                              {
+                                                                  auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
+
+                                                                  uint32_t clusterId = Descriptor::Id;
+                                                                  uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
+
+                                                                  esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
+                                                                                                                                                              std::get<1>(*args),
+                                                                                                                                                              clusterId,
+                                                                                                                                                              attributeId,
+                                                                                                                                                              esp_matter::controller::READ_ATTRIBUTE,
+                                                                                                                                                              attribute_data_cb,
+                                                                                                                                                              attribute_data_read_done,
+                                                                                                                                                              nullptr);
+                                                                  read_attr_command->send_command(); },
+                                                              reinterpret_cast<intptr_t>(args));
+            }
+        }
+    }
+
+    data->ExitContainer(containerType);
+}
+
 static void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
 {
     ChipLogProgress(chipTool, "Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
@@ -134,10 +196,13 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
     // If we get a Descriptor::PartsList attribute response, parse it
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
-        save_nodes_to_nvs(&g_controller);
-
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
         process_parts_list_attribute_response(remote_node_id, path, data);
+    }
+    else if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::DeviceTypeList::Id)
+    {
+        ESP_LOGI(TAG, "Processing Descriptor->DeviceTypeList attribute response...");
+        process_device_type_list_attribute_response(remote_node_id, path, data);
     }
 }
 
