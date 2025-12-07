@@ -19,7 +19,7 @@ function Devices() {
     fetchNodes();
   }, []);
 
-  let nodes = nodeList.map((n: any) => <tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)}><td>{n.nodeId}</td></tr>);
+  let nodes = nodeList.map((n: any) => <tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{'cursor':'pointer'}}><td>{n.nodeId.toString(16)}</td></tr>);
 
   return (
     <>

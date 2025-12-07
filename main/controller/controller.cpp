@@ -60,6 +60,23 @@ matter_node_t *find_node(matter_controller_t *controller, uint64_t node_id)
     return NULL;
 }
 
+endpoint_entry_t *find_endpoint(matter_controller_t *controller, matter_node_t *node, uint16_t endpoint_id)
+{
+    endpoint_entry_t *current = node->endpoints;
+
+    while (current != NULL)
+    {
+        if (current->endpoint_id == endpoint_id)
+        {
+            return current;
+        }
+
+        current = current->next;
+    }
+
+    return NULL;
+}
+
 esp_err_t remove_node(matter_controller_t *controller, uint64_t node_id)
 {
     if (!controller)
@@ -100,10 +117,11 @@ esp_err_t remove_node(matter_controller_t *controller, uint64_t node_id)
 
     ESP_LOGI(TAG, "Removing node 0x%016llX", node_id);
 
-    // if (current->endpoints)
-    // {
-    //     free(current->endpoints);
-    // }
+    if (current->endpoints)
+    {
+        // TODO Free device_type_ids inside each endpoint
+        free(current->endpoints);
+    }
 
     // for (uint16_t i = 0; i < current->server_clusters_count; i++)
     // {
@@ -177,13 +195,30 @@ endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id)
     endpoint_entry_t *ep = &node->endpoints[node->endpoints_count];
     memset(ep, 0, sizeof(endpoint_entry_t));
     ep->endpoint_id = endpoint_id;
-    // if (endpoint_name)
-    // {
-    //     strncpy(ep->endpoint_name, endpoint_name, sizeof(ep->endpoint_name) - 1);
-    // }
     node->endpoints_count++;
 
     return ep;
+}
+
+uint32_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id)
+{
+    endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
+
+    if (endpoint == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to find endpoint %lu", endpoint_id);
+        return 0;
+    }
+
+    uint32_t *new_device_type_ids = (uint32_t *)realloc(endpoint->device_type_ids, (endpoint->device_type_count + 1) * sizeof(uint32_t));
+
+    endpoint->device_type_ids = new_device_type_ids;
+    endpoint->device_type_ids[endpoint->device_type_count] = device_type_id;
+    endpoint->device_type_count++;
+
+    ESP_LOGI(TAG, "Added Device Type ID %u to Endpoint %u. There are now %u", device_type_id, endpoint_id, endpoint->device_type_count);
+
+    return device_type_id;
 }
 
 void matter_controller_free(matter_controller_t *controller)
@@ -264,7 +299,6 @@ esp_err_t load_nodes_from_nvs(matter_controller_t *controller)
         node->node_id = *((uint64_t *)ptr);
         ptr += sizeof(uint64_t);
 
-
         // endpoints
         node->endpoints_count = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
@@ -276,6 +310,16 @@ esp_err_t load_nodes_from_nvs(matter_controller_t *controller)
                 endpoint_entry_t *ep = &node->endpoints[e];
                 ep->endpoint_id = *((uint16_t *)ptr);
                 ptr += sizeof(uint16_t);
+
+                ep->device_type_count = *((uint16_t *)ptr);
+                ptr += sizeof(uint16_t);
+
+                ep->device_type_ids = (uint32_t *)calloc(ep->device_type_count, sizeof(uint32_t));
+                for (uint16_t dt = 0; dt < ep->device_type_count; dt++)
+                {
+                    ep->device_type_ids[dt] = *((uint32_t *)ptr);
+                    ptr += sizeof(uint32_t);
+                }
             }
         }
 
@@ -315,6 +359,20 @@ esp_err_t save_nodes_to_nvs(matter_controller_t *controller)
         for (uint16_t e = 0; e < current->endpoints_count; e++)
         {
             required_size += sizeof(uint16_t); // endpoint_id
+
+            endpoint_entry_t *endpoint = current->endpoints;
+
+            while (endpoint)
+            {
+                required_size += sizeof(uint16_t); // device_type_count
+
+                for (uint16_t dt = 0; dt < endpoint->device_type_count; dt++)
+                {
+                    required_size += sizeof(uint32_t); // device_type_id
+                }
+
+                endpoint = endpoint->next;
+            }
         }
 
         current = current->next;
@@ -345,6 +403,15 @@ esp_err_t save_nodes_to_nvs(matter_controller_t *controller)
             endpoint_entry_t *ep = &current->endpoints[e];
             *((uint16_t *)ptr) = ep->endpoint_id;
             ptr += sizeof(uint16_t);
+
+            *((uint16_t *)ptr) = ep->device_type_count;
+            ptr += sizeof(uint16_t);
+
+            for (uint32_t dt = 0; dt < ep->device_type_count; dt++)
+            {
+                *((uint32_t *)ptr) = ep->device_type_ids[dt];
+                ptr += sizeof(uint32_t);
+            }
         }
 
         current = current->next;
@@ -359,6 +426,6 @@ esp_err_t save_nodes_to_nvs(matter_controller_t *controller)
     }
 
     nvs_close(nvs_handle);
-    
+
     return err;
 }

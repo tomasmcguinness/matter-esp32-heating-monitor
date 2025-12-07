@@ -7,7 +7,11 @@ typedef struct matter_endpoint
     uint16_t endpoint_id;
     uint32_t *device_type_ids;
     uint8_t device_type_count;
-} endpoint_entry_t;
+
+    struct matter_endpoint *next;
+} matter_endpoint;
+
+typedef matter_endpoint endpoint_entry_t;
 
 typedef struct matter_node
 {
@@ -32,6 +36,7 @@ esp_err_t remove_node(matter_controller_t *controller, uint64_t node_id);
 
 matter_node_t *add_node(matter_controller_t *controller, uint64_t node_id);
 endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id);
+uint32_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id);
 
 esp_err_t save_nodes_to_nvs(matter_controller_t *controller);
 esp_err_t load_nodes_from_nvs(matter_controller_t *controller);

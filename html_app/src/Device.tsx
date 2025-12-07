@@ -4,10 +4,6 @@ function Device() {
 
   let { nodeId } = useParams();
 
-  const refreshNodeDetails = async () => {
-    await fetch(`/nodes/${nodeId}/refresh`, { method: 'POST' });
-  }
-
   const removeNode = async () => {
     await fetch(`/nodes/${nodeId}`, { method: 'DELETE' });
   }
@@ -16,8 +12,7 @@ function Device() {
     <>
       <h1>Device - {nodeId}</h1>
       <hr />
-      <button className="btn btn-danger" onClick={removeNode}>Remove Node</button>
-      <button className="btn btn-primary" onClick={refreshNodeDetails}>Refresh Details</button>
+      <button className="btn btn-danger" onClick={removeNode} style={{'marginRight':'5px'}}>Remove Node</button>
       <NavLink className="btn btn-default" to="/devices">Back</NavLink>
     </>
   )

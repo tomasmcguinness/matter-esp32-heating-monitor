@@ -97,8 +97,6 @@ static void process_parts_list_attribute_response(uint64_t node_id,
 
                 add_endpoint(node, endpoint_id);
 
-                save_nodes_to_nvs(&g_controller);
-
                 auto *args = new std::tuple<uint64_t, uint16_t>(node_id, endpoint_id);
 
                 chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
@@ -123,6 +121,8 @@ static void process_parts_list_attribute_response(uint64_t node_id,
     }
 
     data->ExitContainer(containerType);
+
+    save_nodes_to_nvs(&g_controller);
 }
 
 static void process_device_type_list_attribute_response(uint64_t node_id,
@@ -146,45 +146,41 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     matter_node_t *node = find_node(&g_controller, node_id);
 
-    int idx = 0;
     while (data->Next() == CHIP_NO_ERROR)
     {
-        if (data->GetType() == chip::TLV::kTLVType_UnsignedInteger)
+        chip::TLV::TLVType listContainerType;
+
+        if (data->EnterContainer(listContainerType) != CHIP_NO_ERROR)
         {
-            uint32_t device_type_id = 0;
-
-            if (data->Get(endpoint_id) == CHIP_NO_ERROR)
-            {
-                ESP_LOGI(TAG, "[%d] Endpoint ID: %u", ++idx, endpoint_id);
-
-                add_device_type(node, endpoint_id);
-
-                save_nodes_to_nvs(&g_controller);
-
-                auto *args = new std::tuple<uint64_t, uint16_t>(node_id, endpoint_id);
-
-                chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                              {
-                                                                  auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
-
-                                                                  uint32_t clusterId = Descriptor::Id;
-                                                                  uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
-
-                                                                  esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
-                                                                                                                                                              std::get<1>(*args),
-                                                                                                                                                              clusterId,
-                                                                                                                                                              attributeId,
-                                                                                                                                                              esp_matter::controller::READ_ATTRIBUTE,
-                                                                                                                                                              attribute_data_cb,
-                                                                                                                                                              attribute_data_read_done,
-                                                                                                                                                              nullptr);
-                                                                  read_attr_command->send_command(); },
-                                                              reinterpret_cast<intptr_t>(args));
-            }
+            ESP_LOGE(TAG, "Failed to enter TLV container");
+            return;
         }
+
+        int idx = 0;
+        while (data->Next() == CHIP_NO_ERROR)
+        {
+            // We only care about the first item in the list, which is the DeviceTypeId
+            if (idx == 0)
+            {
+                uint32_t device_type_id = 0;
+
+                if (data->Get(device_type_id) == CHIP_NO_ERROR)
+                {
+                    ESP_LOGI(TAG, "[%d] DeviceTypeID: %u", idx, device_type_id);
+
+                    add_device_type(node, path.mEndpointId, device_type_id);
+                }
+            }
+
+            idx++;
+        }
+
+        data->ExitContainer(listContainerType);
     }
 
     data->ExitContainer(containerType);
+
+    save_nodes_to_nvs(&g_controller);
 }
 
 static void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
@@ -242,6 +238,14 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
                                                                                                 attribute_data_read_done,
                                                                                                 nullptr);
     read_attr_command->send_command();
+}
+
+static void on_commissioning_failure_callback(ScopedNodeId peer_id, 
+    CHIP_ERROR error, 
+    chip::Controller::CommissioningStage stage,
+    std::optional<chip::Credentials::AttestationVerificationResult> addtional_err_info) {
+
+    ESP_LOGI(TAG, "on_commissioning_failure_callback invoked!");
 }
 
 /*
@@ -370,7 +374,9 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     }
 
     esp_matter::controller::pairing_command_callbacks_t callbacks = {
-        .commissioning_success_callback = on_commissioning_success_callback};
+        .commissioning_success_callback = on_commissioning_success_callback,
+        .commissioning_failure_callback = on_commissioning_failure_callback,
+    };
 
     esp_matter::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
@@ -413,6 +419,22 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
             cJSON *jEndpoint = cJSON_CreateObject();
 
             cJSON_AddNumberToObject(jEndpoint, "endpointId", endpoint.endpoint_id);
+
+            cJSON *device_type_array = cJSON_CreateArray();
+
+            ESP_LOGI(TAG, "DeviceTypes: %lu", endpoint.device_type_count);
+
+            for (int k = 0; k < endpoint.device_type_count; k++)
+            {
+                uint32_t device_type_id = endpoint.device_type_ids[k];
+
+                ESP_LOGI(TAG, "DeviceTypeId ID: %llu", device_type_id);
+
+                cJSON *number = cJSON_CreateNumber((double)device_type_id);
+                cJSON_AddItemToArray(device_type_array, number);
+            }
+
+            cJSON_AddItemToObject(jEndpoint, "deviceTypes", device_type_array);
 
             cJSON_AddItemToArray(endpoints_array, jEndpoint);
         }
