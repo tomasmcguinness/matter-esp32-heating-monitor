@@ -5,7 +5,11 @@ function Device() {
   let { nodeId } = useParams();
 
   const removeNode = async () => {
-    await fetch(`/nodes/${nodeId}`, { method: 'DELETE' });
+    let confirm:boolean = window.confirm("Are you sure you want to remove this node?");
+
+    if (confirm) {
+      await fetch(`/nodes/${nodeId}`, { method: 'DELETE' });
+    }
   }
 
   return (
