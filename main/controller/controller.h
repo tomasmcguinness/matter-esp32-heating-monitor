@@ -7,11 +7,7 @@ typedef struct matter_endpoint
     uint16_t endpoint_id;
     uint32_t *device_type_ids;
     uint8_t device_type_count;
-
-    struct matter_endpoint *next;
-} matter_endpoint;
-
-typedef matter_endpoint endpoint_entry_t;
+} endpoint_entry_t;
 
 typedef struct matter_node
 {

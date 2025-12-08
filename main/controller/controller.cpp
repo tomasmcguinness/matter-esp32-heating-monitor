@@ -62,16 +62,12 @@ matter_node_t *find_node(matter_controller_t *controller, uint64_t node_id)
 
 endpoint_entry_t *find_endpoint(matter_controller_t *controller, matter_node_t *node, uint16_t endpoint_id)
 {
-    endpoint_entry_t *current = node->endpoints;
-
-    while (current != NULL)
+    for (uint16_t i = 0; i < node->endpoints_count; i++)
     {
-        if (current->endpoint_id == endpoint_id)
+        if (node->endpoints[i].endpoint_id == endpoint_id)
         {
-            return current;
+            return &node->endpoints[i];
         }
-
-        current = current->next;
     }
 
     return NULL;
@@ -356,22 +352,15 @@ esp_err_t save_nodes_to_nvs(matter_controller_t *controller)
 
         // Make space for the endpoints
         required_size += sizeof(uint16_t); // endpoints_count
+
         for (uint16_t e = 0; e < current->endpoints_count; e++)
         {
             required_size += sizeof(uint16_t); // endpoint_id
+            required_size += sizeof(uint16_t); // device_type_count
 
-            endpoint_entry_t *endpoint = current->endpoints;
-
-            while (endpoint)
+            for (uint16_t dt = 0; dt < current->endpoints[e].device_type_count; dt++)
             {
-                required_size += sizeof(uint16_t); // device_type_count
-
-                for (uint16_t dt = 0; dt < endpoint->device_type_count; dt++)
-                {
-                    required_size += sizeof(uint32_t); // device_type_id
-                }
-
-                endpoint = endpoint->next;
+                required_size += sizeof(uint32_t); // device_type_id
             }
         }
 
