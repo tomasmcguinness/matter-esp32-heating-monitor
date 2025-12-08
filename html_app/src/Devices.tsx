@@ -19,7 +19,41 @@ function Devices() {
     fetchNodes();
   }, []);
 
-  let nodes = nodeList.map((n: any) => <tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{'cursor':'pointer'}}><td>{n.nodeId.toString(16)}</td></tr>);
+  let nodes = nodeList.map((n: any) => {
+
+    const deviceTypes = n.deviceTypes.map((dt: number) => {
+
+      var name = dt.toString();
+
+      switch (dt) {
+        case 777:
+          name = "Heat Pump";
+          break;
+        case 1296:
+          name = "Electrical Sensor";
+          break;
+        case 17:
+          name = "Power Source";
+          break;
+        case 769:
+          name = "Thermostat";
+          break;
+        case 770:
+          name = "Temperature Sensor";
+          break;
+        case 1293:
+          name = "Device Energy Manager";
+          break;
+        case 117:
+          name = "Dishwasher";
+          break;
+      }
+
+      return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
+    });
+
+    return (<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}><td>{n.nodeId.toString(16)}</td><td>{n.endpointCount}</td><td>{deviceTypes}</td></tr>);
+  });
 
   return (
     <>
@@ -29,6 +63,8 @@ function Devices() {
         <thead>
           <tr>
             <th>Node ID</th>
+            <th>#Endpoint</th>
+            <th>Device Types</th>
           </tr>
         </thead>
         <tbody>

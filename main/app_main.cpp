@@ -408,20 +408,16 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
         cJSON_AddStringToObject(jNode, "nodeId", std::to_string(node->node_id).c_str());
 
-        cJSON *endpoints_array = cJSON_CreateArray();
+        cJSON *endpointCount = cJSON_CreateNumber((double) node->endpoints_count);
+        cJSON_AddItemToObject(jNode, "endpointCount", endpointCount);
+
+        cJSON *device_type_array = cJSON_CreateArray();
 
         for (int j = 0; j < node->endpoints_count; j++)
         {
             endpoint_entry_t endpoint = node->endpoints[j];
 
             ESP_LOGI(TAG, "Endpoint ID: %lu", endpoint.endpoint_id);
-
-            cJSON *jEndpoint = cJSON_CreateObject();
-
-            cJSON_AddNumberToObject(jEndpoint, "endpointId", endpoint.endpoint_id);
-
-            cJSON *device_type_array = cJSON_CreateArray();
-
             ESP_LOGI(TAG, "DeviceTypes: %lu", endpoint.device_type_count);
 
             for (int k = 0; k < endpoint.device_type_count; k++)
@@ -433,13 +429,9 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
                 cJSON *number = cJSON_CreateNumber((double)device_type_id);
                 cJSON_AddItemToArray(device_type_array, number);
             }
-
-            cJSON_AddItemToObject(jEndpoint, "deviceTypes", device_type_array);
-
-            cJSON_AddItemToArray(endpoints_array, jEndpoint);
         }
-
-        cJSON_AddItemToObject(jNode, "endpoints", endpoints_array);
+        
+        cJSON_AddItemToObject(jNode, "deviceTypes", device_type_array);
 
         cJSON_AddItemToArray(root, jNode);
     }
