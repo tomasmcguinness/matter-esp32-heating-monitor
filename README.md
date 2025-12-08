@@ -2,10 +2,10 @@
 
 ## Building
 
-Start by ensuing the html_app is compiled
+Start by ensuing the `html_app` is compiled. This will generate several files and place them in the `html_data` directory.
 
 ```
-cp html_data
+cp html_app
 npm run build -- --emptyOutDir
 ```
 
@@ -28,3 +28,5 @@ Enter the command into the console to connect the board to WiFi
 ```
 matter esp wifi connect {SSID} {Password}
 ```
+
+## 
