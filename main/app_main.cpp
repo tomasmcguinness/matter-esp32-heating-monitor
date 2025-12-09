@@ -43,6 +43,8 @@
 #include "app_main.h"
 #include "controller/controller.h"
 
+#include <setup_payload/ManualSetupPayloadParser.h>
+
 static const char *TAG = "app_main";
 
 #define NVS_NAMESPACE "matter"
@@ -240,10 +242,11 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     read_attr_command->send_command();
 }
 
-static void on_commissioning_failure_callback(ScopedNodeId peer_id, 
-    CHIP_ERROR error, 
-    chip::Controller::CommissioningStage stage,
-    std::optional<chip::Credentials::AttestationVerificationResult> addtional_err_info) {
+static void on_commissioning_failure_callback(ScopedNodeId peer_id,
+                                              CHIP_ERROR error,
+                                              chip::Controller::CommissioningStage stage,
+                                              std::optional<chip::Credentials::AttestationVerificationResult> addtional_err_info)
+{
 
     ESP_LOGI(TAG, "on_commissioning_failure_callback invoked!");
 }
@@ -344,23 +347,32 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Commissioning a node");
 
-    nvs_iterator_t it = NULL;
-    esp_err_t res = nvs_entry_find("nvs", NVS_NAMESPACE, NVS_TYPE_ANY, &it);
+    /* Read the data from the request into a buffer */
+    char content[100];
+    size_t recv_size = std::min(req->content_len, sizeof(content));
 
-    uint64_t node_id = 0;
+    esp_err_t err = httpd_req_recv(req, content, recv_size);
 
-    while (res == ESP_OK)
-    {
-        node_id++;
-        res = nvs_entry_next(&it);
+    cJSON *root = cJSON_Parse(content);
+
+    if(root == NULL) {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
     }
-    nvs_release_iterator(it);
 
-    ESP_LOGI(TAG, "Commissioning a node with NodeID: %llu", node_id);
+    const cJSON *typeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
 
-    // Get from the request
-    uint32_t pincode = 20202021;
-    uint16_t disc = 3840;
+    ESP_LOGI(TAG, "Setup Code: %s", typeJSON->valuestring);
+
+    SetupPayload payload;
+    ManualSetupPayloadParser(typeJSON->valuestring).populatePayload(payload);
+
+    uint64_t node_id = g_controller.node_count + 1;
+
+    uint32_t pincode = payload.setUpPINCode;
+    uint16_t disc = payload.discriminator.GetShortValue();
 
     uint8_t dataset_tlvs_buf[254];
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
@@ -408,7 +420,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
         cJSON_AddStringToObject(jNode, "nodeId", std::to_string(node->node_id).c_str());
 
-        cJSON *endpointCount = cJSON_CreateNumber((double) node->endpoints_count);
+        cJSON *endpointCount = cJSON_CreateNumber((double)node->endpoints_count);
         cJSON_AddItemToObject(jNode, "endpointCount", endpointCount);
 
         cJSON *device_type_array = cJSON_CreateArray();
@@ -430,7 +442,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
                 cJSON_AddItemToArray(device_type_array, number);
             }
         }
-        
+
         cJSON_AddItemToObject(jNode, "deviceTypes", device_type_array);
 
         cJSON_AddItemToArray(root, jNode);
