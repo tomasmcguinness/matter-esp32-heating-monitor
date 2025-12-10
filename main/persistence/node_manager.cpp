@@ -5,14 +5,14 @@
 #include <nvs_flash.h>
 #include <nvs.h>
 
-#include "controller.h"
+#include "node_manager.h"
 
 #define NVS_NAMESPACE "matter_nodes"
 #define NVS_KEY "node_list"
 
-static const char *TAG = "controller";
+static const char *TAG = "node_manager";
 
-void matter_controller_init(matter_controller_t *controller)
+void node_manager_init(matter_controller_t *controller)
 {
     if (controller == NULL)
     {

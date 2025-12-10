@@ -41,10 +41,7 @@
 #include "cJSON.h"
 
 #include "app_main.h"
-#include "controller/controller.h"
-
-#include <setup_payload/ManualSetupPayloadParser.h>
-
+#include "persistence/node_manager.h"
 #include "commands/pairing_command.h"
 
 static const char *TAG = "app_main";
@@ -704,7 +701,7 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(err);
 
-    matter_controller_init(&g_controller);
+    node_manager_init(&g_controller);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     //esp_matter::console::diagnostics_register_commands();
