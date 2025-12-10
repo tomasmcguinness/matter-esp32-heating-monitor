@@ -45,6 +45,8 @@
 
 #include <setup_payload/ManualSetupPayloadParser.h>
 
+#include "commands/pairing_command.h"
+
 static const char *TAG = "app_main";
 
 #define NVS_NAMESPACE "matter"
@@ -58,6 +60,7 @@ using chip::Messaging::ExchangeManager;
 
 using namespace esp_matter;
 using namespace esp_matter::controller;
+using namespace chip::Controller;
 using namespace chip;
 using namespace chip::app::Clusters;
 
@@ -362,17 +365,13 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const cJSON *typeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
+    const cJSON *setupCodeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
 
-    ESP_LOGI(TAG, "Setup Code: %s", typeJSON->valuestring);
+    ESP_LOGI(TAG, "Setup Code: %s", setupCodeJSON->valuestring);
 
-    SetupPayload payload;
-    ManualSetupPayloadParser(typeJSON->valuestring).populatePayload(payload);
+    char *setupCode = setupCodeJSON->valuestring;
 
-    uint64_t node_id = g_controller.node_count + 1;
 
-    uint32_t pincode = payload.setUpPINCode;
-    uint16_t disc = payload.discriminator.GetShortValue();
 
     uint8_t dataset_tlvs_buf[254];
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
@@ -385,15 +384,16 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_matter::controller::pairing_command_callbacks_t callbacks = {
+    heating_monitor::controller::pairing_command_callbacks_t callbacks = {
         .commissioning_success_callback = on_commissioning_success_callback,
         .commissioning_failure_callback = on_commissioning_failure_callback,
     };
 
-    esp_matter::controller::pairing_command::get_instance().set_callbacks(callbacks);
+    heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
-    // TODO Use returned status
-    esp_matter::controller::pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
+    lock::chip_stack_lock(portMAX_DELAY);
+    heating_monitor::controller::pairing_code(node_id, setupCode);
+    lock::chip_stack_unlock();
 
     // This process is asynchronous, so we return 202 Accepted
     httpd_resp_set_status(req, "202 Accepted");
@@ -705,15 +705,15 @@ extern "C" void app_main()
     matter_controller_init(&g_controller);
 
 #if CONFIG_ENABLE_CHIP_SHELL
-    esp_matter::console::diagnostics_register_commands();
+    //esp_matter::console::diagnostics_register_commands();
     esp_matter::console::wifi_register_commands();
-    esp_matter::console::factoryreset_register_commands();
+    //esp_matter::console::factoryreset_register_commands();
     esp_matter::console::init();
 #if CONFIG_ESP_MATTER_CONTROLLER_ENABLE
-    esp_matter::console::controller_register_commands();
+    //esp_matter::console::controller_register_commands();
 #endif // CONFIG_ESP_MATTER_CONTROLLER_ENABLE
 #ifdef CONFIG_OPENTHREAD_BORDER_ROUTER
-    esp_matter::console::otcli_register_commands();
+    //esp_matter::console::otcli_register_commands();
 #endif // CONFIG_OPENTHREAD_BORDER_ROUTER
 #endif // CONFIG_ENABLE_CHIP_SHELL
 #ifdef CONFIG_OPENTHREAD_BORDER_ROUTER

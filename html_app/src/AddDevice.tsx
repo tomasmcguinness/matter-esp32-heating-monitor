@@ -20,8 +20,8 @@ function Devices() {
       <h1>Add Device</h1>
       <form method="post" onSubmit={handleSubmit}>
         <div className="mb-3">
-          <label htmlFor="exampleFormControlInput1" className="form-label">Manual Setup Code</label>
-          <input type="text" name="setupCode" className="form-control" id="exampleFormControlInput1" placeholder="1111-111-1111" required={true} />
+          <label htmlFor="setupCode" className="form-label">Manual Setup Code</label>
+          <input type="text" name="setupCode" className="form-control" id="setupCode" placeholder="1111-111-1111" required={true} />
         </div>
         <button type="submit" className="btn btn-primary" style={{'marginRight':'5px'}}>Add Device</button>
         <NavLink className="btn btn-default" to="/devices">Back</NavLink>

@@ -1,4 +1,4 @@
-idf_component_register(SRC_DIRS          "." "controller"
+idf_component_register(SRC_DIRS          "." "controller" "commands"
                        INCLUDE_DIRS      "."
                        PRIV_INCLUDE_DIRS  "." "${ESP_MATTER_PATH}/examples/common/utils"
                        LDFRAGMENTS "linker.lf"
