@@ -295,9 +295,14 @@ esp_err_t load_nodes_from_nvs(matter_controller_t *controller)
         node->node_id = *((uint64_t *)ptr);
         ptr += sizeof(uint64_t);
 
+        ESP_LOGI(TAG, "Loaded node 0x%016llX from NVS", node->node_id);
+
         // endpoints
         node->endpoints_count = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
+
+        ESP_LOGI(TAG, "Node 0x%016llX has %u endpoints", node->node_id, node->endpoints_count);
+
         if (node->endpoints_count > 0)
         {
             node->endpoints = (endpoint_entry_t *)calloc(node->endpoints_count, sizeof(endpoint_entry_t));
@@ -309,6 +314,8 @@ esp_err_t load_nodes_from_nvs(matter_controller_t *controller)
 
                 ep->device_type_count = *((uint16_t *)ptr);
                 ptr += sizeof(uint16_t);
+
+                ESP_LOGI(TAG, "Node 0x%016llX - endpoint %u has %u device types", node->node_id, ep->endpoint_id, ep->device_type_count);
 
                 ep->device_type_ids = (uint32_t *)calloc(ep->device_type_count, sizeof(uint32_t));
                 for (uint16_t dt = 0; dt < ep->device_type_count; dt++)
@@ -387,16 +394,18 @@ esp_err_t save_nodes_to_nvs(matter_controller_t *controller)
         // Save endpoints
         *((uint16_t *)ptr) = current->endpoints_count;
         ptr += sizeof(uint16_t);
+
         for (uint16_t e = 0; e < current->endpoints_count; e++)
         {
             endpoint_entry_t *ep = &current->endpoints[e];
             *((uint16_t *)ptr) = ep->endpoint_id;
             ptr += sizeof(uint16_t);
 
+            // Save device types
             *((uint16_t *)ptr) = ep->device_type_count;
             ptr += sizeof(uint16_t);
 
-            for (uint32_t dt = 0; dt < ep->device_type_count; dt++)
+            for (uint16_t dt = 0; dt < ep->device_type_count; dt++)
             {
                 *((uint32_t *)ptr) = ep->device_type_ids[dt];
                 ptr += sizeof(uint32_t);

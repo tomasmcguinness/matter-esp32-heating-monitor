@@ -371,7 +371,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     char *setupCode = setupCodeJSON->valuestring;
 
-
+    uint64_t node_id = g_controller.node_count + 1;
 
     uint8_t dataset_tlvs_buf[254];
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
@@ -410,11 +410,11 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateArray();
 
-    for (int i = 0; i < g_controller.node_count; i++)
+    matter_node_t *node = g_controller.node_list;
+
+    while (node)
     {
         cJSON *jNode = cJSON_CreateObject();
-
-        matter_node_t *node = &g_controller.node_list[i];
 
         ESP_LOGI(TAG, "Node ID: %llu", node->node_id);
 
@@ -425,18 +425,18 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
         cJSON *device_type_array = cJSON_CreateArray();
 
-        for (int j = 0; j < node->endpoints_count; j++)
+        for (uint16_t j = 0; j < node->endpoints_count; j++)
         {
             endpoint_entry_t endpoint = node->endpoints[j];
 
             ESP_LOGI(TAG, "Endpoint ID: %lu", endpoint.endpoint_id);
             ESP_LOGI(TAG, "DeviceTypes: %lu", endpoint.device_type_count);
 
-            for (int k = 0; k < endpoint.device_type_count; k++)
+            for (uint16_t k = 0; k < endpoint.device_type_count; k++)
             {
                 uint32_t device_type_id = endpoint.device_type_ids[k];
 
-                ESP_LOGI(TAG, "DeviceTypeId ID: %llu", device_type_id);
+                ESP_LOGI(TAG, "DeviceTypeId ID: %lu", device_type_id);
 
                 cJSON *number = cJSON_CreateNumber((double)device_type_id);
                 cJSON_AddItemToArray(device_type_array, number);
@@ -446,6 +446,8 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         cJSON_AddItemToObject(jNode, "deviceTypes", device_type_array);
 
         cJSON_AddItemToArray(root, jNode);
+
+        node = node->next;
     }
 
     // TODO Add caching!!

@@ -47,6 +47,9 @@ function Devices() {
         case 117:
           name = "Dishwasher";
           break;
+        case 269:
+          name = "Extended Color Light";
+          break;
       }
 
       return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
