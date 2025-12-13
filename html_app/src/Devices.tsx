@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
+
 function Devices() {
 
   let navigate = useNavigate();
@@ -8,7 +9,7 @@ function Devices() {
 
   useEffect(() => {
     const fetchNodes = async () => {
-      var response = await fetch("/nodes");
+      var response = await fetch("/api/nodes");
 
       if (response.ok) {
         let data = await response.json();

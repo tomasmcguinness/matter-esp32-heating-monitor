@@ -4,6 +4,8 @@ import Home from './Home.tsx'
 import Devices from './Devices.tsx'
 import AddDevice from './AddDevice.tsx'
 import Device from './Device.tsx'
+import Radiators from './Radiators.tsx'
+import AddRadiator from './AddRadiator.tsx'
 
 function App() {
 
@@ -20,6 +22,9 @@ function App() {
               <li className="nav-item">
                 <NavLink className="nav-link" to="/">Home</NavLink>
               </li>
+                <li className="nav-item">
+                <NavLink className="nav-link" to="/radiators">Radiators</NavLink>
+              </li>
               <li className="nav-item">
                 <NavLink className="nav-link" to="/devices">Devices</NavLink>
               </li>
@@ -30,7 +35,9 @@ function App() {
       <div className="container">
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/devices/" element={<Devices />} />
+          <Route path="/radiators" element={<Radiators />} />
+          <Route path="/radiators/add" element={<AddRadiator />} />
+          <Route path="/devices" element={<Devices />} />
           <Route path="/devices/add" element={<AddDevice />} />
           <Route path="/devices/:nodeId" element={<Device />} />
         </Routes>

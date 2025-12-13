@@ -12,7 +12,7 @@
 
 static const char *TAG = "node_manager";
 
-void node_manager_init(matter_controller_t *controller)
+void node_manager_init(node_manager_t *controller)
 {
     if (controller == NULL)
     {
@@ -29,7 +29,7 @@ void node_manager_init(matter_controller_t *controller)
     }
     ESP_ERROR_CHECK(ret);
 
-    memset(controller, 0, sizeof(matter_controller_t));
+    memset(controller, 0, sizeof(node_manager_t));
 
     esp_err_t load_err = load_nodes_from_nvs(controller);
 
@@ -43,7 +43,7 @@ void node_manager_init(matter_controller_t *controller)
     }
 }
 
-matter_node_t *find_node(matter_controller_t *controller, uint64_t node_id)
+matter_node_t *find_node(node_manager_t *controller, uint64_t node_id)
 {
     matter_node_t *current = controller->node_list;
 
@@ -60,7 +60,7 @@ matter_node_t *find_node(matter_controller_t *controller, uint64_t node_id)
     return NULL;
 }
 
-endpoint_entry_t *find_endpoint(matter_controller_t *controller, matter_node_t *node, uint16_t endpoint_id)
+endpoint_entry_t *find_endpoint(node_manager_t *controller, matter_node_t *node, uint16_t endpoint_id)
 {
     for (uint16_t i = 0; i < node->endpoints_count; i++)
     {
@@ -73,7 +73,7 @@ endpoint_entry_t *find_endpoint(matter_controller_t *controller, matter_node_t *
     return NULL;
 }
 
-esp_err_t remove_node(matter_controller_t *controller, uint64_t node_id)
+esp_err_t remove_node(node_manager_t *controller, uint64_t node_id)
 {
     if (!controller)
     {
@@ -158,7 +158,7 @@ esp_err_t remove_node(matter_controller_t *controller, uint64_t node_id)
     return ESP_OK;
 }
 
-matter_node_t *add_node(matter_controller_t *controller, uint64_t node_id)
+matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
 {
     matter_node_t *new_node = (matter_node_t *)malloc(sizeof(matter_node_t));
 
@@ -217,7 +217,7 @@ uint32_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t dev
     return device_type_id;
 }
 
-void matter_controller_free(matter_controller_t *controller)
+void node_manager_free(node_manager_t *controller)
 {
     matter_node_t *current = controller->node_list;
 
@@ -239,14 +239,14 @@ void matter_controller_free(matter_controller_t *controller)
     controller->node_count = 0;
 }
 
-esp_err_t load_nodes_from_nvs(matter_controller_t *controller)
+esp_err_t load_nodes_from_nvs(node_manager_t *controller)
 {
     if (!controller)
     {
         return ESP_ERR_INVALID_ARG;
     }
 
-    matter_controller_free(controller);
+    node_manager_free(controller);
 
     nvs_handle_t nvs_handle;
     esp_err_t err;
@@ -336,7 +336,7 @@ esp_err_t load_nodes_from_nvs(matter_controller_t *controller)
     return ESP_OK;
 }
 
-esp_err_t save_nodes_to_nvs(matter_controller_t *controller)
+esp_err_t save_nodes_to_nvs(node_manager_t *controller)
 {
     if (!controller)
     {

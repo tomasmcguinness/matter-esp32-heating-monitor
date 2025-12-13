@@ -1,6 +1,6 @@
 import { NavLink } from "react-router";
 
-function Devices() {
+function AddDevice() {
 
   function handleSubmit(e: any) {
     e.preventDefault();
@@ -12,12 +12,13 @@ function Devices() {
     formData.forEach((value, key) => object[key] = value);
     var json = JSON.stringify(object);
 
-    fetch('/nodes', { method: form.method, headers: { 'Content-Type': 'application/json' }, body: json  });
+    fetch('/api/nodes', { method: form.method, headers: { 'Content-Type': 'application/json' }, body: json  });
   }
 
   return (
     <>
       <h1>Add Device</h1>
+      <hr />
       <form method="post" onSubmit={handleSubmit}>
         <div className="mb-3">
           <label htmlFor="setupCode" className="form-label">Manual Setup Code</label>
@@ -30,4 +31,4 @@ function Devices() {
   )
 }
 
-export default Devices
+export default AddDevice

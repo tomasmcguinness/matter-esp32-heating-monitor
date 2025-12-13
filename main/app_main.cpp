@@ -41,13 +41,11 @@
 #include "cJSON.h"
 
 #include "app_main.h"
-#include "persistence/node_manager.h"
+#include "managers/node_manager.h"
+#include "managers/radiator_manager.h"
 #include "commands/pairing_command.h"
 
 static const char *TAG = "app_main";
-
-#define NVS_NAMESPACE "matter"
-#define NVS_NODE_LIST_KEY "node_list"
 
 using chip::NodeId;
 using chip::ScopedNodeId;
@@ -61,7 +59,8 @@ using namespace chip::Controller;
 using namespace chip;
 using namespace chip::app::Clusters;
 
-matter_controller_t g_controller = {0};
+node_manager_t g_node_manager = {0};
+radiator_manager_t g_radiator_manager = {0};
 
 #pragma region Command Callbacks
 
@@ -84,7 +83,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
         return;
     }
 
-    matter_node_t *node = find_node(&g_controller, node_id);
+    matter_node_t *node = find_node(&g_node_manager, node_id);
 
     int idx = 0;
     while (data->Next() == CHIP_NO_ERROR)
@@ -124,7 +123,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
 
     data->ExitContainer(containerType);
 
-    save_nodes_to_nvs(&g_controller);
+    save_nodes_to_nvs(&g_node_manager);
 }
 
 static void process_device_type_list_attribute_response(uint64_t node_id,
@@ -146,7 +145,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
         return;
     }
 
-    matter_node_t *node = find_node(&g_controller, node_id);
+    matter_node_t *node = find_node(&g_node_manager, node_id);
 
     while (data->Next() == CHIP_NO_ERROR)
     {
@@ -182,7 +181,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     data->ExitContainer(containerType);
 
-    save_nodes_to_nvs(&g_controller);
+    save_nodes_to_nvs(&g_node_manager);
 }
 
 static void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
@@ -225,7 +224,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     char nodeIdStr[32];
     snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
 
-    add_node(&g_controller, nodeId);
+    add_node(&g_node_manager, nodeId);
 
     uint16_t endpointId = 0x0000;
     uint32_t clusterId = Descriptor::Id;
@@ -251,49 +250,15 @@ static void on_commissioning_failure_callback(ScopedNodeId peer_id,
     ESP_LOGI(TAG, "on_commissioning_failure_callback invoked!");
 }
 
-/*
-* This callback is defined in the esp-matter SDK.
-* I added it as a test, but it's not currently used.
-static void on_unpair_callback(chip::NodeId remoteNodeId, CHIP_ERROR status)
+static void on_unpair_success_callback(NodeId removed_node)
 {
-    if (status == CHIP_NO_ERROR)
-    {
-        ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", remoteNodeId);
-
-        char nodeIdStr[32];
-        snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, remoteNodeId);
-
-        nvs_handle_t nvs_handle;
-        esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to open NVS node!");
-            return;
-        }
-
-        err = nvs_erase_key(nvs_handle, nodeIdStr);
-
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to erase node!");
-            return;
-        }
-
-        err = nvs_commit(nvs_handle);
-
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to commit NVS changes!");
-            return;
-        }
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", remoteNodeId, ErrorStr(status));
-    }
+    ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", removed_node);
 }
-*/
+
+static void on_unpair_failure_callback(NodeId removed_node, CHIP_ERROR error)
+{
+    ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", removed_node, ErrorStr(error));
+}
 
 #pragma endregion
 
@@ -368,7 +333,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     char *setupCode = setupCodeJSON->valuestring;
 
-    uint64_t node_id = g_controller.node_count + 1;
+    uint64_t node_id = g_node_manager.node_count + 1;
 
     uint8_t dataset_tlvs_buf[254];
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
@@ -403,11 +368,11 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Getting all nodes ...");
 
-    ESP_LOGI(TAG, "There are %u node(s)", g_controller.node_count);
+    ESP_LOGI(TAG, "There are %u node(s)", g_node_manager.node_count);
 
     cJSON *root = cJSON_CreateArray();
 
-    matter_node_t *node = g_controller.node_list;
+    matter_node_t *node = g_node_manager.node_list;
 
     while (node)
     {
@@ -459,20 +424,6 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/*
-static esp_err_t node_refresh_post_handler(httpd_req_t *req)
-{
-    ESP_LOGI(TAG, "Refreshing node...");
-
-    // TODO
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_status(req, "202 Accepted");
-
-    return ESP_OK;
-}
-*/
-
 static esp_err_t node_delete_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Unpairing node...");
@@ -494,8 +445,15 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
 
     uint64_t node_id = strtoull(node_id_str, NULL, 10);
 
+    heating_monitor::controller::pairing_command_callbacks_t callbacks = {
+        .unpair_success_callback = on_unpair_success_callback,
+        .unpair_failure_callback = on_unpair_failure_callback,
+    };
+
+    heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
+
     lock::chip_stack_lock(portMAX_DELAY);
-    esp_err_t err = esp_matter::controller::unpair_device(node_id); //, on_unpair_callback);
+    esp_err_t err = heating_monitor::controller::unpair_device(node_id);
     lock::chip_stack_unlock();
 
     if (err != ESP_OK)
@@ -505,11 +463,90 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     }
     else
     {
-        remove_node(&g_controller, node_id);
+        remove_node(&g_node_manager, node_id);
 
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "202 Accepted");
     }
+
+    return ESP_OK;
+}
+
+static esp_err_t radiators_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Adding a radiator");
+
+    char content[100];
+    size_t recv_size = std::min(req->content_len, sizeof(content));
+
+    esp_err_t err = httpd_req_recv(req, content, recv_size);
+
+    cJSON *root = cJSON_Parse(content);
+
+    if(root == NULL) {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
+    const cJSON *typeJSON = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const cJSON *outputJSON = cJSON_GetObjectItemCaseSensitive(root, "output");
+
+    char name[20];
+    memcpy(name, nameJSON->valuestring, strlen(nameJSON->valuestring));
+
+    add_radiator(&g_radiator_manager, 20, name, (uint8_t)typeJSON->valueint, (uint16_t)outputJSON->valueint);
+
+    save_radiators_to_nvs(&g_radiator_manager);                      
+
+    httpd_resp_set_status(req, "200 Ok");
+    httpd_resp_send(req, "Commissioning Started", 21);
+
+    return ESP_OK;
+}
+
+static esp_err_t radiators_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting all radiators ...");
+
+    ESP_LOGI(TAG, "There are %u radiators(s)", g_radiator_manager.radiator_count);
+
+    cJSON *root = cJSON_CreateArray();
+
+    radiator_t *radiator = g_radiator_manager.radiator_list;
+
+    while (radiator)
+    {
+        cJSON *jNode = cJSON_CreateObject();
+
+        cJSON_AddStringToObject(jNode, "radiatorId", std::to_string(radiator->radiator_id).c_str());
+        cJSON_AddNumberToObject(jNode, "type", radiator->type);
+        cJSON_AddNumberToObject(jNode, "output", radiator->outputAtDelta50);
+
+        cJSON_AddItemToArray(root, jNode);
+
+        radiator = radiator->next;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t reset_post_handler(httpd_req_t *req)
+{
+    radiator_manager_reset_and_reload(&g_radiator_manager);
+
+    httpd_resp_set_status(req, "200 Ok");
+    httpd_resp_send(req, "Done", 4);
 
     return ESP_OK;
 }
@@ -604,27 +641,39 @@ static httpd_handle_t start_webserver(void)
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
     const httpd_uri_t nodes_post_uri = {
-        .uri = "/nodes",
+        .uri = "/api/nodes",
         .method = HTTP_POST,
         .handler = nodes_post_handler,
         .user_ctx = NULL};
 
     const httpd_uri_t nodes_get_uri = {
-        .uri = "/nodes",
+        .uri = "/api/nodes",
         .method = HTTP_GET,
         .handler = nodes_get_handler,
         .user_ctx = NULL};
 
-    // const httpd_uri_t node_get_uri = {
-    //     .uri = "/nodes/*/refresh",
-    //     .method = HTTP_POST,
-    //     .handler = node_refresh_post_handler,
-    //     .user_ctx = NULL};
-
     const httpd_uri_t node_delete_uri = {
-        .uri = "/nodes/*",
+        .uri = "/api/nodes/*",
         .method = HTTP_DELETE,
         .handler = node_delete_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t radiators_post_uri = {
+        .uri = "/api/radiators",
+        .method = HTTP_POST,
+        .handler = radiators_post_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t radiators_get_uri = {
+        .uri = "/api/radiators",
+        .method = HTTP_GET,
+        .handler = radiators_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t reset_post_uri = {
+        .uri = "/api/reset",
+        .method = HTTP_POST,
+        .handler = reset_post_handler,
         .user_ctx = NULL};
 
     const httpd_uri_t wildcard_get_uri = {
@@ -639,8 +688,11 @@ static httpd_handle_t start_webserver(void)
 
         httpd_register_uri_handler(server, &nodes_post_uri);
         httpd_register_uri_handler(server, &nodes_get_uri);
-        // httpd_register_uri_handler(server, &node_get_uri);
         httpd_register_uri_handler(server, &node_delete_uri);
+        httpd_register_uri_handler(server, &radiators_post_uri);
+        httpd_register_uri_handler(server, &radiators_get_uri);
+        httpd_register_uri_handler(server, &reset_post_uri);
+
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
@@ -701,7 +753,8 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(err);
 
-    node_manager_init(&g_controller);
+    node_manager_init(&g_node_manager);
+    radiator_manager_init(&g_radiator_manager);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     //esp_matter::console::diagnostics_register_commands();
@@ -757,23 +810,6 @@ extern "C" void app_main()
     uint8_t fabricCount = fabricTable->FabricCount();
 
     ESP_LOGI(TAG, "There are %u fabrics", fabricCount);
-
-    nvs_handle_t nvs_handle;
-    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to open NVS storage [%s]!", esp_err_to_name(err));
-        return;
-    }
-
-    err = nvs_set_i32(nvs_handle, "0x1234", 1);
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to write node!");
-        return;
-    }
 
 #endif // CONFIG_ESP_MATTER_COMMISSIONER_ENABLE
 }
