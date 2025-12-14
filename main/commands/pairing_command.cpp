@@ -209,6 +209,8 @@ namespace heating_monitor
             controller_instance.get_commissioner()->RegisterPairingDelegate(&pairing_command::get_instance());
             ByteSpan dataset_span(dataset_tlvs, dataset_len);
             CommissioningParameters commissioning_params = CommissioningParameters().SetThreadOperationalDataset(dataset_span);
+            commissioning_params.SetDeviceAttestationDelegate(&pairing_command::get_instance());
+
             NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
             if (pairing_command::get_instance().m_icd_registration)
             {

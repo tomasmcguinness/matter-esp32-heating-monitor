@@ -39,6 +39,8 @@
 #include "managers/radiator_manager.h"
 #include "commands/pairing_command.h"
 
+#include <setup_payload/ManualSetupPayloadParser.h>
+
 static const char *TAG = "app_main";
 
 using chip::NodeId;
@@ -176,38 +178,39 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                     add_device_type(node, path.mEndpointId, device_type_id);
 
                     // If this Endpoint is a Temperature Sensor, subscribe to the Sensor.
-                    if(device_type_id == 770) {
+                    if (device_type_id == 770)
+                    {
 
                         uint16_t min_interval = 0;
                         uint16_t max_interval = 15;
 
                         auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(
-                                    node_id, 
-                                    path.mEndpointId, 
-                                    TemperatureMeasurement::Id, 
-                                    TemperatureMeasurement::Attributes::MeasuredValue::Id,
-                                    esp_matter::controller::SUBSCRIBE_ATTRIBUTE, 
-                                    min_interval, 
-                                    max_interval, 
-                                    true,
-                                    attribute_data_cb, 
-                                    nullptr, 
-                                    subscribe_done, 
-                                    subscribe_failed,
-                                    true);
+                            node_id,
+                            path.mEndpointId,
+                            TemperatureMeasurement::Id,
+                            TemperatureMeasurement::Attributes::MeasuredValue::Id,
+                            esp_matter::controller::SUBSCRIBE_ATTRIBUTE,
+                            min_interval,
+                            max_interval,
+                            true,
+                            attribute_data_cb,
+                            nullptr,
+                            subscribe_done,
+                            subscribe_failed,
+                            true);
 
-                                if (!cmd)
-                                {
-                                    ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-                                }
-                                else
-                                {
-                                    esp_err_t err = cmd->send_command();
-                                    if (err != ESP_OK)
-                                    {
-                                        ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                                    }
-                                }
+                        if (!cmd)
+                        {
+                            ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+                        }
+                        else
+                        {
+                            esp_err_t err = cmd->send_command();
+                            if (err != ESP_OK)
+                            {
+                                ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                            }
+                        }
                     }
                 }
             }
@@ -229,13 +232,13 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
 
-    //Descriptor::PartsList attribute response
+    // Descriptor::PartsList attribute response
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
         process_parts_list_attribute_response(remote_node_id, path, data);
     }
-    //Descriptor::DeviceTypeList attribute response
+    // Descriptor::DeviceTypeList attribute response
     else if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::DeviceTypeList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->DeviceTypeList attribute response...");
@@ -244,6 +247,30 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
+
+        // Find the appropriate radiator for this node/endpoint combination.
+        radiator_t *radiator = g_radiator_manager.radiator_list;
+
+        while (radiator)
+        {
+            if (radiator->flow_temp_nodeId == remote_node_id || radiator->return_temp_nodeId == remote_node_id)
+            {
+                ESP_LOGI(TAG, "Node is assigned to radiator %u", radiator->radiator_id);
+
+                if (radiator->flow_temp_endpointId == path.mEndpointId)
+                {
+                    ESP_LOGI(TAG, "Reading Flow Temperature value");
+                }
+                else if (radiator->return_temp_endpointId == path.mEndpointId)
+                {
+                    ESP_LOGI(TAG, "Reading Return Temperature value");
+                }
+
+                break;
+            }
+
+            radiator = radiator->next;
+        }
     }
 }
 
@@ -378,7 +405,18 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     char *setupCode = setupCodeJSON->valuestring;
 
+    SetupPayload payload;
+    ManualSetupPayloadParser(setupCode).populatePayload(payload);
+
     uint64_t node_id = g_node_manager.node_count + 1;
+
+    uint32_t pincode = payload.setUpPINCode;
+    uint16_t disc = 3840;
+
+    //uint16_t disc = payload.discriminator.GetShortValue();
+
+    ESP_LOGI(TAG, "pincode: %lu", pincode);
+    ESP_LOGI(TAG, "disc: %u", disc);
 
     uint8_t dataset_tlvs_buf[254];
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
@@ -399,7 +437,8 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
     lock::chip_stack_lock(portMAX_DELAY);
-    heating_monitor::controller::pairing_code(node_id, setupCode);
+    // heating_monitor::controller::pairing_code(node_id, setupCode);
+    heating_monitor::controller::pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
     lock::chip_stack_unlock();
 
     // This process is asynchronous, so we return 202 Accepted
@@ -521,7 +560,7 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Adding a radiator");
 
-    char content[100];
+    char content[150];
     size_t recv_size = std::min(req->content_len, sizeof(content));
 
     esp_err_t err = httpd_req_recv(req, content, recv_size);
@@ -539,16 +578,28 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
     const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
     const cJSON *typeJSON = cJSON_GetObjectItemCaseSensitive(root, "type");
     const cJSON *outputJSON = cJSON_GetObjectItemCaseSensitive(root, "output");
+    const cJSON *flowSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowSensorNodeId");
+    const cJSON *flowSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowSensorEndpointId");
+    const cJSON *returnSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorNodeId");
+    const cJSON *returnSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorEndpointId");
 
     char name[20];
     memcpy(name, nameJSON->valuestring, strlen(nameJSON->valuestring));
 
-    add_radiator(&g_radiator_manager, 20, name, (uint8_t)typeJSON->valueint, (uint16_t)outputJSON->valueint);
+    add_radiator(&g_radiator_manager,
+                 20,
+                 name,
+                 (uint8_t)typeJSON->valueint,
+                 (uint16_t)outputJSON->valueint,
+                 (uint64_t)flowSensorNodeIdJSON->valueint,
+                 (uint16_t)flowSensorEndpointIdJSON->valueint,
+                 (uint64_t)returnSensorNodeIdJSON->valueint,
+                 (uint16_t)returnSensorEndpointIdJSON->valueint);
 
     save_radiators_to_nvs(&g_radiator_manager);
 
     httpd_resp_set_status(req, "200 Ok");
-    httpd_resp_send(req, "Commissioning Started", 21);
+    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
 
     return ESP_OK;
 }
@@ -592,7 +643,51 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
     radiator_manager_reset_and_reload(&g_radiator_manager);
 
     httpd_resp_set_status(req, "200 Ok");
-    httpd_resp_send(req, "Done", 4);
+    httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+
+    return ESP_OK;
+}
+
+static esp_err_t sensors_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting all temperature sensors ...");
+
+    cJSON *root = cJSON_CreateArray();
+
+    matter_node_t *node = g_node_manager.node_list;
+
+    while (node)
+    {
+        for (uint16_t j = 0; j < node->endpoints_count; j++)
+        {
+            endpoint_entry_t endpoint = node->endpoints[j];
+
+            for (uint16_t k = 0; k < endpoint.device_type_count; k++)
+            {
+                uint32_t device_type_id = endpoint.device_type_ids[k];
+
+                ESP_LOGI(TAG, "DeviceTypeId ID: %lu", device_type_id);
+
+                if (device_type_id == 770)
+                {
+                    cJSON *jSensor = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(jSensor, "nodeId", node->node_id);
+                    cJSON_AddNumberToObject(jSensor, "endpointId", endpoint.endpoint_id);
+                    cJSON_AddItemToArray(root, jSensor);
+                }
+            }
+        }
+
+        node = node->next;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
 
     return ESP_OK;
 }
@@ -722,6 +817,12 @@ static httpd_handle_t start_webserver(void)
         .handler = reset_post_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t sensors_get_uri = {
+        .uri = "/api/sensors",
+        .method = HTTP_GET,
+        .handler = sensors_get_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -737,6 +838,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &node_delete_uri);
         httpd_register_uri_handler(server, &radiators_post_uri);
         httpd_register_uri_handler(server, &radiators_get_uri);
+        httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
@@ -790,9 +892,9 @@ extern "C" void app_main()
     radiator_manager_init(&g_radiator_manager);
 
 #if CONFIG_ENABLE_CHIP_SHELL
-    // esp_matter::console::diagnostics_register_commands();
+    esp_matter::console::diagnostics_register_commands();
     esp_matter::console::wifi_register_commands();
-    // esp_matter::console::factoryreset_register_commands();
+    esp_matter::console::factoryreset_register_commands();
     esp_matter::console::init();
 #endif // CONFIG_ENABLE_CHIP_SHELL
 

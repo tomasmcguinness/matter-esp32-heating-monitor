@@ -43,7 +43,7 @@ void radiator_manager_init(radiator_manager_t *manager)
     }
 }
 
-radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *name, uint8_t type, uint16_t outputAtDelta50)
+radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *name, uint8_t type, uint16_t outputAtDelta50, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     uint8_t new_radiator_id = manager->radiator_count + 1;
 
@@ -61,6 +61,10 @@ radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *na
     new_radiator->name = name;
     new_radiator->type = type;
     new_radiator->outputAtDelta50 = outputAtDelta50;
+    new_radiator->flow_temp_nodeId = flowNodeId;
+    new_radiator->flow_temp_endpointId = flowEndpointId;
+    new_radiator->return_temp_nodeId = returnNodeId;
+    new_radiator->return_temp_endpointId = returnEndpointId;
 
     new_radiator->next = manager->radiator_list;
 
@@ -155,6 +159,18 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
         radiator->outputAtDelta50 = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
+        radiator->flow_temp_nodeId = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+
+        radiator->flow_temp_endpointId = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
+        radiator->return_temp_nodeId = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+
+        radiator->return_temp_endpointId = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
         ESP_LOGI(TAG, "Loaded radiator 0x%0X from NVS", radiator->radiator_id);
 
         radiator->next = manager->radiator_list;
@@ -216,6 +232,18 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
         *((uint8_t *)ptr) = current->type;
         ptr += sizeof(uint8_t);
+
+        *((uint64_t *)ptr) = current->flow_temp_nodeId;
+        ptr += sizeof(uint64_t);
+
+        *((uint16_t *)ptr) = current->flow_temp_endpointId;
+        ptr += sizeof(uint16_t);
+
+        *((uint64_t *)ptr) = current->return_temp_nodeId;
+        ptr += sizeof(uint64_t);
+
+        *((uint16_t *)ptr) = current->return_temp_endpointId;
+        ptr += sizeof(uint16_t);
 
         *((uint16_t *)ptr) = current->outputAtDelta50;
         ptr += sizeof(uint16_t);

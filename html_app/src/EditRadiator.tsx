@@ -1,54 +1,36 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router";
+import { NavLink, useParams } from "react-router";
 
-function AddRadiator() {
+function EditRadiator() {
 
+   let { radiatorId } = useParams();
+   
   const [name, setName] = useState<string | undefined>(undefined);
   const [type, setType] = useState(10);
   const [output, setOutput] = useState<number | undefined>(undefined);
-  const [flowSensor, setFlowSensor] = useState<string | undefined>(undefined);
-  const [returnSensor, setReturnSensor] = useState<string | undefined>(undefined);
-
-  const [sensors, setSensors] = useState<[]>([]);
 
   useEffect(() => {
-    fetch('/api/sensors').then(response => response.json()).then(data => setSensors(data));
+    fetch('/api/sensors').then(response => response.json());
   }, []);
 
   function handleSubmit(e: any) {
     e.preventDefault();
 
-    var flowSensorNodeId = parseInt(flowSensor!.split('|')[0]);
-    var flowSensorEndpointId = parseInt(flowSensor!.split('|')[1]);
-
-    var returnSensorNodeId = parseInt(returnSensor!.split('|')[0]);
-    var returnSensorEndpointId = parseInt(returnSensor!.split('|')[1]);
-
     var object: any = {
       name,
       type,
-      output,
-      flowSensorNodeId,
-      flowSensorEndpointId,
-      returnSensorNodeId,
-      returnSensorEndpointId
+      output
     };
-
     var json = JSON.stringify(object);
 
-    fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json });
+    fetch(`/api/radiators/${radiatorId}`, { method: "PUT", headers: { 'Content-Type': 'application/json' }, body: json });
   }
-
-  let sensorOptions = sensors.map((s: any) => {
-    var key = `${s.nodeId}|${s.endpointId}`;
-    return <option key={key} value={key}>Node 0x{s.nodeId} - 0x{s.endpointId}</option>;
-  })
 
   return (
     <>
-      <h1>Add Radiator</h1>
+      <h1>Update Radiator {radiatorId}</h1>
       <hr />
-      <form method="post" onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit}>
         <div className="mb-3">
           <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
           <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
@@ -71,19 +53,12 @@ function AddRadiator() {
         </div>
         <div className="mb-3">
           <label htmlFor="flowSensor" className="form-label">Flow Sensor <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="flowSensor" className="form-control" id="flowSensor" value={flowSensor || ''} onChange={(e) => setFlowSensor(e.target.value)} required={true}>
-            <option></option>
-            <option value="1|1">1 1</option>
-            {sensorOptions}
+          <select name="flowSensor" className="form-control" id="flowSensor">
           </select>
         </div>
         <div className="mb-3">
           <label htmlFor="returnSensor" className="form-label">Return Sensor <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="returnSensor" className="form-control" id="returnSensor" value={returnSensor || ''} onChange={(e) => setReturnSensor(e.target.value)} required={true}>
-            <option></option>
-            <option value="1|2">1 2</option>
-            {sensorOptions}
-          </select>
+          <select name="returnSensor" className="form-control" id="returnSensor">          </select>
         </div>
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Radiator</button>
         <NavLink className="btn btn-default" to="/radiators">Back</NavLink>
@@ -92,4 +67,4 @@ function AddRadiator() {
   )
 }
 
-export default AddRadiator
+export default EditRadiator
