@@ -37,7 +37,7 @@ matter esp wifi connect {SSID} {Password}
 
 ## Commissioning
 
-Once connected, find the IP address in hte logs.
+Once connected, find the IP address in the logs (I will add an mDNS entry once I've figured out provisioning)
 
 Open this from your browser and navigate to the Device tab. Click the `Add Device` button.
 
@@ -50,3 +50,7 @@ I don't have any callbacks or anything to tell you when this completes, so keep 
 When it's done, the device will appear under the Device tab.
 
 ![alt text](image-1.png)
+
+# Thanks
+
+I want to thank the author of the ESP_MATTER_CONTROLLER project as it gave me a lot of guidance, pointers and clues! https://github.com/Live-Control-Project/ESP_MATTER_CONTROLLER
