@@ -18,14 +18,8 @@
 #include <esp_matter_controller_utils.h>
 #include <esp_matter_controller_pairing_command.h>
 #include <esp_matter_controller_read_command.h>
+#include <esp_matter_controller_subscribe_command.h>
 #include <esp_matter_ota.h>
-#if CONFIG_OPENTHREAD_BORDER_ROUTER
-#include <esp_openthread_border_router.h>
-#include <esp_openthread_lock.h>
-#include <esp_ot_config.h>
-#include <esp_spiffs.h>
-#include <platform/ESP32/OpenthreadLauncher.h>
-#endif // CONFIG_OPENTHREAD_BORDER_ROUTER
 #include <common_macros.h>
 
 #include <app/server/Server.h>
@@ -126,6 +120,16 @@ static void process_parts_list_attribute_response(uint64_t node_id,
     save_nodes_to_nvs(&g_node_manager);
 }
 
+void subscribe_done(uint64_t node_id, uint32_t subscription_id)
+{
+    ESP_LOGI(TAG, "Successfully subscribed, node %llu, subscription id 0x%08X", node_id, subscription_id);
+}
+
+void subscribe_failed(void *ctx)
+{
+    ESP_LOGE(TAG, "Failed to subscribe (context: %p)", ctx);
+}
+
 static void process_device_type_list_attribute_response(uint64_t node_id,
                                                         const chip::app::ConcreteDataAttributePath &path,
                                                         chip::TLV::TLVReader *data)
@@ -170,6 +174,41 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                     ESP_LOGI(TAG, "[%d] DeviceTypeID: %u", idx, device_type_id);
 
                     add_device_type(node, path.mEndpointId, device_type_id);
+
+                    // If this Endpoint is a Temperature Sensor, subscribe to the Sensor.
+                    if(device_type_id == 770) {
+
+                        uint16_t min_interval = 0;
+                        uint16_t max_interval = 15;
+
+                        auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(
+                                    node_id, 
+                                    path.mEndpointId, 
+                                    TemperatureMeasurement::Id, 
+                                    TemperatureMeasurement::Attributes::MeasuredValue::Id,
+                                    esp_matter::controller::SUBSCRIBE_ATTRIBUTE, 
+                                    min_interval, 
+                                    max_interval, 
+                                    true,
+                                    attribute_data_cb, 
+                                    nullptr, 
+                                    subscribe_done, 
+                                    subscribe_failed,
+                                    true);
+
+                                if (!cmd)
+                                {
+                                    ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+                                }
+                                else
+                                {
+                                    esp_err_t err = cmd->send_command();
+                                    if (err != ESP_OK)
+                                    {
+                                        ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                                    }
+                                }
+                    }
                 }
             }
 
@@ -190,16 +229,21 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
 
-    // If we get a Descriptor::PartsList attribute response, parse it
+    //Descriptor::PartsList attribute response
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
         process_parts_list_attribute_response(remote_node_id, path, data);
     }
+    //Descriptor::DeviceTypeList attribute response
     else if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::DeviceTypeList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->DeviceTypeList attribute response...");
         process_device_type_list_attribute_response(remote_node_id, path, data);
+    }
+    else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
+    {
+        ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
     }
 }
 
@@ -320,7 +364,8 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_Parse(content);
 
-    if(root == NULL) {
+    if (root == NULL)
+    {
         ESP_LOGE(TAG, "Failed to parse JSON");
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
@@ -483,7 +528,8 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_Parse(content);
 
-    if(root == NULL) {
+    if (root == NULL)
+    {
         ESP_LOGE(TAG, "Failed to parse JSON");
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
@@ -499,7 +545,7 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 
     add_radiator(&g_radiator_manager, 20, name, (uint8_t)typeJSON->valueint, (uint16_t)outputJSON->valueint);
 
-    save_radiators_to_nvs(&g_radiator_manager);                      
+    save_radiators_to_nvs(&g_radiator_manager);
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "Commissioning Started", 21);
@@ -720,20 +766,7 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
             event->Platform.ESPSystemEvent.Id == IP_EVENT_STA_GOT_IP)
         {
-
             start_webserver();
-
-#if CONFIG_OPENTHREAD_BORDER_ROUTER
-            static bool sThreadBRInitialized = false;
-            if (!sThreadBRInitialized)
-            {
-                esp_openthread_set_backbone_netif(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"));
-                esp_openthread_lock_acquire(portMAX_DELAY);
-                esp_openthread_border_router_init();
-                esp_openthread_lock_release();
-                sThreadBRInitialized = true;
-            }
-#endif
         }
         break;
     default:
@@ -757,42 +790,15 @@ extern "C" void app_main()
     radiator_manager_init(&g_radiator_manager);
 
 #if CONFIG_ENABLE_CHIP_SHELL
-    //esp_matter::console::diagnostics_register_commands();
+    // esp_matter::console::diagnostics_register_commands();
     esp_matter::console::wifi_register_commands();
-    //esp_matter::console::factoryreset_register_commands();
+    // esp_matter::console::factoryreset_register_commands();
     esp_matter::console::init();
-#if CONFIG_ESP_MATTER_CONTROLLER_ENABLE
-    //esp_matter::console::controller_register_commands();
-#endif // CONFIG_ESP_MATTER_CONTROLLER_ENABLE
-#ifdef CONFIG_OPENTHREAD_BORDER_ROUTER
-    //esp_matter::console::otcli_register_commands();
-#endif // CONFIG_OPENTHREAD_BORDER_ROUTER
 #endif // CONFIG_ENABLE_CHIP_SHELL
-#ifdef CONFIG_OPENTHREAD_BORDER_ROUTER
-#ifdef CONFIG_AUTO_UPDATE_RCP
-    esp_vfs_spiffs_conf_t rcp_fw_conf = {
-        .base_path = "/rcp_fw", .partition_label = "rcp_fw", .max_files = 10, .format_if_mount_failed = false};
-    if (ESP_OK != esp_vfs_spiffs_register(&rcp_fw_conf))
-    {
-        ESP_LOGE(TAG, "Failed to mount rcp firmware storage");
-        return;
-    }
-    esp_rcp_update_config_t rcp_update_config = ESP_OPENTHREAD_RCP_UPDATE_CONFIG();
-    openthread_init_br_rcp(&rcp_update_config);
-#endif
-    /* Set OpenThread platform config */
-    esp_openthread_platform_config_t config = {
-        .radio_config = ESP_OPENTHREAD_DEFAULT_RADIO_CONFIG(),
-        .host_config = ESP_OPENTHREAD_DEFAULT_HOST_CONFIG(),
-        .port_config = ESP_OPENTHREAD_DEFAULT_PORT_CONFIG(),
-    };
-    set_openthread_platform_config(&config);
-#endif // CONFIG_OPENTHREAD_BORDER_ROUTER
+
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
-
-#if CONFIG_ESP_MATTER_COMMISSIONER_ENABLE
 
     ESP_LOGI(TAG, "Setup controller client and commissioner...");
 
@@ -810,6 +816,4 @@ extern "C" void app_main()
     uint8_t fabricCount = fabricTable->FabricCount();
 
     ESP_LOGI(TAG, "There are %u fabrics", fabricCount);
-
-#endif // CONFIG_ESP_MATTER_COMMISSIONER_ENABLE
 }
