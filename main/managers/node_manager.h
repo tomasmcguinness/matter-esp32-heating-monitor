@@ -27,6 +27,9 @@ typedef struct
 } node_manager_t;
 
 void node_manager_init(node_manager_t *controller);
+
+void subscribe_all_temperature_measurements(node_manager_t *controller);
+
 matter_node_t *find_node(node_manager_t *controller, uint64_t node_id);
 esp_err_t remove_node(node_manager_t *controller, uint64_t node_id);
 

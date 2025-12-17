@@ -1,9 +1,47 @@
 import { useEffect, useState } from "react"
-import { NavLink } from "react-router"
+import { NavLink, useNavigate } from "react-router"
+import useWebSocket from 'react-use-websocket';
 
 function Radiators() {
 
+  let navigate = useNavigate();
+
   let [radiatorList, setRadiatorList] = useState<any>([]);
+
+  const socketUrl = 'ws://192.168.1.104/ws';
+
+  const {
+    sendJsonMessage,
+    lastJsonMessage,
+  } = useWebSocket(socketUrl, {
+    onOpen: () => { sendJsonMessage({ radiators: true }); console.log('opened'); },
+    shouldReconnect: (_) => true,
+    share: true
+  });
+
+  useEffect(() => {
+    console.log("Web socket data has changed...." + lastJsonMessage);
+
+    if (!lastJsonMessage) {
+      return;
+    }
+
+    const updatedRadiatorList = [...radiatorList];
+    const radiator = updatedRadiatorList.find(a => a.radiatorId === (lastJsonMessage as any).radiatorId);
+
+    if (radiator) {
+
+      if (lastJsonMessage.hasOwnProperty("flowTemp")) {
+        radiator.flowTemp = (lastJsonMessage as any).flowTemp;
+      } else {
+        radiator.returnTemp = (lastJsonMessage as any).returnTemp;
+      }
+
+      setRadiatorList(updatedRadiatorList);
+    } else {
+      console.log('Could not find a radiator with id ' + (lastJsonMessage as any).radiatorId);
+    }
+  }, [lastJsonMessage]);
 
   useEffect(() => {
     const fetchRadiators = async () => {
@@ -19,7 +57,7 @@ function Radiators() {
   }, []);
 
   let radiators = radiatorList.map((n: any) => {
-    return (<tr key={n.radiatorId}><td>{n.radiatorId}</td><td>{n.name}</td><td>{n.type}</td><td>{n.output}</td></tr>);
+    return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}><td>{n.radiatorId}</td><td>{n.name}</td><td>{n.type}</td><td>{n.output}</td><td>{n.flowTemp}</td><td>{n.returnTemp}</td></tr>);
   });
 
   return (
@@ -29,10 +67,12 @@ function Radiators() {
       <table className="table table-striped table-bordered">
         <thead>
           <tr>
-            <th style={{width:'auto'}}>ID</th>
+            <th style={{ width: 'auto' }}>ID</th>
             <th>Name</th>
             <th>Type</th>
             <th>Output</th>
+            <th>Flow</th>
+            <th>Return</th>
           </tr>
         </thead>
         <tbody>

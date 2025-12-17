@@ -4,11 +4,17 @@
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <nvs.h>
+#include <esp_matter_controller_subscribe_command.h>
 
 #include "node_manager.h"
+#include "app_main.h"
+
+#include <set>
 
 #define NVS_NAMESPACE "matter_nodes"
 #define NVS_KEY "node_list"
+
+using namespace chip::app::Clusters;
 
 static const char *TAG = "node_manager";
 
@@ -40,6 +46,83 @@ void node_manager_init(node_manager_t *controller)
     else
     {
         ESP_LOGW(TAG, "No saved nodes found in NVS (err: 0x%x)", load_err);
+    }
+}
+
+void subscribe_all_temperature_measurements(node_manager_t *controller)
+{
+    struct SubscriptionKey
+    {
+        uint64_t node_id;
+        uint16_t endpoint_id;
+
+        bool operator<(const SubscriptionKey &other) const
+        {
+            return std::tie(node_id, endpoint_id) <
+                   std::tie(other.node_id, other.endpoint_id);
+        }
+    };
+
+    std::set<SubscriptionKey> subscribed;
+
+    matter_node_t *node = controller->node_list;
+
+    while (node)
+    {
+        for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
+        {
+            endpoint_entry_t *ep = &node->endpoints[ep_idx];
+
+            for (uint8_t device_type_idx = 0; device_type_idx < ep->device_type_count; ++device_type_idx)
+            {
+                uint32_t device_type_id = ep->device_type_ids[device_type_idx];
+
+                if (device_type_id == 770)
+                {
+                    SubscriptionKey key{node->node_id, ep->endpoint_id};
+                    if (subscribed.find(key) != subscribed.end())
+                        continue;
+
+                    subscribed.insert(key);
+
+                    ESP_LOGI(TAG, "Subscribing to Temperature Measurement for node %llu, endpoint %d", node->node_id, ep->endpoint_id);
+
+                    uint16_t min_interval = 0;
+                    uint16_t max_interval = 15;
+                  
+                    auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(
+                        node->node_id,
+                        ep->endpoint_id,
+                        TemperatureMeasurement::Id,
+                        TemperatureMeasurement::Attributes::MeasuredValue::Id,
+                        esp_matter::controller::SUBSCRIBE_ATTRIBUTE,
+                        min_interval,
+                        max_interval,
+                        true,
+                        attribute_data_cb,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        true);
+
+                    if (!cmd)
+                    {
+                        ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+                    }
+                    else
+                    {
+                        esp_err_t err = cmd->send_command();
+
+                        if (err != ESP_OK)
+                        {
+                            ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                        }
+                    }
+                }
+            }
+        }
+
+        node = node->next;
     }
 }
 

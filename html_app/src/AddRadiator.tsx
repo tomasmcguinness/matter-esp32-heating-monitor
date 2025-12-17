@@ -73,7 +73,6 @@ function AddRadiator() {
           <label htmlFor="flowSensor" className="form-label">Flow Sensor <span style={{ 'color': 'red' }}>*</span></label>
           <select name="flowSensor" className="form-control" id="flowSensor" value={flowSensor || ''} onChange={(e) => setFlowSensor(e.target.value)} required={true}>
             <option></option>
-            <option value="1|1">1 1</option>
             {sensorOptions}
           </select>
         </div>
@@ -81,7 +80,6 @@ function AddRadiator() {
           <label htmlFor="returnSensor" className="form-label">Return Sensor <span style={{ 'color': 'red' }}>*</span></label>
           <select name="returnSensor" className="form-control" id="returnSensor" value={returnSensor || ''} onChange={(e) => setReturnSensor(e.target.value)} required={true}>
             <option></option>
-            <option value="1|2">1 2</option>
             {sensorOptions}
           </select>
         </div>

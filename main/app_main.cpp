@@ -58,6 +58,11 @@ using namespace chip::app::Clusters;
 node_manager_t g_node_manager = {0};
 radiator_manager_t g_radiator_manager = {0};
 
+static httpd_handle_t server;
+static int ws_socket;
+
+static void ws_async_send(void *arg);
+
 #pragma region Command Callbacks
 
 static void process_parts_list_attribute_response(uint64_t node_id,
@@ -109,7 +114,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                                                                                                               attributeId,
                                                                                                                                                               esp_matter::controller::READ_ATTRIBUTE,
                                                                                                                                                               attribute_data_cb,
-                                                                                                                                                              attribute_data_read_done,
+                                                                                                                                                              nullptr,
                                                                                                                                                               nullptr);
                                                                   read_attr_command->send_command(); },
                                                               reinterpret_cast<intptr_t>(args));
@@ -180,7 +185,6 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                     // If this Endpoint is a Temperature Sensor, subscribe to the Sensor.
                     if (device_type_id == 770)
                     {
-
                         uint16_t min_interval = 0;
                         uint16_t max_interval = 15;
 
@@ -226,19 +230,17 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
     save_nodes_to_nvs(&g_node_manager);
 }
 
-static void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
+void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
 {
-    ChipLogProgress(chipTool, "Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
+    ChipLogProgress(chipTool, "attribute_data_cb: Nodeid: %016llx Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
 
-    // Descriptor::PartsList attribute response
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
         process_parts_list_attribute_response(remote_node_id, path, data);
     }
-    // Descriptor::DeviceTypeList attribute response
     else if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::DeviceTypeList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->DeviceTypeList attribute response...");
@@ -248,7 +250,15 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
 
+        ESP_LOGI(TAG, "There are %u radiators", g_radiator_manager.radiator_count);
+
+        int16_t temperature;
+        chip::app::DataModel::Decode(*data, temperature);
+
+        ESP_LOGI(TAG, "Value: %d", temperature);
+
         // Find the appropriate radiator for this node/endpoint combination.
+        //
         radiator_t *radiator = g_radiator_manager.radiator_list;
 
         while (radiator)
@@ -257,14 +267,25 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
             {
                 ESP_LOGI(TAG, "Node is assigned to radiator %u", radiator->radiator_id);
 
+                cJSON *root = cJSON_CreateObject();
+                cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
+
                 if (radiator->flow_temp_endpointId == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Flow Temperature value");
+                    cJSON_AddNumberToObject(root, "flowTemp", temperature);
                 }
                 else if (radiator->return_temp_endpointId == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Return Temperature value");
+                    cJSON_AddNumberToObject(root, "returnTemp", temperature);
                 }
+
+                char *payload = cJSON_PrintUnformatted(root);
+
+                httpd_queue_work(server, ws_async_send, payload);
+
+                cJSON_Delete(root);
 
                 break;
             }
@@ -272,19 +293,16 @@ static void attribute_data_cb(uint64_t remote_node_id, const chip::app::Concrete
             radiator = radiator->next;
         }
     }
+    else
+    {
+        ESP_LOGI(TAG, "Unhandled attribute_data_cb update");
+    }
 }
 
 static void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path)
 {
     ESP_LOGI(TAG, "\nRead Info done for Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI "\n",
              remote_node_id, attr_path[0].mEndpointId, ChipLogValueMEI(attr_path[0].mClusterId), ChipLogValueMEI(attr_path[0].mAttributeId));
-
-    // node_id_list_index++;
-
-    // if (node_id_list_index < node_id_list.size())
-    //     //_read_node_wild_info(node_id_list[node_id_list_index]);
-    // else
-    //     //print_data_model();
 }
 
 static void on_commissioning_success_callback(ScopedNodeId peer_id)
@@ -317,18 +335,19 @@ static void on_commissioning_failure_callback(ScopedNodeId peer_id,
                                               chip::Controller::CommissioningStage stage,
                                               std::optional<chip::Credentials::AttestationVerificationResult> addtional_err_info)
 {
-
     ESP_LOGI(TAG, "on_commissioning_failure_callback invoked!");
 }
 
-static void on_unpair_success_callback(NodeId removed_node)
+static void on_unpair_complete_callback(NodeId removed_node, CHIP_ERROR error)
 {
-    ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", removed_node);
-}
-
-static void on_unpair_failure_callback(NodeId removed_node, CHIP_ERROR error)
-{
-    ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", removed_node, ErrorStr(error));
+    if (error == CHIP_NO_ERROR)
+    {
+        ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", removed_node);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", removed_node, ErrorStr(error));
+    }
 }
 
 #pragma endregion
@@ -379,6 +398,67 @@ static bool convert_hex_str_to_bytes(const char *hex_str, uint8_t *bytes, uint8_
     return true;
 }
 
+static void ws_async_send(void *arg)
+{
+    ESP_LOGI(TAG, "Sending message over websocket...");
+
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+
+    ws_pkt.payload = (uint8_t *)arg;
+    ws_pkt.len = strlen((char *)arg);
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    ws_pkt.final = true;
+
+    esp_err_t err = httpd_ws_send_frame_async(server, ws_socket, &ws_pkt);
+
+    ESP_LOGI(TAG, "Send result: %u", err);
+
+    free(arg);
+}
+
+static esp_err_t ws_get_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET)
+    {
+        ESP_LOGI(TAG, "Handshake done, the new connection was opened");
+        return ESP_OK;
+    }
+
+    ws_socket = httpd_req_to_sockfd(req);
+
+    httpd_ws_frame_t ws_pkt;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+    ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+    esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
+
+    if (ws_pkt.len)
+    {
+        uint8_t *buf = NULL;
+
+        /* ws_pkt.len + 1 is for NULL termination as we are expecting a string */
+        buf = (uint8_t *)calloc(1, ws_pkt.len + 1);
+
+        if (buf == NULL)
+        {
+            ESP_LOGE(TAG, "Failed to calloc memory for buf");
+            return ESP_ERR_NO_MEM;
+        }
+        ws_pkt.payload = buf;
+        /* Set max_len = ws_pkt.len to get the frame payload */
+        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "httpd_ws_recv_frame failed with %d", ret);
+            free(buf);
+            return ret;
+        }
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t nodes_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Commissioning a node");
@@ -413,7 +493,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     uint32_t pincode = payload.setUpPINCode;
     uint16_t disc = 3840;
 
-    //uint16_t disc = payload.discriminator.GetShortValue();
+    // uint16_t disc = payload.discriminator.GetShortValue();
 
     ESP_LOGI(TAG, "pincode: %lu", pincode);
     ESP_LOGI(TAG, "disc: %u", disc);
@@ -529,15 +609,13 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
 
     uint64_t node_id = strtoull(node_id_str, NULL, 10);
 
-    heating_monitor::controller::pairing_command_callbacks_t callbacks = {
-        .unpair_success_callback = on_unpair_success_callback,
-        .unpair_failure_callback = on_unpair_failure_callback,
-    };
+    esp_matter::controller::pairing_command_callbacks_t callbacks = {
+        .unpair_complete_callback = on_unpair_complete_callback};
 
-    heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
+    esp_matter::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
     lock::chip_stack_lock(portMAX_DELAY);
-    esp_err_t err = heating_monitor::controller::unpair_device(node_id);
+    esp_err_t err = esp_matter::controller::unpair_device(node_id);
     lock::chip_stack_unlock();
 
     if (err != ESP_OK)
@@ -618,7 +696,7 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
     {
         cJSON *jNode = cJSON_CreateObject();
 
-        cJSON_AddStringToObject(jNode, "radiatorId", std::to_string(radiator->radiator_id).c_str());
+        cJSON_AddNumberToObject(jNode, "radiatorId", radiator->radiator_id);
         cJSON_AddNumberToObject(jNode, "type", radiator->type);
         cJSON_AddNumberToObject(jNode, "output", radiator->outputAtDelta50);
 
@@ -634,6 +712,35 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, json);
     free((void *)json);
     cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t radiators_delete_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Deleting radiator...");
+
+    size_t size = strlen(req->uri);
+
+    char *pch = strrchr(req->uri, '/');
+    int index_of_last_slash = pch - req->uri + 1;
+
+    int length_of_nodeId = size - index_of_last_slash;
+
+    char node_id_str[length_of_nodeId + 1];
+
+    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
+
+    node_id_str[length_of_nodeId] = '\0';
+
+    ESP_LOGI(TAG, "Unpairing node  %s", node_id_str);
+
+    uint8_t node_id = (uint8_t)strtoul(node_id_str, NULL, 10);
+
+    remove_radiator(&g_radiator_manager, node_id);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
 
     return ESP_OK;
 }
@@ -767,6 +874,13 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static const httpd_uri_t ws_uri = {
+    .uri = "/ws",
+    .method = HTTP_GET,
+    .handler = ws_get_handler,
+    .user_ctx = NULL,
+    .is_websocket = true};
+
 static httpd_handle_t start_webserver(void)
 {
     ESP_LOGI(TAG, "Configuring webserver...");
@@ -793,7 +907,7 @@ static httpd_handle_t start_webserver(void)
         .handler = nodes_get_handler,
         .user_ctx = NULL};
 
-    const httpd_uri_t node_delete_uri = {
+    const httpd_uri_t nodes_delete_uri = {
         .uri = "/api/nodes/*",
         .method = HTTP_DELETE,
         .handler = node_delete_handler,
@@ -809,6 +923,12 @@ static httpd_handle_t start_webserver(void)
         .uri = "/api/radiators",
         .method = HTTP_GET,
         .handler = radiators_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t radiators_delete_uri = {
+        .uri = "/api/radiators/*",
+        .method = HTTP_DELETE,
+        .handler = radiators_delete_handler,
         .user_ctx = NULL};
 
     const httpd_uri_t reset_post_uri = {
@@ -833,11 +953,13 @@ static httpd_handle_t start_webserver(void)
     {
         ESP_LOGI(TAG, "Registering URI handlers");
 
+        httpd_register_uri_handler(server, &ws_uri);
         httpd_register_uri_handler(server, &nodes_post_uri);
         httpd_register_uri_handler(server, &nodes_get_uri);
-        httpd_register_uri_handler(server, &node_delete_uri);
+        httpd_register_uri_handler(server, &nodes_delete_uri);
         httpd_register_uri_handler(server, &radiators_post_uri);
         httpd_register_uri_handler(server, &radiators_get_uri);
+        httpd_register_uri_handler(server, &radiators_delete_uri);
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
 
@@ -868,7 +990,16 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
             event->Platform.ESPSystemEvent.Id == IP_EVENT_STA_GOT_IP)
         {
-            start_webserver();
+            if (server == NULL)
+            {
+                server = start_webserver();
+            }
+        }
+        else if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
+                 event->Platform.ESPSystemEvent.Id == IP_EVENT_GOT_IP6)
+        {
+            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
+                                                          { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
         }
         break;
     default:

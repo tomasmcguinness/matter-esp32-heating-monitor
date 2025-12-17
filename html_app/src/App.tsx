@@ -5,9 +5,26 @@ import Devices from './Devices.tsx'
 import AddDevice from './AddDevice.tsx'
 import Device from './Device.tsx'
 import Radiators from './Radiators.tsx'
+import Radiator from './Radiator.tsx'
 import AddRadiator from './AddRadiator.tsx'
+import useWebSocket from 'react-use-websocket';
 
 function App() {
+
+  const socketUrl = 'ws://192.168.1.104/ws';
+
+  const {
+    //sendMessage,
+    //sendJsonMessage,
+    //lastMessage,
+    //lastJsonMessage,
+    //readyState,
+    //getWebSocket,
+  } = useWebSocket(socketUrl, {
+    onOpen: () => console.log('opened'),
+    shouldReconnect: (_) => true,
+    share: true
+  });
 
   return (
     <>
@@ -22,7 +39,7 @@ function App() {
               <li className="nav-item">
                 <NavLink className="nav-link" to="/">Home</NavLink>
               </li>
-                <li className="nav-item">
+              <li className="nav-item">
                 <NavLink className="nav-link" to="/radiators">Radiators</NavLink>
               </li>
               <li className="nav-item">
@@ -37,6 +54,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/radiators" element={<Radiators />} />
           <Route path="/radiators/add" element={<AddRadiator />} />
+          <Route path="/radiators/:radiatorId" element={<Radiator />} />
           <Route path="/devices" element={<Devices />} />
           <Route path="/devices/add" element={<AddDevice />} />
           <Route path="/devices/:nodeId" element={<Device />} />

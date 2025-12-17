@@ -58,8 +58,8 @@ radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *na
 
     new_radiator->radiator_id = new_radiator_id;
     new_radiator->name_len = name_len;
-    new_radiator->name = name;
-    new_radiator->type = type;
+    //new_radiator->name = name;
+    //new_radiator->type = type;
     new_radiator->outputAtDelta50 = outputAtDelta50;
     new_radiator->flow_temp_nodeId = flowNodeId;
     new_radiator->flow_temp_endpointId = flowEndpointId;
@@ -183,6 +183,61 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
     return ESP_OK;
 }
 
+esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id)
+{
+    if (!controller)
+    {
+        ESP_LOGE(TAG, "Invalid controller pointer");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    radiator_t *current = controller->radiator_list;
+    radiator_t *prev = NULL;
+    bool found = false;
+
+    while (current)
+    {
+        if (current->radiator_id == radiator_id)
+        {
+            found = true;
+            break;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    if (!found)
+    {
+        ESP_LOGE(TAG, "Radiator 0x%016llX not found", radiator_id);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (prev)
+    {
+        prev->next = current->next;
+    }
+    else
+    {
+        controller->radiator_list = current->next;
+    }
+
+    ESP_LOGI(TAG, "Removing radiator 0x%016llX", radiator_id);
+
+    free(current);
+    controller->radiator_count--;
+
+    esp_err_t save_err = save_radiators_to_nvs(controller);
+
+    if (save_err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save radiators after removal: 0x%x", save_err);
+        return save_err;
+    }
+
+    ESP_LOGI(TAG, "Radiator 0x%016llX successfully removed", radiator_id);
+    return ESP_OK;
+}
+
 esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 {
     if (!manager)
@@ -206,6 +261,10 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         //required_size += sizeof(uint8_t); // name length
         required_size += sizeof(uint8_t); // type
         required_size += sizeof(uint16_t); // output
+        required_size += sizeof(uint64_t); // flow node
+        required_size += sizeof(uint16_t); // flow endpoint
+        required_size += sizeof(uint64_t); // return node
+        required_size += sizeof(uint16_t); // return endpoint
 
         current = current->next;
     }
@@ -233,6 +292,9 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         *((uint8_t *)ptr) = current->type;
         ptr += sizeof(uint8_t);
 
+        *((uint16_t *)ptr) = current->outputAtDelta50;
+        ptr += sizeof(uint16_t);
+
         *((uint64_t *)ptr) = current->flow_temp_nodeId;
         ptr += sizeof(uint64_t);
 
@@ -243,9 +305,6 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         ptr += sizeof(uint64_t);
 
         *((uint16_t *)ptr) = current->return_temp_endpointId;
-        ptr += sizeof(uint16_t);
-
-        *((uint16_t *)ptr) = current->outputAtDelta50;
         ptr += sizeof(uint16_t);
 
         current = current->next;
