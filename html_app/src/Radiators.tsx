@@ -57,7 +57,19 @@ function Radiators() {
   }, []);
 
   let radiators = radiatorList.map((n: any) => {
-    return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}><td>{n.radiatorId}</td><td>{n.name}</td><td>{n.type}</td><td>{n.output}</td><td>{n.flowTemp}</td><td>{n.returnTemp}</td></tr>);
+    let flowTemp: string = "-";
+
+    if(n.flowTemp) {
+      flowTemp = (n.flowTemp/100).toFixed(1) + "°C";
+    }
+
+    let returnTemp: string = "-";
+
+    if(n.returnTemp) {
+      returnTemp = (n.returnTemp/100).toFixed(1) + "°C";
+    }
+
+    return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}><td>{n.radiatorId}</td><td>{n.name}</td><td>{n.type}</td><td>{n.output}</td><td>{flowTemp}</td><td>{returnTemp}</td></tr>);
   });
 
   return (
