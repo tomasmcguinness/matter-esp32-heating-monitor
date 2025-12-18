@@ -15,7 +15,6 @@
 #include <esp_check.h>
 #include <esp_log.h>
 #include <esp_matter_controller_client.h>
-// #include <esp_matter_controller_pairing_command.h>
 #include <optional>
 
 #include <app-common/zap-generated/cluster-enums.h>

@@ -54,3 +54,4 @@ When it's done, the device will appear under the Device tab.
 # Thanks
 
 I want to thank the author of the ESP_MATTER_CONTROLLER project as it gave me a lot of guidance, pointers and clues! https://github.com/Live-Control-Project/ESP_MATTER_CONTROLLER
+https://github.com/sidoh/path_variable_handlers

@@ -38,8 +38,12 @@
 #include "managers/node_manager.h"
 #include "managers/radiator_manager.h"
 #include "commands/pairing_command.h"
+#include "commands/identify_command.h"
 
 #include <setup_payload/ManualSetupPayloadParser.h>
+
+#include "utilities/TokenIterator.h"
+#include "utilities/UrlTokenBindings.h"
 
 static const char *TAG = "app_main";
 
@@ -634,6 +638,47 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t node_put_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "URL: %s", req->uri);
+
+    char templatePath[] = "/api/nodes/:nodeId/:action";
+    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
+    UrlTokenBindings bindings(templateItr, req->uri);
+
+    uint64_t node_id = 0;
+
+    if (bindings.hasBinding("nodeId"))
+    {
+        node_id = strtoull(bindings.get("nodeId"), NULL, 10);
+    }
+
+    if (bindings.hasBinding("action"))
+    {
+        ESP_LOGI(TAG, "Action: %s", bindings.get("action"));
+    }
+
+    ESP_LOGI(TAG, "PUT node %llu", node_id);
+
+    lock::chip_stack_lock(portMAX_DELAY);
+    esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
+    lock::chip_stack_unlock();
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Identification failed");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Failed", HTTPD_RESP_USE_STRLEN);
+    }
+    else
+    {
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t radiators_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Adding a radiator");
@@ -741,6 +786,7 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
+    httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
 
     return ESP_OK;
 }
@@ -913,6 +959,12 @@ static httpd_handle_t start_webserver(void)
         .handler = node_delete_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t nodes_put_uri = {
+        .uri = "/api/nodes/*",
+        .method = HTTP_PUT,
+        .handler = node_put_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t radiators_post_uri = {
         .uri = "/api/radiators",
         .method = HTTP_POST,
@@ -957,6 +1009,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &nodes_post_uri);
         httpd_register_uri_handler(server, &nodes_get_uri);
         httpd_register_uri_handler(server, &nodes_delete_uri);
+        httpd_register_uri_handler(server, &nodes_put_uri);
         httpd_register_uri_handler(server, &radiators_post_uri);
         httpd_register_uri_handler(server, &radiators_get_uri);
         httpd_register_uri_handler(server, &radiators_delete_uri);
