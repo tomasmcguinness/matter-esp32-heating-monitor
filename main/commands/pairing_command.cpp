@@ -178,7 +178,6 @@ namespace heating_monitor
             return ESP_OK;
         }
 
-#if CONFIG_ENABLE_ESP32_BLE_CONTROLLER
         esp_err_t pairing_command::pairing_ble_wifi(NodeId node_id, uint32_t pincode, uint16_t disc, const char *ssid,
                                                     const char *pwd)
         {
@@ -223,7 +222,6 @@ namespace heating_monitor
             controller_instance.get_commissioner()->PairDevice(node_id, params, commissioning_params);
             return ESP_OK;
         }
-#endif
 
         esp_err_t pairing_command::pairing_code(NodeId nodeId, const char *payload)
         {
@@ -260,6 +258,9 @@ namespace heating_monitor
             auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
             ESP_RETURN_ON_FALSE(controller_instance.get_commissioner()->GetPairingDelegate() == nullptr, ESP_ERR_INVALID_STATE,
                                 TAG, "There is already a pairing process");
+
+            // Set a custom Device Attestation Delegate to skip DAC verification
+            commissioning_params.SetDeviceAttestationDelegate(&pairing_command::get_instance());
             NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
             if (pairing_command::get_instance().m_icd_registration)
             {

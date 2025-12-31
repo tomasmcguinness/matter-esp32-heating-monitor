@@ -12,6 +12,7 @@
 #include "nvs.h"
 
 #include <esp_matter.h>
+#include <esp_matter_core.h>
 #include <esp_matter_console.h>
 #include <esp_matter_controller_client.h>
 #include <esp_matter_controller_console.h>
@@ -37,6 +38,7 @@
 #include "app_main.h"
 #include "managers/node_manager.h"
 #include "managers/radiator_manager.h"
+#include "managers/room_manager.h"
 #include "commands/pairing_command.h"
 #include "commands/identify_command.h"
 
@@ -61,6 +63,7 @@ using namespace chip::app::Clusters;
 
 node_manager_t g_node_manager = {0};
 radiator_manager_t g_radiator_manager = {0};
+room_manager_t g_room_manager = {0};
 
 static httpd_handle_t server;
 static int ws_socket;
@@ -182,7 +185,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
                 if (data->Get(device_type_id) == CHIP_NO_ERROR)
                 {
-                    ESP_LOGI(TAG, "[%d] DeviceTypeID: %u", idx, device_type_id);
+                    ESP_LOGI(TAG, "[%d] DeviceTypeID: %lu", idx, device_type_id);
 
                     add_device_type(node, path.mEndpointId, device_type_id);
 
@@ -483,6 +486,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
+    const cJSON *inUseJSON = cJSON_GetObjectItemCaseSensitive(root, "inUse");
     const cJSON *setupCodeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
 
     ESP_LOGI(TAG, "Setup Code: %s", setupCodeJSON->valuestring);
@@ -495,9 +499,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     uint64_t node_id = g_node_manager.node_count + 1;
 
     uint32_t pincode = payload.setUpPINCode;
-    uint16_t disc = 3840;
-
-    // uint16_t disc = payload.discriminator.GetShortValue();
+    uint16_t disc = payload.discriminator.GetShortValue();
 
     ESP_LOGI(TAG, "pincode: %lu", pincode);
     ESP_LOGI(TAG, "disc: %u", disc);
@@ -506,6 +508,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
 
     // TODO Get this from configuration.
+    // Assumes thread!
     char *dataset = "0e080000000000000000000300001935060004001fffc002089f651677026f48070708fd9f6516770200000510d3ad39f0967b08debd26d32640a5dc8f03084d79486f6d6534300102ebf8041057aee90914b5d1097de9bb0818dc94690c0402a0f7f8";
 
     if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
@@ -520,12 +523,21 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
-    lock::chip_stack_lock(portMAX_DELAY);
-    // heating_monitor::controller::pairing_code(node_id, setupCode);
-    heating_monitor::controller::pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
-    lock::chip_stack_unlock();
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    if (cJSON_IsTrue(inUseJSON))
+    {
+        ESP_LOGI(TAG, "Using OnNetwork discovery");
+        heating_monitor::controller::pairing_code_thread(node_id, setupCode, dataset_tlvs_buf, dataset_tlvs_len);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Using BLE discovery");
+        heating_monitor::controller::pairing_ble_thread(node_id, pincode, disc, dataset_tlvs_buf, dataset_tlvs_len);
+    }
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     // This process is asynchronous, so we return 202 Accepted
+    //
     httpd_resp_set_status(req, "202 Accepted");
     httpd_resp_send(req, "Commissioning Started", 21);
 
@@ -618,9 +630,9 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
 
     esp_matter::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
-    lock::chip_stack_lock(portMAX_DELAY);
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
     esp_err_t err = esp_matter::controller::unpair_device(node_id);
-    lock::chip_stack_unlock();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     if (err != ESP_OK)
     {
@@ -660,9 +672,9 @@ static esp_err_t node_put_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "PUT node %llu", node_id);
 
-    lock::chip_stack_lock(portMAX_DELAY);
+    // lock::chip_stack_lock(portMAX_DELAY);
     esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
-    lock::chip_stack_unlock();
+    // lock::chip_stack_unlock();
 
     if (err != ESP_OK)
     {
@@ -791,9 +803,101 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t rooms_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Adding a room...");
+
+    char content[150];
+    size_t recv_size = std::min(req->content_len, sizeof(content));
+
+    esp_err_t err = httpd_req_recv(req, content, recv_size);
+
+    cJSON *root = cJSON_Parse(content);
+
+    if (root == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
+
+    add_room(&g_room_manager, nameJSON->valuestring);
+
+    save_rooms_to_nvs(&g_room_manager);
+
+    httpd_resp_set_status(req, "200 Ok");
+    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+
+    return ESP_OK;
+}
+
+static esp_err_t rooms_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting all rooms ...");
+
+    ESP_LOGI(TAG, "There are %u rooms(s)", g_room_manager.room_count);
+
+    cJSON *root = cJSON_CreateArray();
+
+    room_t *room = g_room_manager.room_list;
+
+    while (room)
+    {
+        cJSON *jNode = cJSON_CreateObject();
+
+        cJSON_AddNumberToObject(jNode, "roomId", room->room_id);
+        cJSON_AddStringToObject(jNode, "name", room->name);
+
+        cJSON_AddItemToArray(root, jNode);
+
+        room = room->next;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t rooms_delete_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Deleting room...");
+
+    size_t size = strlen(req->uri);
+
+    char *pch = strrchr(req->uri, '/');
+    int index_of_last_slash = pch - req->uri + 1;
+
+    int length_of_id = size - index_of_last_slash;
+
+    char node_id_str[length_of_id + 1];
+
+    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_id);
+    node_id_str[length_of_id] = '\0';
+
+    uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
+
+    remove_room(&g_room_manager, room_id);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+
+    return ESP_OK;
+}
+
 static esp_err_t reset_post_handler(httpd_req_t *req)
 {
     radiator_manager_reset_and_reload(&g_radiator_manager);
+    room_manager_reset_and_reload(&g_room_manager);
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
@@ -934,7 +1038,7 @@ static httpd_handle_t start_webserver(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
-    config.max_uri_handlers = 11;
+    config.max_uri_handlers = 15;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
@@ -983,6 +1087,24 @@ static httpd_handle_t start_webserver(void)
         .handler = radiators_delete_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t rooms_post_uri = {
+        .uri = "/api/rooms",
+        .method = HTTP_POST,
+        .handler = rooms_post_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t rooms_get_uri = {
+        .uri = "/api/rooms",
+        .method = HTTP_GET,
+        .handler = rooms_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t rooms_delete_uri = {
+        .uri = "/api/rooms/*",
+        .method = HTTP_DELETE,
+        .handler = rooms_delete_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t reset_post_uri = {
         .uri = "/api/reset",
         .method = HTTP_POST,
@@ -1013,6 +1135,9 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &radiators_post_uri);
         httpd_register_uri_handler(server, &radiators_get_uri);
         httpd_register_uri_handler(server, &radiators_delete_uri);
+        httpd_register_uri_handler(server, &rooms_post_uri);
+        httpd_register_uri_handler(server, &rooms_get_uri);
+        httpd_register_uri_handler(server, &rooms_delete_uri);
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
 
@@ -1074,6 +1199,7 @@ extern "C" void app_main()
 
     node_manager_init(&g_node_manager);
     radiator_manager_init(&g_radiator_manager);
+    room_manager_init(&g_room_manager);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
@@ -1088,10 +1214,10 @@ extern "C" void app_main()
 
     ESP_LOGI(TAG, "Setup controller client and commissioner...");
 
-    esp_matter::lock::chip_stack_lock(portMAX_DELAY);
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
     esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
     esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
-    esp_matter::lock::chip_stack_unlock();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     ESP_LOGI(TAG, "Getting fabric table...");
 

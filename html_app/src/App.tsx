@@ -1,12 +1,19 @@
 import { NavLink, Routes, Route } from "react-router";
 import './App.css'
 import Home from './Home.tsx'
+
+import Device from './Device.tsx'
 import Devices from './Devices.tsx'
 import AddDevice from './AddDevice.tsx'
-import Device from './Device.tsx'
-import Radiators from './Radiators.tsx'
+
 import Radiator from './Radiator.tsx'
+import Radiators from './Radiators.tsx'
 import AddRadiator from './AddRadiator.tsx'
+
+import Room from './Room.tsx'
+import Rooms from './Rooms.tsx'
+import AddRoom from './AddRoom.tsx'
+
 import useWebSocket from 'react-use-websocket';
 
 function App() {
@@ -40,6 +47,9 @@ function App() {
                 <NavLink className="nav-link" to="/">Home</NavLink>
               </li>
               <li className="nav-item">
+                <NavLink className="nav-link" to="/rooms">Rooms</NavLink>
+              </li>
+              <li className="nav-item">
                 <NavLink className="nav-link" to="/radiators">Radiators</NavLink>
               </li>
               <li className="nav-item">
@@ -52,9 +62,15 @@ function App() {
       <div className="container">
         <Routes>
           <Route path="/" element={<Home />} />
+
+          <Route path="/rooms" element={<Rooms />} />
+          <Route path="/rooms/add" element={<AddRoom />} />
+          <Route path="/rooms/:roomId" element={<Room />} />
+          
           <Route path="/radiators" element={<Radiators />} />
           <Route path="/radiators/add" element={<AddRadiator />} />
           <Route path="/radiators/:radiatorId" element={<Radiator />} />
+          
           <Route path="/devices" element={<Devices />} />
           <Route path="/devices/add" element={<AddDevice />} />
           <Route path="/devices/:nodeId" element={<Device />} />

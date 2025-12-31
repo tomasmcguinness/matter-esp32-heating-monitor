@@ -438,7 +438,7 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
 
     while (current)
     {
-        required_size += sizeof(uint64_t);
+        required_size += sizeof(uint64_t); // node_id
 
         // Make space for the endpoints
         required_size += sizeof(uint16_t); // endpoints_count

@@ -58,8 +58,8 @@ radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *na
 
     new_radiator->radiator_id = new_radiator_id;
     new_radiator->name_len = name_len;
-    //new_radiator->name = name;
-    //new_radiator->type = type;
+    new_radiator->name = name;
+    new_radiator->type = type;
     new_radiator->outputAtDelta50 = outputAtDelta50;
     new_radiator->flow_temp_nodeId = flowNodeId;
     new_radiator->flow_temp_endpointId = flowEndpointId;
@@ -89,7 +89,7 @@ void radiator_manager_free(radiator_manager_t *manager)
 
     manager->radiator_list = NULL;
     manager->radiator_count = 0;
-}   
+}
 
 esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
 {
@@ -147,11 +147,14 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
         radiator->radiator_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
-        // radiator->name_len = *((uint8_t *)ptr);
-        // ptr += sizeof(uint8_t);
+        radiator->name_len = *((uint8_t *)ptr);
+        ptr += sizeof(uint8_t);
 
-        //radiator->name = ptr;
-        //ptr += name_length;
+        radiator->name = (char *)calloc(1, radiator->name_len + 1);
+
+        memcpy(radiator->name, ptr, radiator->name_len);
+        radiator->name[radiator->name_len] = 0x00;
+        ptr += radiator->name_len;
 
         radiator->type = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -257,14 +260,15 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
     while (current)
     {
-        required_size += sizeof(uint8_t); // radiator_id
-        //required_size += sizeof(uint8_t); // name length
-        required_size += sizeof(uint8_t); // type
-        required_size += sizeof(uint16_t); // output
-        required_size += sizeof(uint64_t); // flow node
-        required_size += sizeof(uint16_t); // flow endpoint
-        required_size += sizeof(uint64_t); // return node
-        required_size += sizeof(uint16_t); // return endpoint
+        required_size += sizeof(uint8_t);       // radiator_id
+        required_size += sizeof(uint8_t);       // name length
+        required_size += strlen(current->name); // name
+        required_size += sizeof(uint8_t);       // type
+        required_size += sizeof(uint16_t);      // output
+        required_size += sizeof(uint64_t);      // flow node
+        required_size += sizeof(uint16_t);      // flow endpoint
+        required_size += sizeof(uint64_t);      // return node
+        required_size += sizeof(uint16_t);      // return endpoint
 
         current = current->next;
     }
@@ -286,8 +290,11 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         *((uint8_t *)ptr) = current->radiator_id;
         ptr += sizeof(uint8_t);
 
-        // *((uint8_t *)ptr) = current->name_len;
-        // ptr += sizeof(uint8_t);
+        *((uint8_t *)ptr) = current->name_len;
+        ptr += sizeof(uint8_t);
+
+        memcpy(ptr, current->name, strlen(current->name));
+        ptr += strlen(current->name);
 
         *((uint8_t *)ptr) = current->type;
         ptr += sizeof(uint8_t);
@@ -323,17 +330,20 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
     return err;
 }
 
-esp_err_t radiator_manager_reset_and_reload(radiator_manager_t *manager) {
-
+esp_err_t radiator_manager_reset_and_reload(radiator_manager_t *manager)
+{
     nvs_handle_t nvs_handle;
-    esp_err_t err;
 
-    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-    nvs_erase_all(nvs_handle);
-    nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
 
-    load_radiators_from_nvs(manager);
+    if (err == ESP_OK)
+    {
+        nvs_erase_all(nvs_handle);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
 
-    return ESP_OK;
+        load_radiators_from_nvs(manager);
+    }
+
+    return err;
 }
