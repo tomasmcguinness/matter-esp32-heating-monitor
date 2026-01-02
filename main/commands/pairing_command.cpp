@@ -241,9 +241,8 @@ namespace heating_monitor
                     .SetICDMonitoredSubject(commissioner_node_id)
                     .SetICDSymmetricKey(pairing_command::get_instance().m_icd_symmetric_key);
             }
+            
             controller_instance.get_commissioner()->RegisterPairingDelegate(&pairing_command::get_instance());
-            controller_instance.get_commissioner()->PairDevice(nodeId, payload, commissioning_params,
-                                                               DiscoveryType::kAll);
             controller_instance.get_commissioner()->PairDevice(nodeId, payload, commissioning_params,
                                                                DiscoveryType::kDiscoveryNetworkOnly);
             return ESP_OK;

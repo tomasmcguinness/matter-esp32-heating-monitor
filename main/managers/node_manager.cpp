@@ -81,7 +81,9 @@ void subscribe_all_temperature_measurements(node_manager_t *controller)
                 {
                     SubscriptionKey key{node->node_id, ep->endpoint_id};
                     if (subscribed.find(key) != subscribed.end())
+                    {
                         continue;
+                    }
 
                     subscribed.insert(key);
 
@@ -89,7 +91,7 @@ void subscribe_all_temperature_measurements(node_manager_t *controller)
 
                     uint16_t min_interval = 0;
                     uint16_t max_interval = 15;
-                  
+
                     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(
                         node->node_id,
                         ep->endpoint_id,
@@ -253,6 +255,11 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
     memset(new_node, 0, sizeof(matter_node_t));
 
     new_node->node_id = node_id;
+    new_node->vendor_name = NULL;
+    new_node->product_name = NULL;
+    new_node->node_label = NULL;
+    new_node->location = NULL;
+
     new_node->next = controller->node_list;
 
     controller->node_list = new_node;
@@ -380,6 +387,45 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
 
         ESP_LOGI(TAG, "Loaded node 0x%016llX from NVS", node->node_id);
 
+        // Vendor
+        node->vendor_name_length = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
+        node->vendor_name = (char *)calloc(1, node->vendor_name_length + 1);
+
+        memcpy(node->vendor_name, ptr, node->vendor_name_length);
+        node->vendor_name[node->vendor_name_length] = 0x00;
+        ptr += node->vendor_name_length;
+
+        // Product
+        node->product_name_length = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
+        node->product_name = (char *)calloc(1, node->product_name_length + 1);
+
+        memcpy(node->product_name, ptr, node->product_name_length);
+        node->product_name[node->product_name_length] = 0x00;
+        ptr += node->product_name_length;
+
+        // Node Label
+        node->node_label_length = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
+        node->node_label = (char *)calloc(1, node->node_label_length + 1);
+
+        memcpy(node->node_label, ptr, node->node_label_length);
+        node->node_label[node->node_label_length] = 0x00;
+        ptr += node->node_label_length;
+
+        // Location
+        node->location_length = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
+        node->location = (char *)calloc(1, node->location_length + 1);
+        memcpy(node->location, ptr, node->location_length);
+        node->location[node->location_length] = 0x00;
+        ptr += node->location_length;
+
         // endpoints
         node->endpoints_count = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
@@ -440,6 +486,16 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
     {
         required_size += sizeof(uint64_t); // node_id
 
+        // Save basic information.
+        required_size += sizeof(uint16_t);
+        required_size += strlen(current->vendor_name);
+        required_size += sizeof(uint16_t);
+        required_size += strlen(current->product_name);
+        required_size += sizeof(uint16_t);
+        required_size += strlen(current->node_label);
+        required_size += sizeof(uint16_t);
+        required_size += strlen(current->location);
+
         // Make space for the endpoints
         required_size += sizeof(uint16_t); // endpoints_count
 
@@ -473,6 +529,66 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
     {
         *((uint64_t *)ptr) = current->node_id;
         ptr += sizeof(uint64_t);
+
+        // Vendor
+        if (current->vendor_name)
+        {
+            *((uint16_t *)ptr) = strlen(current->vendor_name);
+            ptr += sizeof(uint16_t);
+
+            memcpy(ptr, current->vendor_name, strlen(current->vendor_name));
+            ptr += strlen(current->vendor_name);
+        }
+        else
+        {
+            *((uint16_t *)ptr) = 0;
+            ptr += sizeof(uint16_t);
+        }
+
+        // Product
+        if (current->product_name)
+        {
+            *((uint16_t *)ptr) = strlen(current->product_name);
+            ptr += sizeof(uint16_t);
+
+            memcpy(ptr, current->product_name, strlen(current->product_name));
+            ptr += strlen(current->product_name);
+        }
+        else
+        {
+            *((uint16_t *)ptr) = 0;
+            ptr += sizeof(uint16_t);
+        }
+
+        // Node Label
+        if (current->node_label)
+        {
+            *((uint16_t *)ptr) = strlen(current->node_label);
+            ptr += sizeof(uint16_t);
+
+            memcpy(ptr, current->node_label, strlen(current->node_label));
+            ptr += strlen(current->node_label);
+        }
+        else
+        {
+            *((uint16_t *)ptr) = 0;
+            ptr += sizeof(uint16_t);
+        }
+
+        // Location
+        if (current->location)
+        {
+            *((uint16_t *)ptr) = strlen(current->location);
+            ptr += sizeof(uint16_t);
+
+            memcpy(ptr, current->location, strlen(current->location));
+            ptr += strlen(current->location);
+        }
+        else
+        {
+            *((uint16_t *)ptr) = 0;
+            ptr += sizeof(uint16_t);
+        }
 
         // Save endpoints
         *((uint16_t *)ptr) = current->endpoints_count;

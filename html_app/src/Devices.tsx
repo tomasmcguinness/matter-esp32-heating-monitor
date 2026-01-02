@@ -36,7 +36,7 @@ function Devices() {
         case 17:
           name = "Power Source";
           break;
-          case 15:
+        case 15:
           name = "Generic Switch";
           break;
         case 769:
@@ -62,7 +62,15 @@ function Devices() {
       return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
     });
 
-    return (<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}><td>{n.nodeId.toString(16)}</td><td>{n.endpointCount}</td><td>{deviceTypes}</td></tr>);
+    return (<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
+      <td>{n.nodeId.toString(16)}</td>
+      <td>{n.vendorName}</td>
+      <td>{n.productName}</td>
+      <td>{n.nodeLabel}</td>
+      <td>{n.location}</td>
+      <td>{n.endpointCount}</td>
+      <td>{deviceTypes}</td>
+    </tr>);
   });
 
   return (
@@ -73,6 +81,10 @@ function Devices() {
         <thead>
           <tr>
             <th>Node ID</th>
+            <th>Vendor</th>
+            <th>Product</th>
+            <th>Label</th>
+            <th>Location</th>
             <th>#Endpoint</th>
             <th>Device Types</th>
           </tr>

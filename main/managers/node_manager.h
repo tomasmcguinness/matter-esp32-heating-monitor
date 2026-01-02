@@ -12,6 +12,14 @@ typedef struct matter_endpoint
 typedef struct matter_node
 {
     uint64_t node_id;
+    uint16_t vendor_name_length;
+    char *vendor_name;
+    uint16_t product_name_length;
+    char *product_name;
+    uint16_t node_label_length;
+    char *node_label;
+    uint16_t location_length;
+    char *location;
     endpoint_entry_t *endpoints;
     uint16_t endpoints_count;
 

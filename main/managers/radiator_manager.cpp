@@ -43,7 +43,7 @@ void radiator_manager_init(radiator_manager_t *manager)
     }
 }
 
-radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *name, uint8_t type, uint16_t outputAtDelta50, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
+radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, uint16_t outputAtDelta50, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     uint8_t new_radiator_id = manager->radiator_count + 1;
 
@@ -57,7 +57,6 @@ radiator_t *add_radiator(radiator_manager_t *manager, uint8_t name_len, char *na
     memset(new_radiator, 0, sizeof(radiator_t));
 
     new_radiator->radiator_id = new_radiator_id;
-    new_radiator->name_len = name_len;
     new_radiator->name = name;
     new_radiator->type = type;
     new_radiator->outputAtDelta50 = outputAtDelta50;
@@ -150,11 +149,15 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
         radiator->name_len = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
+        ESP_LOGI(TAG, "Radiator name length is %u", radiator->name_len);
+
         radiator->name = (char *)calloc(1, radiator->name_len + 1);
 
         memcpy(radiator->name, ptr, radiator->name_len);
         radiator->name[radiator->name_len] = 0x00;
         ptr += radiator->name_len;
+
+        ESP_LOGI(TAG, "Radiator name is %s", radiator->name);
 
         radiator->type = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -290,7 +293,7 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         *((uint8_t *)ptr) = current->radiator_id;
         ptr += sizeof(uint8_t);
 
-        *((uint8_t *)ptr) = current->name_len;
+        *((uint8_t *)ptr) = strlen(current->name);
         ptr += sizeof(uint8_t);
 
         memcpy(ptr, current->name, strlen(current->name));

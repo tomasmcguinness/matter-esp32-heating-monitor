@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router";
+import { NavLink, useNavigate } from "react-router";
 
 function AddRadiator() {
 
+  let navigate = useNavigate();
+  
   const [name, setName] = useState<string | undefined>(undefined);
   const [type, setType] = useState(10);
   const [output, setOutput] = useState<number | undefined>(undefined);
@@ -36,12 +38,18 @@ function AddRadiator() {
 
     var json = JSON.stringify(object);
 
-    fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json });
+    fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json }).then(r => {
+      if (r.ok) {
+        navigate("/radiators");
+      } else {
+        alert("Failed to add radiator");
+      }
+    });
   }
 
   let sensorOptions = sensors.map((s: any) => {
     var key = `${s.nodeId}|${s.endpointId}`;
-    return <option key={key} value={key}>Node 0x{s.nodeId} - 0x{s.endpointId}</option>;
+    return <option key={key} value={key}>{s.vendorName}/{s.productName} (0x{s.nodeId} - 0x{s.endpointId})</option>;
   })
 
   return (

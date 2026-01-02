@@ -43,7 +43,7 @@ void room_manager_init(room_manager_t *manager)
     }
 }
 
-room_t *add_room(room_manager_t *manager, char *name)
+room_t *add_room(room_manager_t *manager, char *name, uint64_t room_temperature_nodeId, uint16_t room_temperature_endpointId)
 {
     uint8_t new_room_id = manager->room_count + 1;
 
@@ -57,6 +57,8 @@ room_t *add_room(room_manager_t *manager, char *name)
 
     new_room->room_id = new_room_id;
     new_room->name_len = strlen(name);
+    new_room->room_temperature_nodeId = room_temperature_nodeId;
+    new_room->room_temperature_endpointId = room_temperature_endpointId;
     new_room->name = name;
 
     new_room->next = manager->room_list;
@@ -139,6 +141,12 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
 
         room->room_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
+
+        room->room_temperature_nodeId = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+
+        room->room_temperature_endpointId = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
 
         room->name_len = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -236,6 +244,8 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
     while (current)
     {
         required_size += sizeof(uint8_t); // room_id
+        required_size += sizeof(uint64_t); // room_temperature_nodeId
+        required_size += sizeof(uint16_t); // room_temperature_endpointId
         required_size += sizeof(uint8_t); // name length
         required_size += strlen(current->name); // name
 
@@ -258,6 +268,12 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
     {
         *((uint8_t *)ptr) = current->room_id;
         ptr += sizeof(uint8_t);
+
+        *((uint64_t *)ptr) = current->room_temperature_nodeId;
+        ptr += sizeof(uint64_t);
+
+        *((uint16_t *)ptr) = current->room_temperature_endpointId;
+        ptr += sizeof(uint16_t);
 
         *((uint8_t *)ptr) = strlen(current->name);
         ptr += sizeof(uint8_t);

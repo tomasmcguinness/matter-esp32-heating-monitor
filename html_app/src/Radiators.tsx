@@ -8,7 +8,11 @@ function Radiators() {
 
   let [radiatorList, setRadiatorList] = useState<any>([]);
 
-  const socketUrl = 'ws://192.168.1.104/ws';
+  var url = new URL('/ws', window.location.href);
+
+  url.protocol = url.protocol.replace('http', 'ws');
+
+  const socketUrl = url.href;
 
   const {
     sendJsonMessage,
@@ -59,14 +63,14 @@ function Radiators() {
   let radiators = radiatorList.map((n: any) => {
     let flowTemp: string = "-";
 
-    if(n.flowTemp) {
-      flowTemp = (n.flowTemp/100).toFixed(1) + "°C";
+    if (n.flowTemp) {
+      flowTemp = (n.flowTemp / 100).toFixed(1) + "°C";
     }
 
     let returnTemp: string = "-";
 
-    if(n.returnTemp) {
-      returnTemp = (n.returnTemp/100).toFixed(1) + "°C";
+    if (n.returnTemp) {
+      returnTemp = (n.returnTemp / 100).toFixed(1) + "°C";
     }
 
     return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}><td>{n.radiatorId}</td><td>{n.name}</td><td>{n.type}</td><td>{n.output}</td><td>{flowTemp}</td><td>{returnTemp}</td></tr>);
@@ -76,7 +80,8 @@ function Radiators() {
     <>
       <h1>Radiators</h1>
       <hr />
-      <table className="table table-striped table-bordered">
+      {radiators.length === 0 && <div className="alert alert-info">There are no radiators. Add one!</div>}
+      {radiators.length > 0 && <table className="table table-striped table-bordered">
         <thead>
           <tr>
             <th style={{ width: 'auto' }}>ID</th>
@@ -91,6 +96,7 @@ function Radiators() {
           {radiators}
         </tbody>
       </table>
+      }
       <NavLink className="btn btn-primary" to="/radiators/add">Add Radiator</NavLink>
     </>
   )

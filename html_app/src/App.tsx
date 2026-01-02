@@ -14,24 +14,24 @@ import Room from './Room.tsx'
 import Rooms from './Rooms.tsx'
 import AddRoom from './AddRoom.tsx'
 
-import useWebSocket from 'react-use-websocket';
+//import useWebSocket from 'react-use-websocket';
 
 function App() {
 
-  const socketUrl = 'ws://192.168.1.104/ws';
+  // const socketUrl = 'ws://192.168.1.104/ws';
 
-  const {
-    //sendMessage,
-    //sendJsonMessage,
-    //lastMessage,
-    //lastJsonMessage,
-    //readyState,
-    //getWebSocket,
-  } = useWebSocket(socketUrl, {
-    onOpen: () => console.log('opened'),
-    shouldReconnect: (_) => true,
-    share: true
-  });
+  // const {
+  //   //sendMessage,
+  //   //sendJsonMessage,
+  //   //lastMessage,
+  //   //lastJsonMessage,
+  //   //readyState,
+  //   //getWebSocket,
+  // } = useWebSocket(socketUrl, {
+  //   onOpen: () => console.log('opened'),
+  //   shouldReconnect: (_) => true,
+  //   share: true
+  // });
 
   return (
     <>

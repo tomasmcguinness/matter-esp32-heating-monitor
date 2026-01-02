@@ -3,14 +3,14 @@ import { NavLink } from "react-router";
 
 function AddDevice() {
 
-  const [inUse, setInUse] = useState<boolean>(false);
+  const [inUse, setInUse] = useState<string | undefined>(undefined);
   const [setupCode, setSetupCode] = useState<string | undefined>(undefined);
 
   function handleSubmit(e: any) {
     e.preventDefault();
 
     var object: any = {
-      inUse,
+      inUse: Boolean(inUse),
       setupCode,
     };
 
@@ -26,7 +26,8 @@ function AddDevice() {
       <form method="post" onSubmit={handleSubmit}>
         <div className="mb-3">
           <label htmlFor="inUse" className="form-label">Device In Use? <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="inUse" className="form-control" id="inUse" required={true} value={inUse ? "true" : "false"} onChange={(e) => setInUse(Boolean(e.target.value))}>
+          <select name="inUse" className="form-control" id="inUse" required={true} value={inUse ? "true" : "false"} onChange={(e) => setInUse(e.target.value)}>
+            <option></option>
             <option value="false">No, it's new</option>
             <option value="true">Yes, it's in use</option>
           </select>

@@ -14,8 +14,13 @@ function AddRoom() {
   function handleSubmit(e: any) {
     e.preventDefault();
 
+    var temperatureSensorNodeId = parseInt(temperatureSensor!.split('|')[0]);
+    var temperatureSensorEndpointId = parseInt(temperatureSensor!.split('|')[1]);
+
     var object: any = {
       name,
+      temperatureSensorNodeId,
+      temperatureSensorEndpointId
     };
 
     var json = JSON.stringify(object);
@@ -25,7 +30,7 @@ function AddRoom() {
 
   let sensorOptions = sensors.map((s: any) => {
     var key = `${s.nodeId}|${s.endpointId}`;
-    return <option key={key} value={key}>Node 0x{s.nodeId} - 0x{s.endpointId}</option>;
+    return <option key={key} value={key}>{s.vendorName}/{s.productName} (0x{s.nodeId} - 0x{s.endpointId})</option>;
   })
 
   return (
