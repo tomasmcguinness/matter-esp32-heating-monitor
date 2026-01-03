@@ -15,6 +15,8 @@ typedef struct radiator
     uint64_t return_temp_nodeId;
     uint16_t return_temp_endpointId;
 
+    uint8_t room_id;
+
     // Transient data
     uint16_t flow_temperature;
     uint16_t return_temperature;
@@ -33,7 +35,7 @@ typedef struct
 
 void radiator_manager_init(radiator_manager_t *manager);
 
-esp_err_t load_radiators_from_nvs(radiator_manager_t *manager);
+radiator_t *find_radiator(radiator_manager_t *manager, uint8_t radiator_id);
 
 radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, uint16_t output, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId);
 esp_err_t remove_radiator(radiator_manager_t *manager, uint8_t radiator_id);

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router";
+import { NavLink, useNavigate } from "react-router";
 
 function AddRoom() {
+
+  let navigate = useNavigate();
 
   const [name, setName] = useState<string | undefined>(undefined);
   const [temperatureSensor, setTemperatureSensor] = useState<string | undefined>(undefined);
@@ -25,7 +27,13 @@ function AddRoom() {
 
     var json = JSON.stringify(object);
 
-    fetch('/api/rooms', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json });
+    fetch('/api/rooms', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json }).then(r => {
+      if (r.ok) {
+        navigate('/rooms');
+      } else {
+        alert("Failed to add the room");
+      }
+    });
   }
 
   let sensorOptions = sensors.map((s: any) => {

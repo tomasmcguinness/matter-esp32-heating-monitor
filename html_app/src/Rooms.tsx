@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react"
+import { useContext, useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
-import useWebSocket from 'react-use-websocket';
 import Temperature from "./Temperature.tsx";
+import { WebSocketContext } from './WSContext.jsx';
 
 function Rooms() {
 
@@ -9,49 +9,35 @@ function Rooms() {
 
   let [roomList, setRoomList] = useState<any>([]);
 
-  var url = new URL('/ws', window.location.href);
-
-  url.protocol = url.protocol.replace('http', 'ws');
-
-  const socketUrl = url.href; 
-
-  const {
-    sendJsonMessage,
-    lastJsonMessage,
-  } = useWebSocket(socketUrl, {
-    onOpen: () => {
-      sendJsonMessage({ radiators: true });
-      console.log('opened');
-    },
-    shouldReconnect: (_) => true,
-    share: true
-  });
+  const { subscribe, unsubscribe } = useContext(WebSocketContext);
 
   useEffect(() => {
-    console.log("Web socket data has changed...." + lastJsonMessage);
 
-    if (!lastJsonMessage ||  (lastJsonMessage as any).type !== "room_temperature") {
-      return;
+    subscribe("radiator", (message: any) => {
+
+      setRoomList(roomList.map((a: any) => (a.roomId === message.roomId ? { ...a, temperature: message.temperature } : a)))
+
+    })
+
+    return () => {
+      unsubscribe("radiator")
     }
-
-    setRoomList(roomList.map((a:any) => (a.room_id ===  (lastJsonMessage as any).id ? {...a, temperature:  (lastJsonMessage as any).temperature} : a)))
-
-  }, [lastJsonMessage]);
+  }, [subscribe, unsubscribe])
 
   useEffect(() => {
     const fetchRooms = async () => {
-      setRoomList([{
-		"roomId":	1,
-		"name":	"Office",
-		"temperature":	2039
-	}]);
+      // setRoomList([{
+      //   "roomId": 1,
+      //   "name": "Office",
+      //   "temperature": 2039
+      // }]);
 
-      // var response = await fetch("http://192.168.1.118/api/rooms");
+      var response = await fetch("/api/rooms");
 
-      // if (response.ok) {
-      //   let data = await response.json();
-      //   setRoomList(data);
-      // }
+      if (response.ok) {
+        let data = await response.json();
+        setRoomList(data);
+      }
     };
 
     fetchRooms();
@@ -60,6 +46,10 @@ function Rooms() {
   let rooms = roomList.map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}><td>{n.roomId}</td><td>{n.name}</td><td><Temperature>{n.temperature}</Temperature></td></tr>);
   });
+
+  if(rooms.length == 0) {
+    return (<div className="alert alert-info">There are no rooms</div>)
+  }
 
   return (
     <>

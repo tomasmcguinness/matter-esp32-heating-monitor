@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react"
+import { useContext, useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
-import useWebSocket from 'react-use-websocket';
+import Temperature from "./Temperature.tsx";
+import { WebSocketContext } from './WSContext.jsx';
 
 function Radiators() {
 
@@ -8,44 +9,34 @@ function Radiators() {
 
   let [radiatorList, setRadiatorList] = useState<any>([]);
 
-  var url = new URL('/ws', window.location.href);
-
-  url.protocol = url.protocol.replace('http', 'ws');
-
-  const socketUrl = url.href;
-
-  const {
-    sendJsonMessage,
-    lastJsonMessage,
-  } = useWebSocket(socketUrl, {
-    onOpen: () => { sendJsonMessage({ radiators: true }); console.log('opened'); },
-    shouldReconnect: (_) => true,
-    share: true
-  });
+  const {subscribe, unsubscribe} = useContext(WebSocketContext);
 
   useEffect(() => {
-    console.log("Web socket data has changed...." + lastJsonMessage);
 
-    if (!lastJsonMessage) {
-      return;
-    }
+    subscribe("radiator", (message: any) => {
 
-    const updatedRadiatorList = [...radiatorList];
-    const radiator = updatedRadiatorList.find(a => a.radiatorId === (lastJsonMessage as any).radiatorId);
+      const updatedRadiatorList = [...radiatorList];
+      const radiator = updatedRadiatorList.find(a => a.radiatorId === message.radiatorId);
 
-    if (radiator) {
+      if (radiator) {
 
-      if (lastJsonMessage.hasOwnProperty("flowTemp")) {
-        radiator.flowTemp = (lastJsonMessage as any).flowTemp;
+        if (message.hasOwnProperty("flowTemp")) {
+          radiator.flowTemp = message.flowTemp;
+        } else {
+          radiator.returnTemp = message.returnTemp;
+        }
+
+        setRadiatorList(updatedRadiatorList);
       } else {
-        radiator.returnTemp = (lastJsonMessage as any).returnTemp;
+        console.log('Could not find a radiator with id ' + message.radiatorId);
       }
 
-      setRadiatorList(updatedRadiatorList);
-    } else {
-      console.log('Could not find a radiator with id ' + (lastJsonMessage as any).radiatorId);
+    })
+
+    return () => {
+      unsubscribe("radiator")
     }
-  }, [lastJsonMessage]);
+  }, [subscribe, unsubscribe])
 
   useEffect(() => {
     const fetchRadiators = async () => {
@@ -61,19 +52,14 @@ function Radiators() {
   }, []);
 
   let radiators = radiatorList.map((n: any) => {
-    let flowTemp: string = "-";
-
-    if (n.flowTemp) {
-      flowTemp = (n.flowTemp / 100).toFixed(1) + "°C";
-    }
-
-    let returnTemp: string = "-";
-
-    if (n.returnTemp) {
-      returnTemp = (n.returnTemp / 100).toFixed(1) + "°C";
-    }
-
-    return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}><td>{n.radiatorId}</td><td>{n.name}</td><td>{n.type}</td><td>{n.output}</td><td>{flowTemp}</td><td>{returnTemp}</td></tr>);
+    return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
+      <td>{n.radiatorId}</td>
+      <td>{n.name}</td>
+      <td>{n.type}</td>
+      <td>{n.output}</td>
+      <td><Temperature>{n.flowTemp}</Temperature></td>
+      <td><Temperature>{n.returnTemp}</Temperature></td>
+    </tr>);
   });
 
   return (
@@ -87,9 +73,10 @@ function Radiators() {
             <th style={{ width: 'auto' }}>ID</th>
             <th>Name</th>
             <th>Type</th>
-            <th>Output</th>
+            <th>@ΔT 50°C</th>
             <th>Flow</th>
             <th>Return</th>
+            <th>Current</th>
           </tr>
         </thead>
         <tbody>

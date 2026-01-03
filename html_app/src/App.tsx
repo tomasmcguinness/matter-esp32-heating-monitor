@@ -13,25 +13,11 @@ import AddRadiator from './AddRadiator.tsx'
 import Room from './Room.tsx'
 import Rooms from './Rooms.tsx'
 import AddRoom from './AddRoom.tsx'
+import EditRoom from "./EditRoom.tsx";
 
-//import useWebSocket from 'react-use-websocket';
+import { WebSocketProvider } from './WSContext.jsx'
 
 function App() {
-
-  // const socketUrl = 'ws://192.168.1.104/ws';
-
-  // const {
-  //   //sendMessage,
-  //   //sendJsonMessage,
-  //   //lastMessage,
-  //   //lastJsonMessage,
-  //   //readyState,
-  //   //getWebSocket,
-  // } = useWebSocket(socketUrl, {
-  //   onOpen: () => console.log('opened'),
-  //   shouldReconnect: (_) => true,
-  //   share: true
-  // });
 
   return (
     <>
@@ -59,23 +45,26 @@ function App() {
           </div>
         </div>
       </nav>
-      <div className="container">
-        <Routes>
-          <Route path="/" element={<Home />} />
+      <WebSocketProvider>
+        <div className="container">
+          <Routes>
+            <Route path="/" element={<Home />} />
 
-          <Route path="/rooms" element={<Rooms />} />
-          <Route path="/rooms/add" element={<AddRoom />} />
-          <Route path="/rooms/:roomId" element={<Room />} />
-          
-          <Route path="/radiators" element={<Radiators />} />
-          <Route path="/radiators/add" element={<AddRadiator />} />
-          <Route path="/radiators/:radiatorId" element={<Radiator />} />
-          
-          <Route path="/devices" element={<Devices />} />
-          <Route path="/devices/add" element={<AddDevice />} />
-          <Route path="/devices/:nodeId" element={<Device />} />
-        </Routes>
-      </div>
+            <Route path="/rooms" element={<Rooms />} />
+            <Route path="/rooms/add" element={<AddRoom />} />
+            <Route path="/rooms/:roomId" element={<Room />} />
+            <Route path="/rooms/:roomId/edit" element={<EditRoom />} />
+
+            <Route path="/radiators" element={<Radiators />} />
+            <Route path="/radiators/add" element={<AddRadiator />} />
+            <Route path="/radiators/:radiatorId" element={<Radiator />} />
+
+            <Route path="/devices" element={<Devices />} />
+            <Route path="/devices/add" element={<AddDevice />} />
+            <Route path="/devices/:nodeId" element={<Device />} />
+          </Routes>
+        </div>
+      </WebSocketProvider>
     </>
   )
 }

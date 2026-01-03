@@ -391,39 +391,35 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         node->vendor_name_length = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        node->vendor_name = (char *)calloc(1, node->vendor_name_length + 1);
+        node->vendor_name = (char *)calloc(node->vendor_name_length + 1, sizeof(char));
 
         memcpy(node->vendor_name, ptr, node->vendor_name_length);
-        node->vendor_name[node->vendor_name_length] = 0x00;
         ptr += node->vendor_name_length;
 
         // Product
         node->product_name_length = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        node->product_name = (char *)calloc(1, node->product_name_length + 1);
+        node->product_name = (char *)calloc(node->product_name_length + 1, sizeof(char));
 
         memcpy(node->product_name, ptr, node->product_name_length);
-        node->product_name[node->product_name_length] = 0x00;
         ptr += node->product_name_length;
 
         // Node Label
         node->node_label_length = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        node->node_label = (char *)calloc(1, node->node_label_length + 1);
+        node->node_label = (char *)calloc( node->node_label_length + 1, sizeof(char));
 
         memcpy(node->node_label, ptr, node->node_label_length);
-        node->node_label[node->node_label_length] = 0x00;
         ptr += node->node_label_length;
 
         // Location
         node->location_length = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        node->location = (char *)calloc(1, node->location_length + 1);
+        node->location = (char *)calloc(node->location_length + 1, sizeof(char));
         memcpy(node->location, ptr, node->location_length);
-        node->location[node->location_length] = 0x00;
         ptr += node->location_length;
 
         // endpoints

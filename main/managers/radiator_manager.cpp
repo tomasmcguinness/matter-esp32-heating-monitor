@@ -43,6 +43,23 @@ void radiator_manager_init(radiator_manager_t *manager)
     }
 }
 
+radiator_t *find_radiator(radiator_manager_t *manager, uint8_t radiator_id)
+{
+    radiator_t *current = manager->radiator_list;
+
+    while (current != NULL)
+    {
+        if (current->radiator_id == radiator_id)
+        {
+            return current;
+        }
+
+        current = current->next;
+    }
+
+    return NULL;
+}
+
 radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, uint16_t outputAtDelta50, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     uint8_t new_radiator_id = manager->radiator_count + 1;
@@ -151,10 +168,9 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
 
         ESP_LOGI(TAG, "Radiator name length is %u", radiator->name_len);
 
-        radiator->name = (char *)calloc(1, radiator->name_len + 1);
+        radiator->name = (char *)calloc(radiator->name_len + 1, sizeof(char));
 
         memcpy(radiator->name, ptr, radiator->name_len);
-        radiator->name[radiator->name_len] = 0x00;
         ptr += radiator->name_len;
 
         ESP_LOGI(TAG, "Radiator name is %s", radiator->name);

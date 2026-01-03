@@ -374,17 +374,19 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 ESP_LOGI(TAG, "Node is assigned to radiator %u", radiator->radiator_id);
 
                 cJSON *root = cJSON_CreateObject();
-                cJSON_AddStringToObject(root, "type", "radiator_temperature");
+                cJSON_AddStringToObject(root, "channel", "radiator");
                 cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
 
                 if (radiator->flow_temp_endpointId == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Flow Temperature value");
+                    radiator->flow_temperature = temperature;
                     cJSON_AddNumberToObject(root, "flowTemp", temperature);
                 }
                 else if (radiator->return_temp_endpointId == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Return Temperature value");
+                    radiator->return_temperature = temperature;
                     cJSON_AddNumberToObject(root, "returnTemp", temperature);
                 }
 
@@ -413,8 +415,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 room->room_temperature = temperature;
 
                 cJSON *root = cJSON_CreateObject();
-                cJSON_AddStringToObject(root, "type", "room_temperature");
-                cJSON_AddNumberToObject(root, "id", room->room_id);
+                cJSON_AddStringToObject(root, "channel", "room");
+                cJSON_AddNumberToObject(root, "roomId", room->room_id);
                 cJSON_AddNumberToObject(root, "temperature", temperature);
 
                 char *payload = cJSON_PrintUnformatted(root);
@@ -918,6 +920,9 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "type", radiator->type);
         cJSON_AddNumberToObject(jNode, "output", radiator->outputAtDelta50);
 
+        cJSON_AddNumberToObject(jNode, "flowTemp", radiator->flow_temperature);
+        cJSON_AddNumberToObject(jNode, "returnTemp", radiator->return_temperature);
+
         cJSON_AddItemToArray(root, jNode);
 
         radiator = radiator->next;
@@ -951,7 +956,7 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
 
     node_id_str[length_of_nodeId] = '\0';
 
-    ESP_LOGI(TAG, "Unpairing node  %s", node_id_str);
+    ESP_LOGI(TAG, "Deleting radiator %s", node_id_str);
 
     uint8_t node_id = (uint8_t)strtoul(node_id_str, NULL, 10);
 
@@ -991,6 +996,8 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 
     save_rooms_to_nvs(&g_room_manager);
 
+    // TODO Return the new room in JSON!
+    //
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
 
@@ -1027,6 +1034,141 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, json);
     free((void *)json);
     cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t room_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting room...");
+
+    size_t size = strlen(req->uri);
+
+    char *pch = strrchr(req->uri, '/');
+    int index_of_last_slash = pch - req->uri + 1;
+
+    int length_of_nodeId = size - index_of_last_slash;
+
+    char node_id_str[length_of_nodeId + 1];
+
+    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
+
+    node_id_str[length_of_nodeId] = '\0';
+
+    ESP_LOGI(TAG, "Fetching room %s", node_id_str);
+
+    uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
+
+    room_t *room = g_room_manager.room_list;
+
+    while (room)
+    {
+        if (room->room_id == room_id)
+        {
+            break;
+        }
+
+        room = room->next;
+    }
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(root, "roomId", room->room_id);
+    cJSON_AddStringToObject(root, "name", room->name);
+    cJSON_AddNumberToObject(root, "temperature", room->room_temperature);
+
+    cJSON *radiators;
+    cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
+
+    ESP_LOGI(TAG, "There are %u radiators", room->radiator_count);
+
+    for (uint8_t r = 0; r < room->radiator_count; r++)
+    {
+        uint8_t radiator_id = room->radiators[r];
+
+        ESP_LOGI(TAG, "Loading radiator %u", radiator_id);
+
+        radiator_t *radiator = find_radiator(&g_radiator_manager, radiator_id);
+
+        if (radiator)
+        {
+            cJSON *radiatorNode = cJSON_CreateObject();
+
+            cJSON_AddNumberToObject(radiatorNode, "radiatorId", radiator->radiator_id);
+            cJSON_AddStringToObject(radiatorNode, "name", radiator->name);
+            cJSON_AddNumberToObject(radiatorNode, "type", radiator->type);
+            cJSON_AddNumberToObject(radiatorNode, "output", radiator->outputAtDelta50);
+            cJSON_AddNumberToObject(radiatorNode, "flowTemp", radiator->flow_temperature);
+            cJSON_AddNumberToObject(radiatorNode, "returnTemp", radiator->return_temperature);
+
+            cJSON_AddItemToArray(radiators, radiatorNode);
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t room_put_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Updating a room...");
+
+    size_t size = strlen(req->uri);
+
+    char *pch = strrchr(req->uri, '/');
+    int index_of_last_slash = pch - req->uri + 1;
+
+    int length_of_nodeId = size - index_of_last_slash;
+
+    char node_id_str[length_of_nodeId + 1];
+
+    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
+
+    node_id_str[length_of_nodeId] = '\0';
+
+    uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
+
+    char content[150];
+    size_t recv_size = std::min(req->content_len, sizeof(content));
+
+    esp_err_t err = httpd_req_recv(req, content, recv_size);
+
+    cJSON *root = cJSON_Parse(content);
+
+    if (root == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const cJSON *radiatorIdsJSON = cJSON_GetObjectItemCaseSensitive(root, "radiatorIds");
+
+    uint8_t radiator_count = cJSON_GetArraySize(radiatorIdsJSON);
+    uint8_t *radiator_ids = (uint8_t *)calloc(radiator_count, sizeof(u_int8_t));
+
+    cJSON *iterator = NULL;
+
+    uint8_t i = 0;
+
+    cJSON_ArrayForEach(iterator, radiatorIdsJSON)
+    {
+        ESP_LOGI(TAG, "Add radiatorId: %u to room %u", (uint8_t)iterator->valueint, room_id);
+        radiator_ids[i++] = (uint8_t)iterator->valueint;
+    }
+
+    set_radiators(&g_room_manager, room_id, radiator_count, radiator_ids);
+
+    httpd_resp_set_status(req, "200 Ok");
+    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
 
     return ESP_OK;
 }
@@ -1204,7 +1346,7 @@ static httpd_handle_t start_webserver(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
-    config.max_uri_handlers = 15;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
@@ -1265,6 +1407,18 @@ static httpd_handle_t start_webserver(void)
         .handler = rooms_get_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t room_get_uri = {
+        .uri = "/api/rooms/*",
+        .method = HTTP_GET,
+        .handler = room_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t room_put_uri = {
+        .uri = "/api/rooms/*",
+        .method = HTTP_PUT,
+        .handler = room_put_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t rooms_delete_uri = {
         .uri = "/api/rooms/*",
         .method = HTTP_DELETE,
@@ -1303,6 +1457,8 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &radiators_delete_uri);
         httpd_register_uri_handler(server, &rooms_post_uri);
         httpd_register_uri_handler(server, &rooms_get_uri);
+        httpd_register_uri_handler(server, &room_get_uri);
+        httpd_register_uri_handler(server, &room_put_uri);
         httpd_register_uri_handler(server, &rooms_delete_uri);
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
