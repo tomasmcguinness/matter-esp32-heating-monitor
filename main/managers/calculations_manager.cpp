@@ -40,7 +40,11 @@ void update_radiator_outputs(radiator_manager_t *radiator_manager, room_manager_
 
                     ESP_LOGI(TAG, "Radiator %u has a MWT->Room ΔT of %f", radiator->radiator_id, deltaT);
 
-                    double factor = pow(50 / deltaT, 1.3);
+                    double dt = 50.0 / deltaT;
+
+                    ESP_LOGI(TAG, "Radiator %u has a ΔT division of %f", radiator->radiator_id, dt);
+
+                    double factor = pow(dt, 1.3);
 
                     ESP_LOGI(TAG, "Radiator %u has a power adjustment factor of %f", radiator->radiator_id, factor);
 

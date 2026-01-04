@@ -5,8 +5,6 @@ function EditRadiator() {
 
   let { radiatorId } = useParams();
 
-  const [name, setName] = useState<string | undefined>(undefined);
-  const [type, setType] = useState(10);
   const [output, setOutput] = useState<number | undefined>(undefined);
 
   useEffect(() => {
@@ -17,8 +15,6 @@ function EditRadiator() {
     e.preventDefault();
 
     var object: any = {
-      name,
-      type,
       output
     };
     var json = JSON.stringify(object);
