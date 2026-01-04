@@ -16,7 +16,7 @@ function Radiator() {
 
   return (
     <>
-      <h1>Radiator {radiatorId}</h1>
+      <h1>Radiator {radiatorId} <NavLink className="btn btn-primary action-button" to={`/radiators/${radiatorId}/edit`}>Edit</NavLink></h1>
       <hr />
       <div className="alert alert-info" role="alert">
         <h4 className="alert-heading">Radiator Details</h4>

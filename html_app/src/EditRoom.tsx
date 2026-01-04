@@ -65,7 +65,7 @@ function EditRoom() {
         {radiatorList}
       </ul>
       <button className="btn btn-primary" onClick={saveRoom} style={{ 'marginRight': '5px' }}>Save</button>
-      <NavLink className="btn btn-default" to={`/rooms/${roomId}`}>Cancel</NavLink>
+      <NavLink className="btn btn-danger" to={`/rooms/${roomId}`}>Cancel</NavLink>
     </>
   )
 }

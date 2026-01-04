@@ -2,6 +2,8 @@
 #include <stdbool.h>
 #include "esp_matter.h"
 
+#pragma once
+
 typedef struct room
 {
     uint8_t room_id;

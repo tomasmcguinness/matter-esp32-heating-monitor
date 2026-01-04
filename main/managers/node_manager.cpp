@@ -15,6 +15,7 @@
 #define NVS_KEY "node_list"
 
 using namespace chip::app::Clusters;
+using namespace esp_matter::controller;
 
 static const char *TAG = "node_manager";
 
@@ -49,17 +50,26 @@ void node_manager_init(node_manager_t *controller)
     }
 }
 
+void subscribe_done_cb(uint64_t remote_node_id, uint32_t subscription_id)
+{
+    ESP_LOGE(TAG, "Successfully subscribed");
+}
+
+void subscribe_failure_cb(void *subscribe_command)
+{
+    ESP_LOGE(TAG, "Failed to subscribe");
+}
+
 void subscribe_all_temperature_measurements(node_manager_t *controller)
 {
     struct SubscriptionKey
     {
         uint64_t node_id;
-        uint16_t endpoint_id;
 
         bool operator<(const SubscriptionKey &other) const
         {
-            return std::tie(node_id, endpoint_id) <
-                   std::tie(other.node_id, other.endpoint_id);
+            return std::tie(node_id) <
+                   std::tie(other.node_id);
         }
     };
 
@@ -69,6 +79,21 @@ void subscribe_all_temperature_measurements(node_manager_t *controller)
 
     while (node)
     {
+        SubscriptionKey key{node->node_id};
+
+        if (subscribed.find(key) != subscribed.end())
+        {
+            continue;
+        }
+
+        subscribed.insert(key);
+
+        // Work out how many endpoints we need to subscribe to.
+        //
+        uint8_t temperature_endpoint_count = 0;
+
+        // For each node, we want to subscribe to add the temperature sensor endpoints.
+        //
         for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
         {
             endpoint_entry_t *ep = &node->endpoints[ep_idx];
@@ -79,48 +104,70 @@ void subscribe_all_temperature_measurements(node_manager_t *controller)
 
                 if (device_type_id == 770)
                 {
-                    SubscriptionKey key{node->node_id, ep->endpoint_id};
-                    if (subscribed.find(key) != subscribed.end())
-                    {
-                        continue;
-                    }
-
-                    subscribed.insert(key);
-
-                    ESP_LOGI(TAG, "Subscribing to Temperature Measurement for node %llu, endpoint %d", node->node_id, ep->endpoint_id);
-
-                    uint16_t min_interval = 0;
-                    uint16_t max_interval = 15;
-
-                    auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(
-                        node->node_id,
-                        ep->endpoint_id,
-                        TemperatureMeasurement::Id,
-                        TemperatureMeasurement::Attributes::MeasuredValue::Id,
-                        esp_matter::controller::SUBSCRIBE_ATTRIBUTE,
-                        min_interval,
-                        max_interval,
-                        true,
-                        attribute_data_cb,
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        true);
-
-                    if (!cmd)
-                    {
-                        ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-                    }
-                    else
-                    {
-                        esp_err_t err = cmd->send_command();
-
-                        if (err != ESP_OK)
-                        {
-                            ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                        }
-                    }
+                    temperature_endpoint_count++;
                 }
+            }
+        }
+
+        // We may need to read multiple attributes.
+        //
+        ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+        attr_paths.Alloc(temperature_endpoint_count);
+
+        if (!attr_paths.Get())
+        {
+            ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+            return;
+        }
+
+        uint8_t temperature_measurement_endpoint_index = 0;
+
+        for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
+        {
+            endpoint_entry_t *ep = &node->endpoints[ep_idx];
+
+            for (uint8_t device_type_idx = 0; device_type_idx < ep->device_type_count; ++device_type_idx)
+            {
+                uint32_t device_type_id = ep->device_type_ids[device_type_idx];
+
+                if (device_type_id == 770)
+                {
+                    attr_paths[temperature_measurement_endpoint_index++] = AttributePathParams(ep->endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+                    ESP_LOGI(TAG, "Added path to Temperature Measurement for node %llu, endpoint %d", node->node_id, ep->endpoint_id);
+                }
+            }
+        }
+
+        ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+        event_paths.Alloc(0);
+
+        uint16_t min_interval = 0;
+        uint16_t max_interval = 15;
+
+        subscribe_command *cmd = chip::Platform::New<subscribe_command>(node->node_id,
+                                                                        std::move(attr_paths),
+                                                                        std::move(event_paths),
+                                                                        min_interval,
+                                                                        max_interval,
+                                                                        true,
+                                                                        attribute_data_cb,
+                                                                        nullptr,
+                                                                        subscribe_done_cb,
+                                                                        subscribe_failure_cb,
+                                                                        false);
+
+        if (!cmd)
+        {
+            ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Subscribing to Temperature Measurements for node %llu", node->node_id);
+            esp_err_t err = cmd->send_command();
+
+            if (err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
             }
         }
 
@@ -409,7 +456,7 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         node->node_label_length = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        node->node_label = (char *)calloc( node->node_label_length + 1, sizeof(char));
+        node->node_label = (char *)calloc(node->node_label_length + 1, sizeof(char));
 
         memcpy(node->node_label, ptr, node->node_label_length);
         ptr += node->node_label_length;

@@ -59,6 +59,7 @@ function Radiators() {
       <td>{n.output}</td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
+      <td>{n.currentOutput}</td>
     </tr>);
   });
 

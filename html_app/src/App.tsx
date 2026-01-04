@@ -9,6 +9,7 @@ import AddDevice from './AddDevice.tsx'
 import Radiator from './Radiator.tsx'
 import Radiators from './Radiators.tsx'
 import AddRadiator from './AddRadiator.tsx'
+import EditRadiator from "./EditRadiator.tsx";
 
 import Room from './Room.tsx'
 import Rooms from './Rooms.tsx'
@@ -58,6 +59,7 @@ function App() {
             <Route path="/radiators" element={<Radiators />} />
             <Route path="/radiators/add" element={<AddRadiator />} />
             <Route path="/radiators/:radiatorId" element={<Radiator />} />
+            <Route path="/radiators/:radiatorId/edit" element={<EditRadiator />} />
 
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/add" element={<AddDevice />} />

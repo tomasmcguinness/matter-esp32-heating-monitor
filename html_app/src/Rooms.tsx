@@ -44,10 +44,15 @@ function Rooms() {
   }, []);
 
   let rooms = roomList.map((n: any) => {
-    return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}><td>{n.roomId}</td><td>{n.name}</td><td><Temperature>{n.temperature}</Temperature></td></tr>);
+    return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
+      <td>{n.roomId}</td>
+      <td>{n.name}</td>
+      <td><Temperature>{n.temperature}</Temperature></td>
+      <td>{n.combinedRadiatorOutput}</td>
+      </tr>);
   });
 
-  if(rooms.length == 0) {
+  if (rooms.length == 0) {
     return (<div className="alert alert-info">There are no rooms</div>)
   }
 
@@ -61,6 +66,7 @@ function Rooms() {
             <th style={{ width: 'auto' }}>ID</th>
             <th>Name</th>
             <th>Temperature</th>
+            <th>Radiator Output</th>
           </tr>
         </thead>
         <tbody>

@@ -37,6 +37,7 @@
 
 #include "app_main.h"
 #include "managers/node_manager.h"
+#include "managers/calculations_manager.h"
 #include "managers/radiator_manager.h"
 #include "managers/room_manager.h"
 #include "commands/pairing_command.h"
@@ -355,9 +356,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
 
-        ESP_LOGI(TAG, "There are %u rooms", g_room_manager.room_count);
-        ESP_LOGI(TAG, "There are %u radiators", g_radiator_manager.radiator_count);
-
         int16_t temperature;
         chip::app::DataModel::Decode(*data, temperature);
 
@@ -389,6 +387,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     radiator->return_temperature = temperature;
                     cJSON_AddNumberToObject(root, "returnTemp", temperature);
                 }
+
+                update_radiator_outputs(&g_radiator_manager, &g_room_manager, radiator);
 
                 char *payload = cJSON_PrintUnformatted(root);
 
@@ -918,10 +918,11 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "radiatorId", radiator->radiator_id);
         cJSON_AddStringToObject(jNode, "name", radiator->name);
         cJSON_AddNumberToObject(jNode, "type", radiator->type);
-        cJSON_AddNumberToObject(jNode, "output", radiator->outputAtDelta50);
+        cJSON_AddNumberToObject(jNode, "output", radiator->output_dt_50);
 
         cJSON_AddNumberToObject(jNode, "flowTemp", radiator->flow_temperature);
         cJSON_AddNumberToObject(jNode, "returnTemp", radiator->return_temperature);
+        cJSON_AddNumberToObject(jNode, "currentOutput", radiator->current_output);
 
         cJSON_AddItemToArray(root, jNode);
 
@@ -935,6 +936,46 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
     httpd_resp_sendstr(req, json);
     free((void *)json);
     cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t radiators_put_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Updating a radiator...");
+
+    char templatePath[] = "/api/radiators/:radiatorId";
+    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
+    UrlTokenBindings bindings(templateItr, req->uri);
+
+    uint8_t radiator_id = 0;
+
+    if (bindings.hasBinding("radiatorId"))
+    {
+        radiator_id = strtoull(bindings.get("radiatorId"), NULL, 10);
+    }
+
+    char content[150];
+    size_t recv_size = std::min(req->content_len, sizeof(content));
+
+    esp_err_t err = httpd_req_recv(req, content, recv_size);
+
+    cJSON *root = cJSON_Parse(content);
+
+    if (root == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const cJSON *outputJSON = cJSON_GetObjectItemCaseSensitive(root, "output");
+
+    update_radiator(&g_radiator_manager, radiator_id, (uint16_t)outputJSON->valueint);
+
+    httpd_resp_set_status(req, "200 Ok");
+    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
 
     return ESP_OK;
 }
@@ -1022,6 +1063,20 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(jNode, "name", room->name);
         cJSON_AddNumberToObject(jNode, "temperature", room->room_temperature);
 
+        uint16_t total_radiator_output;
+
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            radiator_t *radiator = find_radiator(&g_radiator_manager, room->radiators[r]);
+
+            if (radiator)
+            {
+                total_radiator_output += radiator->current_output;
+            }
+        }
+
+        cJSON_AddNumberToObject(jNode, "combinedRadiatorOutput", total_radiator_output);
+
         cJSON_AddItemToArray(root, jNode);
 
         room = room->next;
@@ -1097,7 +1152,7 @@ static esp_err_t room_get_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(radiatorNode, "radiatorId", radiator->radiator_id);
             cJSON_AddStringToObject(radiatorNode, "name", radiator->name);
             cJSON_AddNumberToObject(radiatorNode, "type", radiator->type);
-            cJSON_AddNumberToObject(radiatorNode, "output", radiator->outputAtDelta50);
+            cJSON_AddNumberToObject(radiatorNode, "output", radiator->output_dt_50);
             cJSON_AddNumberToObject(radiatorNode, "flowTemp", radiator->flow_temperature);
             cJSON_AddNumberToObject(radiatorNode, "returnTemp", radiator->return_temperature);
 
@@ -1389,6 +1444,12 @@ static httpd_handle_t start_webserver(void)
         .handler = radiators_get_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t radiators_put_uri = {
+        .uri = "/api/radiators/*",
+        .method = HTTP_PUT,
+        .handler = radiators_put_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t radiators_delete_uri = {
         .uri = "/api/radiators/*",
         .method = HTTP_DELETE,
@@ -1454,6 +1515,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &nodes_put_uri);
         httpd_register_uri_handler(server, &radiators_post_uri);
         httpd_register_uri_handler(server, &radiators_get_uri);
+        httpd_register_uri_handler(server, &radiators_put_uri);
         httpd_register_uri_handler(server, &radiators_delete_uri);
         httpd_register_uri_handler(server, &rooms_post_uri);
         httpd_register_uri_handler(server, &rooms_get_uri);
