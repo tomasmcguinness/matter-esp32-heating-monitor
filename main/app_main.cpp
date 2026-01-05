@@ -40,6 +40,7 @@
 #include "managers/calculations_manager.h"
 #include "managers/radiator_manager.h"
 #include "managers/room_manager.h"
+#include "managers/home_manager.h"
 #include "commands/pairing_command.h"
 #include "commands/identify_command.h"
 
@@ -65,6 +66,7 @@ using namespace chip::app::Clusters;
 node_manager_t g_node_manager = {0};
 radiator_manager_t g_radiator_manager = {0};
 room_manager_t g_room_manager = {0};
+home_manager_t g_home_manager = {0};
 
 static httpd_handle_t server;
 static int ws_socket;
@@ -361,13 +363,19 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         ESP_LOGI(TAG, "Value: %d", temperature);
 
+        if(g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId) 
+        {
+            g_home_manager.outdoor_temperature = temperature;
+            return;
+        }
+
         // Find the appropriate radiator for this node/endpoint combination.
         //
         radiator_t *radiator = g_radiator_manager.radiator_list;
 
         while (radiator)
         {
-            if (radiator->flow_temp_nodeId == remote_node_id || radiator->return_temp_nodeId == remote_node_id)
+            if (radiator->flow_temp_node_id == remote_node_id || radiator->return_temp_node_id == remote_node_id)
             {
                 ESP_LOGI(TAG, "Node is assigned to radiator %u", radiator->radiator_id);
 
@@ -375,13 +383,13 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 cJSON_AddStringToObject(root, "channel", "radiator");
                 cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
 
-                if (radiator->flow_temp_endpointId == path.mEndpointId)
+                if (radiator->flow_temp_endpoint_id == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Flow Temperature value");
                     radiator->flow_temperature = temperature;
                     cJSON_AddNumberToObject(root, "flowTemp", temperature);
                 }
-                else if (radiator->return_temp_endpointId == path.mEndpointId)
+                else if (radiator->return_temp_endpoint_id == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Return Temperature value");
                     radiator->return_temperature = temperature;
@@ -408,7 +416,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         while (room)
         {
-            if (room->room_temperature_nodeId == remote_node_id && room->room_temperature_endpointId == path.mEndpointId)
+            if (room->room_temperature_node_id == remote_node_id && room->room_temperature_endpoint_id == path.mEndpointId)
             {
                 ESP_LOGI(TAG, "Node is assigned to room %u", room->room_id);
 
@@ -570,6 +578,7 @@ static esp_err_t ws_get_handler(httpd_req_t *req)
 {
     if (req->method == HTTP_GET)
     {
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
         ESP_LOGI(TAG, "Handshake done, the new connection was opened");
         return ESP_OK;
     }
@@ -1063,7 +1072,7 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(jNode, "name", room->name);
         cJSON_AddNumberToObject(jNode, "temperature", room->room_temperature);
 
-        uint16_t total_radiator_output;
+        uint16_t total_radiator_output = 0;
 
         for (uint8_t r = 0; r < room->radiator_count; r++)
         {
@@ -1175,21 +1184,6 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Updating a room...");
 
-    size_t size = strlen(req->uri);
-
-    char *pch = strrchr(req->uri, '/');
-    int index_of_last_slash = pch - req->uri + 1;
-
-    int length_of_nodeId = size - index_of_last_slash;
-
-    char node_id_str[length_of_nodeId + 1];
-
-    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
-
-    node_id_str[length_of_nodeId] = '\0';
-
-    uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
-
     char content[150];
     size_t recv_size = std::min(req->content_len, sizeof(content));
 
@@ -1205,22 +1199,13 @@ static esp_err_t room_put_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const cJSON *radiatorIdsJSON = cJSON_GetObjectItemCaseSensitive(root, "radiatorIds");
+    const cJSON *outdoorTemperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorNodeId");
+    const cJSON *outdoorTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorEndpointId");
 
-    uint8_t radiator_count = cJSON_GetArraySize(radiatorIdsJSON);
-    uint8_t *radiator_ids = (uint8_t *)calloc(radiator_count, sizeof(u_int8_t));
+    g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
+    g_home_manager.outdoor_temp_endpoint_id = (uint64_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
 
-    cJSON *iterator = NULL;
-
-    uint8_t i = 0;
-
-    cJSON_ArrayForEach(iterator, radiatorIdsJSON)
-    {
-        ESP_LOGI(TAG, "Add radiatorId: %u to room %u", (uint8_t)iterator->valueint, room_id);
-        radiator_ids[i++] = (uint8_t)iterator->valueint;
-    }
-
-    set_radiators(&g_room_manager, room_id, radiator_count, radiator_ids);
+    // TODO SAVE!
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
@@ -1284,8 +1269,6 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
             {
                 uint32_t device_type_id = endpoint.device_type_ids[k];
 
-                ESP_LOGI(TAG, "DeviceTypeId ID: %lu", device_type_id);
-
                 if (device_type_id == 770)
                 {
                     cJSON *jSensor = cJSON_CreateObject();
@@ -1300,6 +1283,46 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
 
         node = node->next;
     }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t home_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting home...");
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 OK");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+static esp_err_t home_put_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Updating home...");
+
+
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
@@ -1382,6 +1405,7 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
         return write_index_html(req);
     }
 
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
 
     return ESP_OK;
@@ -1407,6 +1431,18 @@ static httpd_handle_t start_webserver(void)
     config.stack_size = 20480;
 
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
+
+    const httpd_uri_t home_get_uri = {
+        .uri = "/api/home",
+        .method = HTTP_GET,
+        .handler = home_get_handler,
+        .user_ctx = NULL};
+
+     const httpd_uri_t home_put_uri = {
+        .uri = "/api/home",
+        .method = HTTP_PUT,
+        .handler = home_put_handler,
+        .user_ctx = NULL};
 
     const httpd_uri_t nodes_post_uri = {
         .uri = "/api/nodes",
@@ -1509,6 +1545,8 @@ static httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Registering URI handlers");
 
         httpd_register_uri_handler(server, &ws_uri);
+        httpd_register_uri_handler(server, &home_get_uri);
+        httpd_register_uri_handler(server, &home_put_uri);
         httpd_register_uri_handler(server, &nodes_post_uri);
         httpd_register_uri_handler(server, &nodes_get_uri);
         httpd_register_uri_handler(server, &nodes_delete_uri);
@@ -1584,6 +1622,7 @@ extern "C" void app_main()
     node_manager_init(&g_node_manager);
     radiator_manager_init(&g_radiator_manager);
     room_manager_init(&g_room_manager);
+    home_manager_init(&g_home_manager);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();

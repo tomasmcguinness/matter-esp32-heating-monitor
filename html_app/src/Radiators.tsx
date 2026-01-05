@@ -2,6 +2,7 @@ import { useContext, useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
 import Temperature from "./Temperature.tsx";
 import { WebSocketContext } from './WSContext.jsx';
+import Power from "./Power.tsx";
 
 function Radiators() {
 
@@ -12,6 +13,8 @@ function Radiators() {
   const {subscribe, unsubscribe} = useContext(WebSocketContext);
 
   useEffect(() => {
+
+    console.log("Subscribing to channel radiator");
 
     subscribe("radiator", (message: any) => {
 
@@ -59,7 +62,7 @@ function Radiators() {
       <td>{n.output}</td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
-      <td>{n.currentOutput}</td>
+      <td><Power>{n.currentOutput}</Power></td>
     </tr>);
   });
 

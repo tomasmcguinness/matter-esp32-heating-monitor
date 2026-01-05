@@ -1,6 +1,7 @@
 import { NavLink, Routes, Route } from "react-router";
 import './App.css'
 import Home from './Home.tsx'
+import EditHome from './EditHome.tsx'
 
 import Device from './Device.tsx'
 import Devices from './Devices.tsx'
@@ -50,6 +51,7 @@ function App() {
         <div className="container">
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/edit" element={<EditHome />} />
 
             <Route path="/rooms" element={<Rooms />} />
             <Route path="/rooms/add" element={<AddRoom />} />

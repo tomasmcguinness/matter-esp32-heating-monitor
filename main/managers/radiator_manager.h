@@ -12,10 +12,10 @@ typedef struct radiator
     uint8_t type;
     uint16_t output_dt_50;
 
-    uint64_t flow_temp_nodeId;
-    uint16_t flow_temp_endpointId;
-    uint64_t return_temp_nodeId;
-    uint16_t return_temp_endpointId;
+    uint64_t flow_temp_node_id;
+    uint16_t flow_temp_endpoint_id;
+    uint64_t return_temp_node_id;
+    uint16_t return_temp_endpoint_id;
 
     uint8_t room_id;
 

@@ -2,6 +2,7 @@ import { useContext, useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
 import Temperature from "./Temperature.tsx";
 import { WebSocketContext } from './WSContext.jsx';
+import Power from "./Power.tsx";
 
 function Rooms() {
 
@@ -48,7 +49,7 @@ function Rooms() {
       <td>{n.roomId}</td>
       <td>{n.name}</td>
       <td><Temperature>{n.temperature}</Temperature></td>
-      <td>{n.combinedRadiatorOutput}</td>
+      <td><Power>{n.combinedRadiatorOutput}</Power></td>
       </tr>);
   });
 

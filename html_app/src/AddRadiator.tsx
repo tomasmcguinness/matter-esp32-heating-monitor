@@ -50,7 +50,7 @@ function AddRadiator() {
   let sensorOptions = sensors.map((s: any) => {
     var key = `${s.nodeId}|${s.endpointId}`;
     return <option key={key} value={key}>{s.vendorName}/{s.productName} (0x{s.nodeId} - 0x{s.endpointId})</option>;
-  })
+  });
 
   return (
     <>

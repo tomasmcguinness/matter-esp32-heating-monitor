@@ -14,11 +14,15 @@ function WebSocketProvider({ children }) {
     const channels = useRef({});
 
     const subscribe = (channel, callback) => {
+        console.log('Subscription received for channel ' + channel);
         channels.current[channel] = callback
     }
+
     const unsubscribe = (channel) => {
+         console.log('Subscription removed for channel ' + channel);
         delete channels.current[channel]
     }
+
     useEffect(() => {
         ws.current = new WebSocket(socketUrl)
         ws.current.onopen = () => {
@@ -36,9 +40,11 @@ function WebSocketProvider({ children }) {
         ws.current.onmessage = (message) => {
             console.log('WS message data received')
             const { type, ...data } = JSON.parse(message.data)
-            const channel = `${type}_${data.channel}`
+            const channel = `${data.channel}`
 
+            console.log('Locating subscriber for channel ' + channel);
             if (channels.current[channel]) {
+                console.log('Sending data to channel...')
                 channels.current[channel](data)
             }
         }

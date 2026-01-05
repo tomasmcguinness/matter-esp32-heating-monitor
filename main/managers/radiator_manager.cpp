@@ -60,7 +60,7 @@ radiator_t *find_radiator(radiator_manager_t *manager, uint8_t radiator_id)
     return NULL;
 }
 
-radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, uint16_t output_dt_50, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
+radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     uint8_t new_radiator_id = manager->radiator_count + 1;
 
@@ -77,10 +77,10 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, 
     new_radiator->name = name;
     new_radiator->type = type;
     new_radiator->output_dt_50 = output_dt_50;
-    new_radiator->flow_temp_nodeId = flowNodeId;
-    new_radiator->flow_temp_endpointId = flowEndpointId;
-    new_radiator->return_temp_nodeId = returnNodeId;
-    new_radiator->return_temp_endpointId = returnEndpointId;
+    new_radiator->flow_temp_node_id = flow_temp_node_id;
+    new_radiator->flow_temp_endpoint_id = flowEndpointId;
+    new_radiator->return_temp_node_id = returnNodeId;
+    new_radiator->return_temp_endpoint_id = returnEndpointId;
 
     new_radiator->next = manager->radiator_list;
 
@@ -196,16 +196,16 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
         radiator->output_dt_50 = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        radiator->flow_temp_nodeId = *((uint64_t *)ptr);
+        radiator->flow_temp_node_id = *((uint64_t *)ptr);
         ptr += sizeof(uint64_t);
 
-        radiator->flow_temp_endpointId = *((uint16_t *)ptr);
+        radiator->flow_temp_endpoint_id = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
-        radiator->return_temp_nodeId = *((uint64_t *)ptr);
+        radiator->return_temp_node_id = *((uint64_t *)ptr);
         ptr += sizeof(uint64_t);
 
-        radiator->return_temp_endpointId = *((uint16_t *)ptr);
+        radiator->return_temp_endpoint_id = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
         ESP_LOGI(TAG, "Loaded radiator 0x%0X from NVS", radiator->radiator_id);
@@ -338,16 +338,16 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         *((uint16_t *)ptr) = current->output_dt_50;
         ptr += sizeof(uint16_t);
 
-        *((uint64_t *)ptr) = current->flow_temp_nodeId;
+        *((uint64_t *)ptr) = current->flow_temp_node_id;
         ptr += sizeof(uint64_t);
 
-        *((uint16_t *)ptr) = current->flow_temp_endpointId;
+        *((uint16_t *)ptr) = current->flow_temp_endpoint_id;
         ptr += sizeof(uint16_t);
 
-        *((uint64_t *)ptr) = current->return_temp_nodeId;
+        *((uint64_t *)ptr) = current->return_temp_node_id;
         ptr += sizeof(uint64_t);
 
-        *((uint16_t *)ptr) = current->return_temp_endpointId;
+        *((uint16_t *)ptr) = current->return_temp_endpoint_id;
         ptr += sizeof(uint16_t);
 
         current = current->next;
