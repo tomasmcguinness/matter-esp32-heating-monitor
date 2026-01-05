@@ -14,14 +14,12 @@ function Rooms() {
 
   useEffect(() => {
 
-    subscribe("radiator", (message: any) => {
-
+    subscribe("room", (message: any) => {
       setRoomList(roomList.map((a: any) => (a.roomId === message.roomId ? { ...a, temperature: message.temperature } : a)))
-
     })
 
     return () => {
-      unsubscribe("radiator")
+      unsubscribe("room")
     }
   }, [subscribe, unsubscribe])
 
@@ -49,6 +47,7 @@ function Rooms() {
       <td>{n.roomId}</td>
       <td>{n.name}</td>
       <td><Temperature>{n.temperature}</Temperature></td>
+      <td><Power>{n.heatLoss}</Power></td>
       <td><Power>{n.combinedRadiatorOutput}</Power></td>
       </tr>);
   });
@@ -67,6 +66,7 @@ function Rooms() {
             <th style={{ width: 'auto' }}>ID</th>
             <th>Name</th>
             <th>Temperature</th>
+            <th>Heat Loss</th>
             <th>Radiator Output</th>
           </tr>
         </thead>

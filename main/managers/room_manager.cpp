@@ -60,14 +60,11 @@ room_t *find_room(room_manager_t *manager, uint8_t room_id)
     return NULL;
 }
 
-room_t *set_radiators(room_manager_t *manager, uint8_t room_id, uint8_t radiator_count, uint8_t *radiator_ids)
+room_t *update_room(room_manager_t *manager, uint8_t room_id, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids)
 {
     room_t *room = find_room(manager, room_id);
 
-    for(uint8_t r = 0; r < radiator_count; r++) {
-        
-    }
-
+    room->heat_loss_per_degree = heat_loss_per_degree;
     room->radiator_count = radiator_count;
     room->radiators = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
     memcpy(room->radiators, radiator_ids, radiator_count);
@@ -228,6 +225,9 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             free(buffer);
             return ESP_ERR_NO_MEM;
         }
+
+        room->heat_loss = 0;
+        room->temperature = 0;
 
         room->room_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);

@@ -50,14 +50,14 @@ void node_manager_init(node_manager_t *controller)
     }
 }
 
-void subscribe_done_cb(uint64_t remote_node_id, uint32_t subscription_id)
+void subscribe_done_cb(uint64_t node_id, uint32_t subscription_id)
 {
-    ESP_LOGE(TAG, "Successfully subscribed");
+    ESP_LOGI(TAG, "Successfully subscribed, node %llu, subscription id 0x%08X", node_id, subscription_id);
 }
 
-void subscribe_failure_cb(void *subscribe_command)
+void subscribe_failure_cb(void *ctx)
 {
-    ESP_LOGE(TAG, "Failed to subscribe");
+    ESP_LOGE(TAG, "Failed to subscribe (context: %p)", ctx);
 }
 
 void subscribe_all_temperature_measurements(node_manager_t *controller)

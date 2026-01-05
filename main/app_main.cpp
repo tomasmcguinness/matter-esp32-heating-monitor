@@ -363,12 +363,14 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         ESP_LOGI(TAG, "Value: %d", temperature);
 
-        if(g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId) 
+        if (g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId)
         {
             ESP_LOGI(TAG, "Node is assigned to the outdoor temperature sensor");
 
             g_home_manager.outdoor_temperature = temperature;
-            
+
+            update_all_rooms_heat_loss(&g_home_manager, &g_room_manager);
+
             return;
         }
 
@@ -423,7 +425,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGI(TAG, "Node is assigned to room %u", room->room_id);
 
-                room->room_temperature = temperature;
+                room->temperature = temperature;
+
+                update_room_heat_loss(&g_home_manager, &g_room_manager, room);
 
                 cJSON *root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "channel", "room");
@@ -934,7 +938,7 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "flowTemp", radiator->flow_temperature);
         cJSON_AddNumberToObject(jNode, "returnTemp", radiator->return_temperature);
-        cJSON_AddNumberToObject(jNode, "currentOutput", radiator->current_output);
+        cJSON_AddNumberToObject(jNode, "currentOutput", radiator->heat_output);
 
         cJSON_AddItemToArray(root, jNode);
 
@@ -1073,7 +1077,8 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "roomId", room->room_id);
         cJSON_AddStringToObject(jNode, "name", room->name);
-        cJSON_AddNumberToObject(jNode, "temperature", room->room_temperature);
+        cJSON_AddNumberToObject(jNode, "temperature", room->temperature);
+        cJSON_AddNumberToObject(jNode, "heatLoss", room->heat_loss);
 
         uint16_t total_radiator_output = 0;
 
@@ -1083,7 +1088,7 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
             if (radiator)
             {
-                total_radiator_output += radiator->current_output;
+                total_radiator_output += radiator->heat_output;
             }
         }
 
@@ -1142,7 +1147,8 @@ static esp_err_t room_get_handler(httpd_req_t *req)
 
     cJSON_AddNumberToObject(root, "roomId", room->room_id);
     cJSON_AddStringToObject(root, "name", room->name);
-    cJSON_AddNumberToObject(root, "temperature", room->room_temperature);
+    cJSON_AddNumberToObject(root, "temperature", room->temperature);
+    cJSON_AddNumberToObject(root, "heatLossPerDegree", room->heat_loss_per_degree);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -1187,6 +1193,21 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Updating a room...");
 
+    size_t size = strlen(req->uri);
+
+    char *pch = strrchr(req->uri, '/');
+    int index_of_last_slash = pch - req->uri + 1;
+
+    int length_of_nodeId = size - index_of_last_slash;
+
+    char node_id_str[length_of_nodeId + 1];
+
+    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
+
+    node_id_str[length_of_nodeId] = '\0';
+
+    uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
+
     char content[150];
     size_t recv_size = std::min(req->content_len, sizeof(content));
 
@@ -1202,13 +1223,26 @@ static esp_err_t room_put_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const cJSON *outdoorTemperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorNodeId");
-    const cJSON *outdoorTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorEndpointId");
+    const cJSON *heatLossPerDegreeJSON = cJSON_GetObjectItemCaseSensitive(root, "heatLossPerDegree");
+    const cJSON *radiatorIdsJSON = cJSON_GetObjectItemCaseSensitive(root, "radiatorIds");
 
-    g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
-    g_home_manager.outdoor_temp_endpoint_id = (uint64_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
+    uint8_t radiator_count = cJSON_GetArraySize(radiatorIdsJSON);
+    uint8_t *radiator_ids = (uint8_t *)calloc(radiator_count, sizeof(u_int8_t));
 
-    // TODO SAVE!
+    cJSON *iterator = NULL;
+
+    uint8_t i = 0;
+
+    cJSON_ArrayForEach(iterator, radiatorIdsJSON)
+    {
+        ESP_LOGI(TAG, "Add radiatorId: %u to room %u", (uint8_t)iterator->valueint, room_id);
+        radiator_ids[i++] = (uint8_t)iterator->valueint;
+    }
+
+    update_room(&g_room_manager, room_id, (uint8_t)heatLossPerDegreeJSON->valueint, radiator_count, radiator_ids);
+
+    room_t *room = find_room(g_room_manager, room_id);
+    update_room_heat_loss(&g_home_manager, g_room_manager, room);
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
@@ -1322,8 +1356,8 @@ static esp_err_t home_get_handler(httpd_req_t *req)
 static esp_err_t home_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Updating home...");
-    
-     char content[150];
+
+    char content[150];
     size_t recv_size = std::min(req->content_len, sizeof(content));
 
     esp_err_t err = httpd_req_recv(req, content, recv_size);
@@ -1455,7 +1489,7 @@ static httpd_handle_t start_webserver(void)
         .handler = home_get_handler,
         .user_ctx = NULL};
 
-     const httpd_uri_t home_put_uri = {
+    const httpd_uri_t home_put_uri = {
         .uri = "/api/home",
         .method = HTTP_PUT,
         .handler = home_put_handler,
