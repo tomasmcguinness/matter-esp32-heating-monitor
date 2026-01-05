@@ -20,8 +20,8 @@ typedef struct radiator
     uint8_t room_id;
 
     // Transient data
-    uint16_t flow_temperature;
-    uint16_t return_temperature;
+    int16_t flow_temperature;
+    int16_t return_temperature;
     uint16_t current_output;
 
     struct radiator *next;

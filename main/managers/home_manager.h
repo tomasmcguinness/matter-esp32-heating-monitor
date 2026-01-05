@@ -14,7 +14,8 @@ typedef struct {
     uint64_t heat_source_return_temp_node_id;
     uint16_t heat_source_return_endpoint_id;
 
-    uint16_t outdoor_temperature;
+    int16_t outdoor_temperature;
+    
 } home_manager_t;
 
 void home_manager_init(home_manager_t *manager);

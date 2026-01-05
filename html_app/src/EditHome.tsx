@@ -8,7 +8,13 @@ function EditHome() {
   const [outdoorTemperatureSensor, setOutdoorTemperatureSensor] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    fetch('/api/sensors').then(response => response.json()).then(data => setSensors(data));
+    fetch('/api/sensors').then(response => response.json()).then(data => {
+      setSensors(data);
+
+      fetch('/api/home').then(response => response.json()).then(data => {
+        setOutdoorTemperatureSensor(`${data.outdoorTemperatureSensorNodeId}|${data.outdoorTemperatureSensorEndpointId}`);
+      });
+    });
   }, []);
 
   const save = (e: any) => {
@@ -42,7 +48,7 @@ function EditHome() {
           {sensorOptions}
         </select>
       </div>
-       <button className="btn btn-primary" onClick={save} style={{ 'marginRight': '5px' }}>Save</button>
+      <button className="btn btn-primary" onClick={save} style={{ 'marginRight': '5px' }}>Save</button>
       <NavLink className="btn btn-danger" to={`/`}>Cancel</NavLink>
     </>
   )

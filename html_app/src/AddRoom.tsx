@@ -7,6 +7,7 @@ function AddRoom() {
 
   const [name, setName] = useState<string | undefined>(undefined);
   const [temperatureSensor, setTemperatureSensor] = useState<string | undefined>(undefined);
+  const [heatLossPerDegree, setHeatLossPerDegree] = useState<string | undefined>(undefined);
   const [sensors, setSensors] = useState<[]>([]);
 
   useEffect(() => {
@@ -49,6 +50,10 @@ function AddRoom() {
         <div className="mb-3">
           <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
           <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="mb-3">
+          <label htmlFor="heatLoss" className="form-label">Heat Loss Per Degree <span style={{ 'color': 'red' }}>*</span></label>
+          <input type="number" name="heatLoss" maxLength={20} className="form-control" id="heatLoss" placeholder="25" required={true} value={heatLossPerDegree || ''} onChange={(e) => setHeatLossPerDegree(e.target.value)} />
         </div>
         <div className="mb-3">
           <label htmlFor="temperatureSensor" className="form-label">Room Temperature Sensor <span style={{ 'color': 'red' }}>*</span></label>

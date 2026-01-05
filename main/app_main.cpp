@@ -365,7 +365,10 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         if(g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId) 
         {
+            ESP_LOGI(TAG, "Node is assigned to the outdoor temperature sensor");
+
             g_home_manager.outdoor_temperature = temperature;
+            
             return;
         }
 
@@ -1302,6 +1305,8 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
+    cJSON_AddNumberToObject(root, "outdoorTemperatureSensorNodeId", g_home_manager.outdoor_temp_node_id);
+    cJSON_AddNumberToObject(root, "outdoorTemperatureSensorEndpointId", g_home_manager.outdoor_temp_endpoint_id);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
@@ -1317,20 +1322,32 @@ static esp_err_t home_get_handler(httpd_req_t *req)
 static esp_err_t home_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Updating home...");
+    
+     char content[150];
+    size_t recv_size = std::min(req->content_len, sizeof(content));
 
+    esp_err_t err = httpd_req_recv(req, content, recv_size);
 
+    cJSON *root = cJSON_Parse(content);
 
-    cJSON *root = cJSON_CreateObject();
+    if (root == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
+    const cJSON *outdoorTemperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorNodeId");
+    const cJSON *outdoorTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorEndpointId");
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_status(req, "200 OK");
+    g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
+    g_home_manager.outdoor_temp_endpoint_id = (uint64_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
 
-    const char *json = cJSON_Print(root);
-    httpd_resp_sendstr(req, json);
-    free((void *)json);
-    cJSON_Delete(root);
+    save_home_to_nvs(&g_home_manager);
+
+    httpd_resp_set_status(req, "201 Ok");
+    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
 
     return ESP_OK;
 }

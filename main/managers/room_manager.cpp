@@ -260,6 +260,9 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             ESP_LOGI(TAG,"Loaded radiator %u from NVS", room->radiators[r]);
         }
 
+        room->heat_loss_per_degree = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
         ESP_LOGI(TAG, "Loaded room %u from NVS", room->room_id);
 
         room->next = manager->room_list;
@@ -298,6 +301,7 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
         required_size += strlen(current->name); // name
         required_size += sizeof(uint8_t);       // radiator count
         required_size += sizeof(uint8_t) * current->radiator_count;
+        required_size += sizeof(uint16_t);      // heat_loss_per_degree
 
         current = current->next;
     }
@@ -339,6 +343,9 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
             *((uint8_t *)ptr) = current->radiators[r];
             ptr += sizeof(uint8_t);
         }
+
+        *((uint16_t *)ptr) = current->heat_loss_per_degree;
+        ptr += sizeof(uint16_t);
 
         current = current->next;
     }
