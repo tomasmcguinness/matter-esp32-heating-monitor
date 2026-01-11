@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, useNavigate, useParams } from "react-router"
 import Temperature from "./Temperature";
+import Power from "./Power";
 
 function Room() {
 
@@ -42,7 +43,7 @@ function Room() {
       <td>{r.type}</td>
       <td><Temperature>{r.flowTemp}</Temperature></td>
       <td><Temperature>{r.returnTemp}</Temperature></td>
-      <td>TBD</td>
+      <td><Power>{r.currentOutput}</Power></td>
     </tr>);
   });
 
@@ -60,6 +61,22 @@ function Room() {
             <p className="card-title"><Temperature>{room.temperature}</Temperature></p>
           </div>
         </div>
+        <div className="card">
+          <div className="card-header">
+            Heat Loss W/°C
+          </div>
+          <div className="card-body">
+            <p className="card-title"><Power>{room.heatLossPerDegree}</Power></p>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header">
+            Heat Loss W
+          </div>
+          <div className="card-body">
+            <p className="card-title"><Power>{room.heatLoss}</Power></p>
+          </div>
+        </div>
       </div>
 
       <div className="card" style={{ marginBottom: '5px' }}>
@@ -67,22 +84,25 @@ function Room() {
           Radiators
         </div>
         <div className="card-body">
-          <table className="table table-striped table-bordered">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Flow</th>
-                <th>Return</th>
-                <th>Output</th>
-              </tr>
-            </thead>
-            <tbody>
-              {radiatorRows}
-            </tbody>
-          </table>
-        </div>
+          {radiatorRows.length == 0 && <div className="alert alert-info">No radiators have been assigned to this room</div>}
+          {radiatorRows.length > 0 &&
+            <table className="table table-striped table-bordered">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Flow</th>
+                  <th>Return</th>
+                  <th>Output</th>
+                </tr>
+              </thead>
+              <tbody>
+                {radiatorRows}
+              </tbody>
+            </table>
+          }
+          </div>
       </div>
 
       <button className="btn btn-danger" onClick={removeRoom} style={{ 'marginRight': '5px' }}>Remove</button>

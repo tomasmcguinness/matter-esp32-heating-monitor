@@ -23,7 +23,8 @@ function AddRoom() {
     var object: any = {
       name,
       temperatureSensorNodeId,
-      temperatureSensorEndpointId
+      temperatureSensorEndpointId,
+      heatLossPerDegree: parseInt(heatLossPerDegree!)
     };
 
     var json = JSON.stringify(object);

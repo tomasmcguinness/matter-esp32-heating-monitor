@@ -60,7 +60,7 @@ void subscribe_failure_cb(void *ctx)
     ESP_LOGE(TAG, "Failed to subscribe (context: %p)", ctx);
 }
 
-void subscribe_all_temperature_measurements(node_manager_t *controller)
+void subscribe_all_temperature_measurements(node_manager_t *manager)
 {
     struct SubscriptionKey
     {
@@ -75,7 +75,7 @@ void subscribe_all_temperature_measurements(node_manager_t *controller)
 
     std::set<SubscriptionKey> subscribed;
 
-    matter_node_t *node = controller->node_list;
+    matter_node_t *node = manager->node_list;
 
     while (node)
     {
@@ -149,7 +149,7 @@ void subscribe_all_temperature_measurements(node_manager_t *controller)
                                                                         std::move(event_paths),
                                                                         min_interval,
                                                                         max_interval,
-                                                                        true,
+                                                                        false,
                                                                         attribute_data_cb,
                                                                         nullptr,
                                                                         subscribe_done_cb,
@@ -290,7 +290,7 @@ esp_err_t remove_node(node_manager_t *controller, uint64_t node_id)
     return ESP_OK;
 }
 
-matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
+matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, char *name)
 {
     matter_node_t *new_node = (matter_node_t *)malloc(sizeof(matter_node_t));
 
@@ -306,6 +306,8 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
     new_node->product_name = NULL;
     new_node->node_label = NULL;
     new_node->location = NULL;
+
+    //new_node->name = name;
 
     new_node->next = controller->node_list;
 
@@ -333,14 +335,14 @@ endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id)
     return ep;
 }
 
-uint32_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id)
+esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id)
 {
     endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
 
     if (endpoint == NULL)
     {
         ESP_LOGE(TAG, "Failed to find endpoint %lu", endpoint_id);
-        return 0;
+        return ESP_FAIL;
     }
 
     uint32_t *new_device_type_ids = (uint32_t *)realloc(endpoint->device_type_ids, (endpoint->device_type_count + 1) * sizeof(uint32_t));
@@ -351,7 +353,24 @@ uint32_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t dev
 
     ESP_LOGI(TAG, "Added Device Type ID %u to Endpoint %u. There are now %u", device_type_id, endpoint_id, endpoint->device_type_count);
 
-    return device_type_id;
+    return ESP_OK;
+}
+
+esp_err_t clear_node_details(node_manager_t *manager, uint64_t node_id)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        ESP_LOGI(TAG,"Clearing node %llu of existing endpoint details", node_id);
+        node->endpoints_count = 0;
+        
+        // TODO Free existing memory
+
+        return ESP_OK;
+    }
+
+    return ESP_FAIL;
 }
 
 void node_manager_free(node_manager_t *controller)

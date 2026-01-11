@@ -115,20 +115,47 @@ static void process_parts_list_attribute_response(uint64_t node_id,
 
                 chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
                                                               {
-                                                                auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
+                                                                  auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
 
-                                                                uint32_t clusterId = Descriptor::Id;
-                                                                uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
+                                                                  // We want to read a few attributes from the Basic Information cluster.
+                                                                  //
+                                                                  ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+                                                                  attr_paths.Alloc(2);
 
-                                                                esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
-                                                                                                                                                            std::get<1>(*args),
-                                                                                                                                                            clusterId,
-                                                                                                                                                            attributeId,
-                                                                                                                                                            esp_matter::controller::READ_ATTRIBUTE,
-                                                                                                                                                            attribute_data_cb,
-                                                                                                                                                            nullptr,
-                                                                                                                                                            nullptr);
-                                                                read_attr_command->send_command(); },
+                                                                  if (!attr_paths.Get())
+                                                                  {
+                                                                      ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                                                                      return;
+                                                                  }
+
+                                                                  attr_paths[0] = AttributePathParams(std::get<1>(*args), Descriptor::Id, Descriptor::Attributes::DeviceTypeList::Id);
+                                                                  attr_paths[1] = AttributePathParams(std::get<1>(*args), FixedLabel::Id, FixedLabel::Attributes::LabelList::Id);
+
+                                                                  ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+                                                                  event_paths.Alloc(0);
+
+                                                                  esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
+                                                                                                                                                              std::move(attr_paths),
+                                                                                                                                                              std::move(event_paths),
+                                                                                                                                                              attribute_data_cb,
+                                                                                                                                                              nullptr,
+                                                                                                                                                              nullptr);
+
+                                                                  read_attr_command->send_command();
+
+                                                                  // uint32_t clusterId = Descriptor::Id;
+                                                                  // uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
+
+                                                                  // esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
+                                                                  //                                                                                             std::get<1>(*args),
+                                                                  //                                                                                             clusterId,
+                                                                  //                                                                                             attributeId,
+                                                                  //                                                                                             esp_matter::controller::READ_ATTRIBUTE,
+                                                                  //                                                                                             attribute_data_cb,
+                                                                  //                                                                                             nullptr,
+                                                                  //                                                                                             nullptr);
+                                                                  // read_attr_command->send_command();
+                                                              },
                                                               reinterpret_cast<intptr_t>(args));
             }
         }
@@ -208,12 +235,12 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                             esp_matter::controller::SUBSCRIBE_ATTRIBUTE,
                             min_interval,
                             max_interval,
-                            true,
+                            false,
                             attribute_data_cb,
                             nullptr,
                             subscribe_done,
                             subscribe_failed,
-                            true);
+                            false);
 
                         if (!cmd)
                         {
@@ -264,6 +291,42 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         ESP_LOGI(TAG, "Processing Descriptor->DeviceTypeList attribute response...");
         process_device_type_list_attribute_response(remote_node_id, path, data);
     }
+    else if (path.mClusterId == UserLabel::Id && path.mAttributeId == UserLabel::Attributes::LabelList::Id)
+    {
+        ESP_LOGI(TAG, "UserLabel Attribute Value received");
+        // if (data->GetType() == chip::TLV::kTLVType_UTF8String)
+        // {
+        //     chip::CharSpan value;
+
+        //     if (data->Get(value) == CHIP_NO_ERROR)
+        //     {
+        //         char *label = (char *)malloc(value.size() + 1);
+        //         memcpy(label, value.data(), value.size());
+        //         label[value.size()] = '\0';
+
+        //         ESP_LOGI(TAG, "User Name: %s", label);
+        //     }
+        // }
+    }
+    else if (path.mClusterId == FixedLabel::Id && path.mAttributeId == FixedLabel::Attributes::LabelList::Id)
+    {
+        ESP_LOGI(TAG, "FixedLabel Attribute Value received");
+
+        if (data->GetType() == chip::TLV::kTLVType_UTF8String)
+        {
+            //     chip::CharSpan value;
+
+            //     if (data->Get(value) == CHIP_NO_ERROR)
+            //     {
+            //         char *label = (char *)malloc(value.size() + 1);
+            //         memcpy(label, value.data(), value.size());
+            //         label[value.size()] = '\0';
+
+            //         ESP_LOGI(TAG, "Fixed Name: %s", label);
+            //     }
+        }
+    }
+
     else if (path.mClusterId == BasicInformation::Id)
     {
         ESP_LOGI(TAG, "Processing BasicInformation response...");
@@ -361,11 +424,11 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         int16_t temperature;
         chip::app::DataModel::Decode(*data, temperature);
 
-        ESP_LOGI(TAG, "Value: %d", temperature);
+        ESP_LOGI(TAG, "Temperature Value: %d", temperature);
 
         if (g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId)
         {
-            ESP_LOGI(TAG, "Node is assigned to the outdoor temperature sensor");
+            ESP_LOGI(TAG, "Device is assigned to the outdoor temperature sensor");
 
             g_home_manager.outdoor_temperature = temperature;
 
@@ -382,7 +445,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         {
             if (radiator->flow_temp_node_id == remote_node_id || radiator->return_temp_node_id == remote_node_id)
             {
-                ESP_LOGI(TAG, "Node is assigned to radiator %u", radiator->radiator_id);
+                ESP_LOGI(TAG, "Device is assigned to radiator %u", radiator->radiator_id);
 
                 cJSON *root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "channel", "radiator");
@@ -423,7 +486,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         {
             if (room->room_temperature_node_id == remote_node_id && room->room_temperature_endpoint_id == path.mEndpointId)
             {
-                ESP_LOGI(TAG, "Node is assigned to room %u", room->room_id);
+                ESP_LOGI(TAG, "Device is assigned to room %u", room->room_id);
 
                 room->temperature = temperature;
 
@@ -460,7 +523,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     char nodeIdStr[32];
     snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
 
-    add_node(&g_node_manager, nodeId);
+    add_node(&g_node_manager, nodeId, "Node Name");
 
     uint16_t endpointId = 0x0000;
     uint32_t clusterId = BasicInformation::Id;
@@ -468,7 +531,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     // We want to read a few attributes from the Basic Information cluster.
     //
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc(4);
+    attr_paths.Alloc(2);
 
     if (!attr_paths.Get())
     {
@@ -476,13 +539,11 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
         return;
     }
 
-    ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-    event_paths.Alloc(0);
-
     attr_paths[0] = AttributePathParams(endpointId, clusterId, BasicInformation::Attributes::VendorName::Id);
     attr_paths[1] = AttributePathParams(endpointId, clusterId, BasicInformation::Attributes::ProductName::Id);
-    attr_paths[2] = AttributePathParams(endpointId, clusterId, BasicInformation::Attributes::NodeLabel::Id);
-    attr_paths[3] = AttributePathParams(endpointId, clusterId, BasicInformation::Attributes::Location::Id);
+
+    ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+    event_paths.Alloc(0);
 
     esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(nodeId,
                                                                                                 std::move(attr_paths),
@@ -724,9 +785,6 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
         cJSON_AddStringToObject(jNode, "nodeId", std::to_string(node->node_id).c_str());
 
-        cJSON *endpointCount = cJSON_CreateNumber((double)node->endpoints_count);
-        cJSON_AddItemToObject(jNode, "endpointCount", endpointCount);
-
         if (node->vendor_name)
         {
             cJSON_AddStringToObject(jNode, "vendorName", node->vendor_name);
@@ -739,19 +797,22 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         {
             cJSON_AddStringToObject(jNode, "nodeLabel", node->node_label);
         }
-        if (node->location)
-        {
-            cJSON_AddStringToObject(jNode, "location", node->location);
-        }
 
-        cJSON *device_type_array = cJSON_CreateArray();
+        cJSON *endpoint_array = cJSON_CreateArray();
 
         for (uint16_t j = 0; j < node->endpoints_count; j++)
         {
+            cJSON *endpointJSON = cJSON_CreateObject();
+
             endpoint_entry_t endpoint = node->endpoints[j];
 
             ESP_LOGI(TAG, "Endpoint ID: %lu", endpoint.endpoint_id);
             ESP_LOGI(TAG, "DeviceTypes: %lu", endpoint.device_type_count);
+
+            cJSON_AddNumberToObject(endpointJSON, "endpointId", endpoint.endpoint_id);
+            //cJSON_AddNumberToObject("label", endpoint.endpoint_id);
+
+            cJSON *device_type_array = cJSON_CreateArray();
 
             for (uint16_t k = 0; k < endpoint.device_type_count; k++)
             {
@@ -762,10 +823,12 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
                 cJSON *number = cJSON_CreateNumber((double)device_type_id);
                 cJSON_AddItemToArray(device_type_array, number);
             }
+
+            cJSON_AddItemToObject(endpointJSON, "deviceTypes", device_type_array);
+            cJSON_AddItemToArray(endpoint_array, endpointJSON);
         }
 
-        cJSON_AddItemToObject(jNode, "deviceTypes", device_type_array);
-
+        cJSON_AddItemToObject(jNode, "endpoints", endpoint_array);
         cJSON_AddItemToArray(root, jNode);
 
         node = node->next;
@@ -833,6 +896,8 @@ static esp_err_t node_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "URL: %s", req->uri);
 
+    esp_err_t err = ESP_OK;
+
     char templatePath[] = "/api/nodes/:nodeId/:action";
     auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
     UrlTokenBindings bindings(templateItr, req->uri);
@@ -851,13 +916,56 @@ static esp_err_t node_put_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "PUT node %llu", node_id);
 
-    chip::DeviceLayer::PlatformMgr().LockChipStack();
-    esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
-    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+    // Select based on the action
+    //
+    if (strcmp("identify", bindings.get("action")) == 0)
+    {
+        ESP_LOGI(TAG, "Sending identify command");
+        chip::DeviceLayer::PlatformMgr().LockChipStack();
+        esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+    }
+    else if (strcmp("interview", bindings.get("action")) == 0)
+    {
+        ESP_LOGI(TAG, "Sending interview command");
+
+        clear_node_details(&g_node_manager, node_id);
+
+        uint16_t endpointId = 0x0000;
+        uint32_t clusterId = BasicInformation::Id;
+
+        // We want to read a few attributes from the Basic Information cluster.
+        //
+        ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+        attr_paths.Alloc(2);
+
+        if (!attr_paths.Get())
+        {
+            ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+            return ESP_FAIL;
+        }
+
+        attr_paths[0] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
+        attr_paths[1] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
+
+        ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+        event_paths.Alloc(0);
+
+        esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(node_id,
+                                                                                                    std::move(attr_paths),
+                                                                                                    std::move(event_paths),
+                                                                                                    attribute_data_cb,
+                                                                                                    attribute_data_read_done,
+                                                                                                    nullptr);
+
+        chip::DeviceLayer::PlatformMgr().LockChipStack();
+        err = read_attr_command->send_command();
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+    }
 
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Identification failed");
+        ESP_LOGE(TAG, "Action failed");
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_send(req, "Failed", HTTPD_RESP_USE_STRLEN);
     }
@@ -897,11 +1005,8 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
     const cJSON *returnSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorNodeId");
     const cJSON *returnSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorEndpointId");
 
-    char name[25];
-    memcpy(name, nameJSON->valuestring, strlen(nameJSON->valuestring));
-
     add_radiator(&g_radiator_manager,
-                 name,
+                 nameJSON->valuestring,
                  (uint8_t)typeJSON->valueint,
                  (uint16_t)outputJSON->valueint,
                  (uint64_t)flowSensorNodeIdJSON->valueint,
@@ -1048,10 +1153,9 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
     const cJSON *temperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorNodeId");
     const cJSON *temperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorEndpointId");
+    const cJSON *heatLossPerDegreeJSON = cJSON_GetObjectItemCaseSensitive(root, "heatLossPerDegree");
 
-    add_room(&g_room_manager, nameJSON->valuestring, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint);
-
-    save_rooms_to_nvs(&g_room_manager);
+    add_room(&g_room_manager, nameJSON->valuestring, (uint8_t)heatLossPerDegreeJSON->valueint, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint);
 
     // TODO Return the new room in JSON!
     //
@@ -1149,6 +1253,7 @@ static esp_err_t room_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "name", room->name);
     cJSON_AddNumberToObject(root, "temperature", room->temperature);
     cJSON_AddNumberToObject(root, "heatLossPerDegree", room->heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "heatLoss", room->heat_loss);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -1170,10 +1275,9 @@ static esp_err_t room_get_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(radiatorNode, "radiatorId", radiator->radiator_id);
             cJSON_AddStringToObject(radiatorNode, "name", radiator->name);
             cJSON_AddNumberToObject(radiatorNode, "type", radiator->type);
-            cJSON_AddNumberToObject(radiatorNode, "output", radiator->output_dt_50);
             cJSON_AddNumberToObject(radiatorNode, "flowTemp", radiator->flow_temperature);
             cJSON_AddNumberToObject(radiatorNode, "returnTemp", radiator->return_temperature);
-
+            cJSON_AddNumberToObject(radiatorNode, "currentOutput", radiator->heat_output);
             cJSON_AddItemToArray(radiators, radiatorNode);
         }
     }
@@ -1241,8 +1345,8 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 
     update_room(&g_room_manager, room_id, (uint8_t)heatLossPerDegreeJSON->valueint, radiator_count, radiator_ids);
 
-    room_t *room = find_room(g_room_manager, room_id);
-    update_room_heat_loss(&g_home_manager, g_room_manager, room);
+    room_t *room = find_room(&g_room_manager, room_id);
+    update_room_heat_loss(&g_home_manager, &g_room_manager, room);
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);

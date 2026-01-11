@@ -82,7 +82,7 @@ void update_room_heat_loss(home_manager_t *home_manager, room_manager_t *room_ma
     ESP_LOGI(TAG, "Outdoor temperature is %d", home_manager->outdoor_temperature);
     ESP_LOGI(TAG, "Room %u has a temperature of %d", room->room_id, room->temperature);
     ESP_LOGI(TAG, "Room %u has a room -> outdoors ΔT of %f", room->room_id, delta_t);
-    ESP_LOGI(TAG, "Room %u has heat loss per °C of %u", room->room_id, room->heat_loss_per_degree);
+    ESP_LOGI(TAG, "Room %u has heat loss of %u W/°C", room->room_id, room->heat_loss_per_degree);
 
     room->heat_loss = delta_t * room->heat_loss_per_degree;
 }

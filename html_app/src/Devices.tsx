@@ -20,57 +20,74 @@ function Devices() {
     fetchNodes();
   }, []);
 
-  let nodes = nodeList.map((n: any) => {
+  let nodes = nodeList.sort((a: any, b: any) => a.nodeId > b.nodeId ? 1 : -1).map((n: any) => {
 
-    const deviceTypes = n.deviceTypes.map((dt: number) => {
+    let endpoints = n.endpoints.map((endpoint: any) => {
 
-      var name = dt.toString();
+      const deviceTypes = endpoint.deviceTypes.map((dt: number) => {
 
-      switch (dt) {
-        case 777:
-          name = "Heat Pump";
-          break;
-        case 1296:
-          name = "Electrical Sensor";
-          break;
-        case 17:
-          name = "Power Source";
-          break;
-        case 15:
-          name = "Generic Switch";
-          break;
-        case 769:
-          name = "Thermostat";
-          break;
-        case 770:
-          name = "Temperature Sensor";
-          break;
-        case 775:
-          name = "Humidity Sensor";
-          break;
-        case 1293:
-          name = "Device Energy Manager";
-          break;
-        case 117:
-          name = "Dishwasher";
-          break;
-        case 269:
-          name = "Extended Color Light";
-          break;
-      }
+        var name = dt.toString();
 
-      return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
+        switch (dt) {
+          case 777:
+            name = "Heat Pump";
+            break;
+          case 1296:
+            name = "Electrical Sensor";
+            break;
+          case 17:
+            name = "Power Source";
+            break;
+          case 15:
+            name = "Generic Switch";
+            break;
+          case 769:
+            name = "Thermostat";
+            break;
+          case 770:
+            name = "Temperature Sensor";
+            break;
+          case 775:
+            name = "Humidity Sensor";
+            break;
+          case 1293:
+            name = "Device Energy Manager";
+            break;
+          case 117:
+            name = "Dishwasher";
+            break;
+          case 269:
+            name = "Extended Color Light";
+            break;
+        }
+
+        return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
+      });
+
+      return (<tr><td>{endpoint.endpointId}</td><td></td><td>{deviceTypes}</td></tr>)
     });
 
-    return (<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
+    return ([<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.nodeId.toString(16)}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
       <td>{n.nodeLabel}</td>
-      <td>{n.location}</td>
-      <td>{n.endpointCount}</td>
-      <td>{deviceTypes}</td>
-    </tr>);
+    </tr>, <tr>
+      <td colSpan={4}>
+        <table className="table">
+          <thead>
+            <tr>
+              <td>ID</td>
+              <td>Label</td>
+              <td>Devices</td>
+            </tr>
+          </thead>
+          <tbody>
+            {endpoints}
+          </tbody>
+        </table>
+      </td>
+    </tr>]);
   });
 
   return (
@@ -80,12 +97,9 @@ function Devices() {
       <table className="table table-striped table-bordered">
         <thead>
           <tr>
-            <th>Node ID</th>
+            <th>ID</th>
             <th>Vendor</th>
             <th>Product</th>
-            <th>Label</th>
-            <th>Location</th>
-            <th>#Endpoint</th>
             <th>Device Types</th>
           </tr>
         </thead>

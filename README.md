@@ -35,6 +35,12 @@ With the ESP32 console openEnter the command into the console to connect the boa
 matter esp wifi connect {SSID} {Password}
 ```
 
+### Ethernet Expansion board
+
+There is an ethernet expansion board available for the Espressif OBTR DevKit. I don't support this yet, but plan to. When it arrives, I'll add a compiler flag.
+
+Having an ethernet connection will make setup easier.
+
 ## Commissioning
 
 Once connected, find the IP address in the logs (I will add an mDNS entry once I've figured out provisioning)
@@ -51,7 +57,17 @@ When it's done, the device will appear under the Device tab.
 
 ![alt text](image-1.png)
 
+# TODO
+
+* [] Improve subscriptions
+* [] Real-Time UI updates
+* [] Saving data onto SD card
+* [] Sending data via MQTT
+* [] Ability to configure Thread Dataset via UI
+* [] Indicate subscription status in the UI
+* [] mDNS support for easier access
+
 # Thanks
 
 I want to thank the author of the ESP_MATTER_CONTROLLER project as it gave me a lot of guidance, pointers and clues! https://github.com/Live-Control-Project/ESP_MATTER_CONTROLLER
-https://github.com/sidoh/path_variable_handlers
+I'm also using this project to help parse some of the URIs https://github.com/sidoh/path_variable_handlers

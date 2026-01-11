@@ -15,7 +15,10 @@ function Rooms() {
   useEffect(() => {
 
     subscribe("room", (message: any) => {
-      setRoomList(roomList.map((a: any) => (a.roomId === message.roomId ? { ...a, temperature: message.temperature } : a)))
+      console.log({ message });
+      // var updatedRooms = roomList.map((room: any) => (room.roomId === message.roomId ? { ...room, temperature: message.temperature } : room));
+      // console.log({updatedRooms});
+      // setRoomList(updatedRooms);
     })
 
     return () => {
@@ -42,6 +45,7 @@ function Rooms() {
     fetchRooms();
   }, []);
 
+  // TODO Sort by name
   let rooms = roomList.map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.roomId}</td>
@@ -49,18 +53,15 @@ function Rooms() {
       <td><Temperature>{n.temperature}</Temperature></td>
       <td><Power>{n.heatLoss}</Power></td>
       <td><Power>{n.combinedRadiatorOutput}</Power></td>
-      </tr>);
+    </tr>);
   });
-
-  if (rooms.length == 0) {
-    return (<div className="alert alert-info">There are no rooms</div>)
-  }
 
   return (
     <>
       <h1>Rooms</h1>
       <hr />
-      <table className="table table-striped table-bordered">
+      {rooms.length === 0 && <div className="alert alert-info">There are no rooms. Add one!</div>}
+      {rooms.length > 0 && <table className="table table-striped table-bordered">
         <thead>
           <tr>
             <th style={{ width: 'auto' }}>ID</th>
@@ -73,7 +74,7 @@ function Rooms() {
         <tbody>
           {rooms}
         </tbody>
-      </table>
+      </table>}
       <NavLink className="btn btn-primary" to="/rooms/add">Add Room</NavLink>
     </>
   )
