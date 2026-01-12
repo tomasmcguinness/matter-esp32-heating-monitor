@@ -251,30 +251,6 @@ esp_err_t remove_node(node_manager_t *controller, uint64_t node_id)
         free(current->endpoints);
     }
 
-    // for (uint16_t i = 0; i < current->server_clusters_count; i++)
-    // {
-    //     if (current->server_clusters[i].attributes)
-    //     {
-    //         free(current->server_clusters[i].attributes);
-    //     }
-    // }
-    // if (current->server_clusters)
-    // {
-    //     free(current->server_clusters);
-    // }
-
-    // for (uint16_t i = 0; i < current->client_clusters_count; i++)
-    // {
-    //     if (current->client_clusters[i].attributes)
-    //     {
-    //         free(current->client_clusters[i].attributes);
-    //     }
-    // }
-    // if (current->client_clusters)
-    // {
-    //     free(current->client_clusters);
-    // }
-
     free(current);
     controller->node_count--;
 
@@ -305,9 +281,8 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, char *name
     new_node->vendor_name = NULL;
     new_node->product_name = NULL;
     new_node->node_label = NULL;
-    new_node->location = NULL;
 
-    //new_node->name = name;
+    new_node->name = name;
 
     new_node->next = controller->node_list;
 
@@ -333,6 +308,36 @@ endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id)
     node->endpoints_count++;
 
     return ep;
+}
+
+esp_err_t add_fixed_label(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name)
+{
+    endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
+
+    if (endpoint == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to find endpoint %lu", endpoint_id);
+        return ESP_FAIL;
+    }
+
+    endpoint->fixed_label_name = fixed_label_name;
+
+    return ESP_OK;
+}
+
+esp_err_t add_power_source(matter_node_t *node, uint16_t endpoint_id, bool battery_powered)
+{
+    endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
+
+    if (endpoint == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to find endpoint %lu", endpoint_id);
+        return ESP_FAIL;
+    }
+
+    //endpoint->battery_powered = battery_powered;
+
+    return ESP_OK;
 }
 
 esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id)
@@ -480,14 +485,6 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         memcpy(node->node_label, ptr, node->node_label_length);
         ptr += node->node_label_length;
 
-        // Location
-        node->location_length = *((uint16_t *)ptr);
-        ptr += sizeof(uint16_t);
-
-        node->location = (char *)calloc(node->location_length + 1, sizeof(char));
-        memcpy(node->location, ptr, node->location_length);
-        ptr += node->location_length;
-
         // endpoints
         node->endpoints_count = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
@@ -555,8 +552,9 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
         required_size += strlen(current->product_name);
         required_size += sizeof(uint16_t);
         required_size += strlen(current->node_label);
-        required_size += sizeof(uint16_t);
-        required_size += strlen(current->location);
+
+        required_size += sizeof(uint8_t);
+        required_size += strlen(current->name);
 
         // Make space for the endpoints
         required_size += sizeof(uint16_t); // endpoints_count
@@ -564,6 +562,10 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
         for (uint16_t e = 0; e < current->endpoints_count; e++)
         {
             required_size += sizeof(uint16_t); // endpoint_id
+
+            required_size += sizeof(uint8_t);
+            required_size += strlen(current->endpoints[e].fixed_label_name);
+
             required_size += sizeof(uint16_t); // device_type_count
 
             for (uint16_t dt = 0; dt < current->endpoints[e].device_type_count; dt++)
@@ -638,18 +640,18 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
         }
 
         // Location
-        if (current->location)
+        if (current->name)
         {
-            *((uint16_t *)ptr) = strlen(current->location);
-            ptr += sizeof(uint16_t);
+            *((uint8_t *)ptr) = strlen(current->name);
+            ptr += sizeof(uint8_t);
 
-            memcpy(ptr, current->location, strlen(current->location));
-            ptr += strlen(current->location);
+            memcpy(ptr, current->name, strlen(current->name));
+            ptr += strlen(current->name);
         }
         else
         {
-            *((uint16_t *)ptr) = 0;
-            ptr += sizeof(uint16_t);
+            *((uint8_t *)ptr) = 0;
+            ptr += sizeof(uint8_t);
         }
 
         // Save endpoints
@@ -661,6 +663,13 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
             endpoint_entry_t *ep = &current->endpoints[e];
             *((uint16_t *)ptr) = ep->endpoint_id;
             ptr += sizeof(uint16_t);
+
+            // Save fixed label name
+            *((uint8_t *)ptr) = strlen(ep->fixed_label_name);
+            ptr += sizeof(uint8_t);
+
+            memcpy(ptr, ep->fixed_label_name, strlen(ep->fixed_label_name));
+            ptr += strlen(ep->fixed_label_name);
 
             // Save device types
             *((uint16_t *)ptr) = ep->device_type_count;

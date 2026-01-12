@@ -72,7 +72,10 @@ function Devices() {
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
       <td>{n.nodeLabel}</td>
-    </tr>, <tr>
+    </tr>,
+
+
+    <tr>
       <td colSpan={4}>
         <table className="table">
           <thead>
@@ -94,19 +97,20 @@ function Devices() {
     <>
       <h1>Devices</h1>
       <hr />
-      <table className="table table-striped table-bordered">
+      {nodes.length === 0 && <div className="alert alert-info">There are no devices. Add one!</div>}
+      {nodes.length > 0 && <table className="table table-striped table-bordered">
         <thead>
           <tr>
             <th>ID</th>
             <th>Vendor</th>
             <th>Product</th>
-            <th>Device Types</th>
+            <th>Label</th>
           </tr>
         </thead>
         <tbody>
           {nodes}
         </tbody>
-      </table>
+      </table >}
       <NavLink className="btn btn-primary" to="/devices/add">Add Device</NavLink>
     </>
   )

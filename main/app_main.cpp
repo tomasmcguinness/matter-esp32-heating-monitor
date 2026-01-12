@@ -130,7 +130,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
 
                                                                   attr_paths[0] = AttributePathParams(std::get<1>(*args), Descriptor::Id, Descriptor::Attributes::DeviceTypeList::Id);
                                                                   attr_paths[1] = AttributePathParams(std::get<1>(*args), FixedLabel::Id, FixedLabel::Attributes::LabelList::Id);
-
+                                                                  
                                                                   ScopedMemoryBufferWithSize<EventPathParams> event_paths;
                                                                   event_paths.Alloc(0);
 
@@ -142,19 +142,6 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                                                                                                               nullptr);
 
                                                                   read_attr_command->send_command();
-
-                                                                  // uint32_t clusterId = Descriptor::Id;
-                                                                  // uint32_t attributeId = Descriptor::Attributes::DeviceTypeList::Id;
-
-                                                                  // esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
-                                                                  //                                                                                             std::get<1>(*args),
-                                                                  //                                                                                             clusterId,
-                                                                  //                                                                                             attributeId,
-                                                                  //                                                                                             esp_matter::controller::READ_ATTRIBUTE,
-                                                                  //                                                                                             attribute_data_cb,
-                                                                  //                                                                                             nullptr,
-                                                                  //                                                                                             nullptr);
-                                                                  // read_attr_command->send_command();
                                                               },
                                                               reinterpret_cast<intptr_t>(args));
             }
@@ -222,6 +209,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                     add_device_type(node, path.mEndpointId, device_type_id);
 
                     // If this Endpoint is a Temperature Sensor, subscribe to the Sensor.
+                    //
                     if (device_type_id == 770)
                     {
                         uint16_t min_interval = 0;
@@ -326,6 +314,25 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             //     }
         }
     }
+    else if (path.mClusterId == PowerSource::Id)
+    {
+        ESP_LOGI(TAG, "Processing PowerSource response...");
+        if (path.mAttributeId == PowerSource::Attributes::FeatureMap::Id)
+        {
+            uint32_t feature_map;
+            chip::app::DataModel::Decode(*data, feature_map);
+
+            bool is_wired = feature_map & (uint32_t)PowerSource::Feature::kWired;
+            if (is_wired)
+            {
+                ESP_LOGI(TAG, "PowerSource: WIRED");
+            }
+            else if ((feature_map & (uint32_t)PowerSource::Feature::kBattery))
+            {
+                ESP_LOGI(TAG, "PowerSource: BAT");
+            }
+        }
+    }
 
     else if (path.mClusterId == BasicInformation::Id)
     {
@@ -380,41 +387,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     ESP_LOGI(TAG, "Node Label: %s", node->node_label);
                 }
             }
-        }
-        else if (path.mAttributeId == BasicInformation::Attributes::Location::Id)
-        {
-            if (data->GetType() == chip::TLV::kTLVType_UTF8String)
-            {
-                chip::CharSpan value;
-
-                if (data->Get(value) == CHIP_NO_ERROR)
-                {
-                    node->location = (char *)malloc(value.size() + 1);
-                    memcpy(node->location, value.data(), value.size());
-                    node->location[value.size()] = '\0';
-
-                    ESP_LOGI(TAG, "Location: %s", node->location);
-                }
-            }
-
-            ESP_LOGI(TAG, "Finished reading Basic Information cluster attributes.");
-
-            // We're finished with the Basic Information cluster, so now read the Descriptor->PartsList attribute to get the list of endpoints.
-            //
-            uint16_t endpointId = 0x0000;
-            uint32_t clusterId = Descriptor::Id;
-            uint32_t attributeId = Descriptor::Attributes::PartsList::Id;
-
-            esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(remote_node_id,
-                                                                                                        endpointId,
-                                                                                                        clusterId,
-                                                                                                        attributeId,
-                                                                                                        esp_matter::controller::READ_ATTRIBUTE,
-                                                                                                        attribute_data_cb,
-                                                                                                        attribute_data_read_done,
-                                                                                                        nullptr);
-
-            read_attr_command->send_command();
         }
     }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
@@ -523,15 +495,15 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     char nodeIdStr[32];
     snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
 
-    add_node(&g_node_manager, nodeId, "Node Name");
+    // TODO Grab the node name from the User??
+    add_node(&g_node_manager, nodeId, "New Node Name");
 
     uint16_t endpointId = 0x0000;
-    uint32_t clusterId = BasicInformation::Id;
 
     // We want to read a few attributes from the Basic Information cluster.
     //
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc(2);
+    attr_paths.Alloc(3);
 
     if (!attr_paths.Get())
     {
@@ -539,8 +511,11 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
         return;
     }
 
-    attr_paths[0] = AttributePathParams(endpointId, clusterId, BasicInformation::Attributes::VendorName::Id);
-    attr_paths[1] = AttributePathParams(endpointId, clusterId, BasicInformation::Attributes::ProductName::Id);
+    attr_paths[0] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
+    attr_paths[1] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
+    attr_paths[2] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
+    attr_paths[3] = AttributePathParams(endpointId, PowerSource::Id, PowerSource::Attributes::FeatureMap::Id);
+    attr_paths[3] = AttributePathParams(endpointId, PowerSource::Id, PowerSource::Attributes::FeatureMap::Id);
 
     ScopedMemoryBufferWithSize<EventPathParams> event_paths;
     event_paths.Alloc(0);
@@ -810,7 +785,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
             ESP_LOGI(TAG, "DeviceTypes: %lu", endpoint.device_type_count);
 
             cJSON_AddNumberToObject(endpointJSON, "endpointId", endpoint.endpoint_id);
-            //cJSON_AddNumberToObject("label", endpoint.endpoint_id);
+            // cJSON_AddNumberToObject("label", endpoint.endpoint_id);
 
             cJSON *device_type_array = cJSON_CreateArray();
 
@@ -931,13 +906,12 @@ static esp_err_t node_put_handler(httpd_req_t *req)
 
         clear_node_details(&g_node_manager, node_id);
 
-        uint16_t endpointId = 0x0000;
-        uint32_t clusterId = BasicInformation::Id;
+        uint16_t endpointId = 0x0000; // Root
 
         // We want to read a few attributes from the Basic Information cluster.
         //
         ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-        attr_paths.Alloc(2);
+        attr_paths.Alloc(5);
 
         if (!attr_paths.Get())
         {
@@ -947,6 +921,9 @@ static esp_err_t node_put_handler(httpd_req_t *req)
 
         attr_paths[0] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
         attr_paths[1] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
+        attr_paths[2] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
+        attr_paths[3] = AttributePathParams(endpointId, PowerSource::Id, PowerSource::Attributes::FeatureMap::Id);
+        attr_paths[4] = AttributePathParams(endpointId, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
 
         ScopedMemoryBufferWithSize<EventPathParams> event_paths;
         event_paths.Alloc(0);

@@ -5,6 +5,10 @@
 typedef struct matter_endpoint
 {
     uint16_t endpoint_id;
+
+    uint8_t fixed_label_name_length;
+    char *fixed_label_name;
+
     uint32_t *device_type_ids;
     uint8_t device_type_count;
 } endpoint_entry_t;
@@ -18,8 +22,10 @@ typedef struct matter_node
     char *product_name;
     uint16_t node_label_length;
     char *node_label;
-    uint16_t location_length;
-    char *location;
+    
+    uint8_t name_length;
+    char *name;
+
     endpoint_entry_t *endpoints;
     uint16_t endpoints_count;
 
