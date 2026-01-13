@@ -59,13 +59,13 @@ When it's done, the device will appear under the Device tab.
 
 # TODO
 
-* [] Improve subscriptions
-* [] Real-Time UI updates
-* [] Saving data onto SD card
-* [] Sending data via MQTT
-* [] Ability to configure Thread Dataset via UI
-* [] Indicate subscription status in the UI
-* [] mDNS support for easier access
+* [ ] Improve subscriptions
+* [ ] Real-Time UI updates
+* [ ] Saving data onto SD card
+* [ ] Sending data via MQTT
+* [ ] Ability to configure Thread Dataset via UI
+* [ ] Indicate subscription status in the UI
+* [ ] mDNS support for easier access
 
 # Thanks
 
