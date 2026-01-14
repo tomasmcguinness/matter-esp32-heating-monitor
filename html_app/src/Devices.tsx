@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
+import PowerSource from "./PowerSource"
 
 function Devices() {
 
@@ -22,7 +23,7 @@ function Devices() {
 
   let nodes = nodeList.sort((a: any, b: any) => a.nodeId > b.nodeId ? 1 : -1).map((n: any) => {
 
-    let endpoints = n.endpoints.map((endpoint: any) => {
+    let endpoints = n.endpoints.sort((a: any, b: any) => a.endpointId > b.endpointId ? 1 : -1).map((endpoint: any) => {
 
       const deviceTypes = endpoint.deviceTypes.map((dt: number) => {
 
@@ -38,14 +39,26 @@ function Devices() {
           case 17:
             name = "Power Source";
             break;
+          case 19:
+            name = "Bridged Device";
+            break;
+          case 14:
+            name = "Aggregator";
+            break;
           case 15:
             name = "Generic Switch";
+            break;
+          case 266:
+            name = "On/Off Plug-in Unit";
             break;
           case 769:
             name = "Thermostat";
             break;
           case 770:
             name = "Temperature Sensor";
+            break;
+          case 773:
+            name = "Pressure Sensor";
             break;
           case 775:
             name = "Humidity Sensor";
@@ -64,25 +77,25 @@ function Devices() {
         return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
       });
 
-      return (<tr><td>{endpoint.endpointId}</td><td></td><td>{deviceTypes}</td></tr>)
+      return (<tr><td>{endpoint.endpointId}</td><td>{endpoint.endpointName}</td><td>{deviceTypes}</td><td><PowerSource powerSource={endpoint.powerSource} /></td></tr>)
     });
 
     return ([<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.nodeId.toString(16)}</td>
+      <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
-      <td>{n.nodeLabel}</td>
+      <td><PowerSource powerSource={n.powerSource} /></td>
     </tr>,
-
-
     <tr>
-      <td colSpan={4}>
+      <td colSpan={5}>
         <table className="table">
           <thead>
             <tr>
-              <td>ID</td>
-              <td>Label</td>
-              <td>Devices</td>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Devices</th>
+              <th/>
             </tr>
           </thead>
           <tbody>
@@ -102,9 +115,10 @@ function Devices() {
         <thead>
           <tr>
             <th>ID</th>
+            <th>Name</th>
             <th>Vendor</th>
             <th>Product</th>
-            <th>Label</th>
+            <th>Power</th>
           </tr>
         </thead>
         <tbody>

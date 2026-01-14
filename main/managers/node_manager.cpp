@@ -102,72 +102,75 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
             {
                 uint32_t device_type_id = ep->device_type_ids[device_type_idx];
 
-                if (device_type_id == 770)
+                if (device_type_id == 770) // TODO Use the definition for this.
                 {
                     temperature_endpoint_count++;
                 }
             }
         }
 
-        // We may need to read multiple attributes.
-        //
-        ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-        attr_paths.Alloc(temperature_endpoint_count);
-
-        if (!attr_paths.Get())
+        if (temperature_endpoint_count > 0)
         {
-            ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-            return;
-        }
+            // We may need to read multiple attributes to use paths
+            //
+            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+            attr_paths.Alloc(temperature_endpoint_count);
 
-        uint8_t temperature_measurement_endpoint_index = 0;
-
-        for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
-        {
-            endpoint_entry_t *ep = &node->endpoints[ep_idx];
-
-            for (uint8_t device_type_idx = 0; device_type_idx < ep->device_type_count; ++device_type_idx)
+            if (!attr_paths.Get())
             {
-                uint32_t device_type_id = ep->device_type_ids[device_type_idx];
+                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                return;
+            }
 
-                if (device_type_id == 770)
+            uint8_t temperature_measurement_endpoint_index = 0;
+
+            for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
+            {
+                endpoint_entry_t *ep = &node->endpoints[ep_idx];
+
+                for (uint8_t device_type_idx = 0; device_type_idx < ep->device_type_count; ++device_type_idx)
                 {
-                    attr_paths[temperature_measurement_endpoint_index++] = AttributePathParams(ep->endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-                    ESP_LOGI(TAG, "Added path to Temperature Measurement for node %llu, endpoint %d", node->node_id, ep->endpoint_id);
+                    uint32_t device_type_id = ep->device_type_ids[device_type_idx];
+
+                    if (device_type_id == 770)
+                    {
+                        attr_paths[temperature_measurement_endpoint_index++] = AttributePathParams(ep->endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+                        ESP_LOGI(TAG, "Added path to Temperature Measurement for node %llu, endpoint %d", node->node_id, ep->endpoint_id);
+                    }
                 }
             }
-        }
 
-        ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-        event_paths.Alloc(0);
+            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+            event_paths.Alloc(0);
 
-        uint16_t min_interval = 0;
-        uint16_t max_interval = 15;
+            uint16_t min_interval = 0;
+            uint16_t max_interval = 15;
 
-        subscribe_command *cmd = chip::Platform::New<subscribe_command>(node->node_id,
-                                                                        std::move(attr_paths),
-                                                                        std::move(event_paths),
-                                                                        min_interval,
-                                                                        max_interval,
-                                                                        false,
-                                                                        attribute_data_cb,
-                                                                        nullptr,
-                                                                        subscribe_done_cb,
-                                                                        subscribe_failure_cb,
-                                                                        false);
+            subscribe_command *cmd = chip::Platform::New<subscribe_command>(node->node_id,
+                                                                            std::move(attr_paths),
+                                                                            std::move(event_paths),
+                                                                            min_interval,
+                                                                            max_interval,
+                                                                            false,
+                                                                            attribute_data_cb,
+                                                                            nullptr,
+                                                                            subscribe_done_cb,
+                                                                            subscribe_failure_cb,
+                                                                            false);
 
-        if (!cmd)
-        {
-            ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-        }
-        else
-        {
-            ESP_LOGI(TAG, "Subscribing to Temperature Measurements for node %llu", node->node_id);
-            esp_err_t err = cmd->send_command();
-
-            if (err != ESP_OK)
+            if (!cmd)
             {
-                ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Subscribing to Temperature Measurements for node %llu", node->node_id);
+                esp_err_t err = cmd->send_command();
+
+                if (err != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                }
             }
         }
 
@@ -175,9 +178,9 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
     }
 }
 
-matter_node_t *find_node(node_manager_t *controller, uint64_t node_id)
+matter_node_t *find_node(node_manager_t *manager, uint64_t node_id)
 {
-    matter_node_t *current = controller->node_list;
+    matter_node_t *current = manager->node_list;
 
     while (current != NULL)
     {
@@ -192,7 +195,7 @@ matter_node_t *find_node(node_manager_t *controller, uint64_t node_id)
     return NULL;
 }
 
-endpoint_entry_t *find_endpoint(node_manager_t *controller, matter_node_t *node, uint16_t endpoint_id)
+endpoint_entry_t *find_endpoint(matter_node_t *node, uint16_t endpoint_id)
 {
     for (uint16_t i = 0; i < node->endpoints_count; i++)
     {
@@ -278,10 +281,8 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, char *name
     memset(new_node, 0, sizeof(matter_node_t));
 
     new_node->node_id = node_id;
-    new_node->vendor_name = NULL;
-    new_node->product_name = NULL;
-    new_node->node_label = NULL;
-
+    new_node->vendor_name = "not-specified";
+    new_node->product_name = "not-specified";
     new_node->name = name;
 
     new_node->next = controller->node_list;
@@ -305,14 +306,15 @@ endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id)
     endpoint_entry_t *ep = &node->endpoints[node->endpoints_count];
     memset(ep, 0, sizeof(endpoint_entry_t));
     ep->endpoint_id = endpoint_id;
+
     node->endpoints_count++;
 
     return ep;
 }
 
-esp_err_t add_fixed_label(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name)
+esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *name)
 {
-    endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
+    endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
 
     if (endpoint == NULL)
     {
@@ -320,14 +322,14 @@ esp_err_t add_fixed_label(matter_node_t *node, uint16_t endpoint_id, char *fixed
         return ESP_FAIL;
     }
 
-    endpoint->fixed_label_name = fixed_label_name;
+    endpoint->name = name;
 
     return ESP_OK;
 }
 
-esp_err_t add_power_source(matter_node_t *node, uint16_t endpoint_id, bool battery_powered)
+esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source)
 {
-    endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
+     endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
 
     if (endpoint == NULL)
     {
@@ -335,14 +337,26 @@ esp_err_t add_power_source(matter_node_t *node, uint16_t endpoint_id, bool batte
         return ESP_FAIL;
     }
 
-    //endpoint->battery_powered = battery_powered;
+    endpoint->power_source = power_source;
 
+    return ESP_OK;
+}
+
+esp_err_t set_node_name(matter_node_t *node, char *name)
+{
+    node->name = name;
+    return ESP_OK;
+}
+
+esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source)
+{
+    node->power_source = power_source;
     return ESP_OK;
 }
 
 esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id)
 {
-    endpoint_entry_t *endpoint = find_endpoint(NULL, node, endpoint_id);
+    endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
 
     if (endpoint == NULL)
     {
@@ -367,9 +381,9 @@ esp_err_t clear_node_details(node_manager_t *manager, uint64_t node_id)
 
     if (node)
     {
-        ESP_LOGI(TAG,"Clearing node %llu of existing endpoint details", node_id);
+        ESP_LOGI(TAG, "Clearing node %llu of existing endpoint details", node_id);
         node->endpoints_count = 0;
-        
+
         // TODO Free existing memory
 
         return ESP_OK;
@@ -456,7 +470,7 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         node->node_id = *((uint64_t *)ptr);
         ptr += sizeof(uint64_t);
 
-        ESP_LOGI(TAG, "Loaded node 0x%016llX from NVS", node->node_id);
+        ESP_LOGI(TAG, "Processing node 0x%016llX from NVS", node->node_id);
 
         // Vendor
         node->vendor_name_length = *((uint16_t *)ptr);
@@ -476,16 +490,20 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         memcpy(node->product_name, ptr, node->product_name_length);
         ptr += node->product_name_length;
 
-        // Node Label
-        node->node_label_length = *((uint16_t *)ptr);
-        ptr += sizeof(uint16_t);
+        // Name
+        node->name_length = *((uint8_t *)ptr);
+        ptr += sizeof(uint8_t);
 
-        node->node_label = (char *)calloc(node->node_label_length + 1, sizeof(char));
+        node->name = (char *)calloc(node->name_length + 1, sizeof(char));
 
-        memcpy(node->node_label, ptr, node->node_label_length);
-        ptr += node->node_label_length;
+        memcpy(node->name, ptr, node->name_length);
+        ptr += node->name_length;
+        
+        // Power Source
+        node->power_source = *((uint8_t *)ptr);
+        ptr += sizeof(uint8_t);
 
-        // endpoints
+        // Endpoints
         node->endpoints_count = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
@@ -499,6 +517,14 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
                 endpoint_entry_t *ep = &node->endpoints[e];
                 ep->endpoint_id = *((uint16_t *)ptr);
                 ptr += sizeof(uint16_t);
+
+                ep->name_length = *((uint8_t *)ptr);
+                ptr += sizeof(uint8_t);
+
+                ep->name = (char *)calloc(ep->name_length + 1, sizeof(char));
+
+                memcpy(ep->name, ptr, ep->name_length);
+                ptr += ep->name_length;
 
                 ep->device_type_count = *((uint16_t *)ptr);
                 ptr += sizeof(uint16_t);
@@ -524,9 +550,11 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
     return ESP_OK;
 }
 
-esp_err_t save_nodes_to_nvs(node_manager_t *controller)
+esp_err_t save_nodes_to_nvs(node_manager_t *manager)
 {
-    if (!controller)
+    ESP_LOGI(TAG, "Saving nodes...");
+
+    if (!manager)
     {
         return ESP_ERR_INVALID_ARG;
     }
@@ -539,7 +567,7 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
         return err;
 
     size_t required_size = sizeof(uint16_t); // node_count
-    matter_node_t *current = controller->node_list;
+    matter_node_t *current = manager->node_list;
 
     while (current)
     {
@@ -547,14 +575,16 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
 
         // Save basic information.
         required_size += sizeof(uint16_t);
-        required_size += strlen(current->vendor_name);
+        required_size += current->vendor_name ? strlen(current->vendor_name) : 0;
         required_size += sizeof(uint16_t);
-        required_size += strlen(current->product_name);
-        required_size += sizeof(uint16_t);
-        required_size += strlen(current->node_label);
+        required_size += current->product_name ? strlen(current->product_name) : 0; 
 
+        // Save Name
         required_size += sizeof(uint8_t);
-        required_size += strlen(current->name);
+        required_size += current->name ? strlen(current->name) : 0;
+
+        // Save Power Source
+        required_size += sizeof(uint8_t); // power_source
 
         // Make space for the endpoints
         required_size += sizeof(uint16_t); // endpoints_count
@@ -564,7 +594,9 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
             required_size += sizeof(uint16_t); // endpoint_id
 
             required_size += sizeof(uint8_t);
-            required_size += strlen(current->endpoints[e].fixed_label_name);
+            required_size += current->endpoints[e].name ? strlen(current->endpoints[e].name) : 0;
+
+            // endpoint power_source can go here too.
 
             required_size += sizeof(uint16_t); // device_type_count
 
@@ -585,10 +617,10 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
     }
     uint8_t *ptr = buffer;
 
-    *((uint16_t *)ptr) = controller->node_count;
+    *((uint16_t *)ptr) = manager->node_count;
     ptr += sizeof(uint16_t);
 
-    current = controller->node_list;
+    current = manager->node_list;
     while (current)
     {
         *((uint64_t *)ptr) = current->node_id;
@@ -624,22 +656,7 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
             ptr += sizeof(uint16_t);
         }
 
-        // Node Label
-        if (current->node_label)
-        {
-            *((uint16_t *)ptr) = strlen(current->node_label);
-            ptr += sizeof(uint16_t);
-
-            memcpy(ptr, current->node_label, strlen(current->node_label));
-            ptr += strlen(current->node_label);
-        }
-        else
-        {
-            *((uint16_t *)ptr) = 0;
-            ptr += sizeof(uint16_t);
-        }
-
-        // Location
+        // Name
         if (current->name)
         {
             *((uint8_t *)ptr) = strlen(current->name);
@@ -654,6 +671,10 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
             ptr += sizeof(uint8_t);
         }
 
+        // Save power source
+        *((uint8_t *)ptr) = current->power_source;
+        ptr += sizeof(uint8_t);
+
         // Save endpoints
         *((uint16_t *)ptr) = current->endpoints_count;
         ptr += sizeof(uint16_t);
@@ -664,12 +685,19 @@ esp_err_t save_nodes_to_nvs(node_manager_t *controller)
             *((uint16_t *)ptr) = ep->endpoint_id;
             ptr += sizeof(uint16_t);
 
-            // Save fixed label name
-            *((uint8_t *)ptr) = strlen(ep->fixed_label_name);
-            ptr += sizeof(uint8_t);
+            if (ep->name)
+            {
+                *((uint8_t *)ptr) = strlen(ep->name);
+                ptr += sizeof(uint8_t);
 
-            memcpy(ptr, ep->fixed_label_name, strlen(ep->fixed_label_name));
-            ptr += strlen(ep->fixed_label_name);
+                memcpy(ptr, ep->name, strlen(ep->name));
+                ptr += strlen(ep->name);
+            }
+            else
+            {
+                *((uint8_t *)ptr) = 0;
+                ptr += sizeof(uint8_t);
+            }
 
             // Save device types
             *((uint16_t *)ptr) = ep->device_type_count;
