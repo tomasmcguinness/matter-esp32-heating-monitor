@@ -265,7 +265,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                 std::move(event_paths), 
                 min_interval, 
                 max_interval, 
-                true,
+                true, // <--- Keep Subscriptions
                 attribute_data_cb,
                 nullptr,
                 subscribe_done,
