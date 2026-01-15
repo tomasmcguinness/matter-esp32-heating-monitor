@@ -108,7 +108,7 @@ function Devices() {
 
   return (
     <>
-      <h1>Devices</h1>
+      <h1>Devices <NavLink className="btn btn-primary action-button" to="/devices/add">Add Device</NavLink></h1>
       <hr />
       {nodes.length === 0 && <div className="alert alert-info">There are no devices. Add one!</div>}
       {nodes.length > 0 && <table className="table table-striped table-bordered">
@@ -118,14 +118,13 @@ function Devices() {
             <th>Name</th>
             <th>Vendor</th>
             <th>Product</th>
-            <th>Power</th>
+            <th/>
           </tr>
         </thead>
         <tbody>
           {nodes}
         </tbody>
       </table >}
-      <NavLink className="btn btn-primary" to="/devices/add">Add Device</NavLink>
     </>
   )
 }

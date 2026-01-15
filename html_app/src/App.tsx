@@ -6,6 +6,7 @@ import EditHome from './EditHome.tsx'
 import Device from './Device.tsx'
 import Devices from './Devices.tsx'
 import AddDevice from './AddDevice.tsx'
+import EditDevice from "./EditDevice.tsx";
 
 import Radiator from './Radiator.tsx'
 import Radiators from './Radiators.tsx'
@@ -69,6 +70,8 @@ function App() {
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/add" element={<AddDevice />} />
             <Route path="/devices/:nodeId" element={<Device />} />
+            <Route path="/devices/:nodeId/edit" element={<EditDevice />} />
+            
           </Routes>
         </div>
       </WebSocketProvider>

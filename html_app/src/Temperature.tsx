@@ -14,7 +14,9 @@ function Temperature({ children }: { children: any }) {
         return <span>-</span>;
     }
 
-    return <span>{temp / 100.0}°C</span>;
+    var formattedTemp = (temp / 100.0).toFixed(1);
+
+    return <span>{formattedTemp}°C</span>;
 }
 
 export default Temperature;

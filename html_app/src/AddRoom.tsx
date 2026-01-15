@@ -1,18 +1,14 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { NavLink, useNavigate } from "react-router";
+import SensorSelect from "./SensorSelect";
 
 function AddRoom() {
 
-  let navigate = useNavigate();
+  const navigate = useNavigate();
 
   const [name, setName] = useState<string | undefined>(undefined);
   const [temperatureSensor, setTemperatureSensor] = useState<string | undefined>(undefined);
   const [heatLossPerDegree, setHeatLossPerDegree] = useState<string | undefined>(undefined);
-  const [sensors, setSensors] = useState<[]>([]);
-
-  useEffect(() => {
-    fetch('/api/sensors').then(response => response.json()).then(data => setSensors(data));
-  }, []);
 
   function handleSubmit(e: any) {
     e.preventDefault();
@@ -38,11 +34,6 @@ function AddRoom() {
     });
   }
 
-  let sensorOptions = sensors.map((s: any) => {
-    var key = `${s.nodeId}|${s.endpointId}`;
-    return <option key={key} value={key}>{s.vendorName}/{s.productName} (0x{s.nodeId} - 0x{s.endpointId})</option>;
-  })
-
   return (
     <>
       <h1>Add Room</h1>
@@ -57,14 +48,10 @@ function AddRoom() {
           <input type="number" name="heatLoss" maxLength={20} className="form-control" id="heatLoss" placeholder="25" required={true} value={heatLossPerDegree || ''} onChange={(e) => setHeatLossPerDegree(e.target.value)} />
         </div>
         <div className="mb-3">
-          <label htmlFor="temperatureSensor" className="form-label">Room Temperature Sensor <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="temperatureSensor" className="form-control" id="temperatureSensor" value={temperatureSensor || ''} onChange={(e) => setTemperatureSensor(e.target.value)} required={true}>
-            <option></option>
-            {sensorOptions}
-          </select>
+          <SensorSelect title="Room Temperature Sensor" selectedSensor={temperatureSensor || ''} onSelectedSensorChange={(e) => setTemperatureSensor(e)} />
         </div>
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Room</button>
-        <NavLink className="btn btn-default" to="/rooms">Back</NavLink>
+        <NavLink className="btn btn-cancel" to="/rooms">Cancel</NavLink>
       </form>
     </>
   )

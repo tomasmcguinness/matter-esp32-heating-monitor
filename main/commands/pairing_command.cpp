@@ -81,13 +81,14 @@ namespace heating_monitor
             }
             if (m_device_is_icd)
             {
-                controller_instance.get_icd_client_storage().DeleteEntry(
-                    ScopedNodeId(peerId.GetNodeId(), controller_instance.get_fabric_index()));
+                controller_instance.get_icd_client_storage().DeleteEntry(ScopedNodeId(peerId.GetNodeId(), controller_instance.get_fabric_index()));
             }
         }
 
         void pairing_command::OnICDRegistrationComplete(ScopedNodeId nodeId, uint32_t icdCounter)
         {
+            //ESP_LOGI(TAG, "ICD Registration Complete for device " ChipLogFormatX64, ChipLogValueX64(nodeId));
+
             auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
             NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
             app::ICDClientInfo clientInfo;

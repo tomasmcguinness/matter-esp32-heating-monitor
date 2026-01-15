@@ -31,7 +31,7 @@ function EditRadiator() {
         <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
       </div>
       <button type="submit" className="btn btn-primary" onClick={saveRadiator} style={{ 'marginRight': '5px' }}>Save</button>
-      <NavLink className="btn btn-danger" to="/radiators">Cancel</NavLink>
+      <NavLink className="btn btn-danger" to={`/radiators/${radiatorId}`}>Cancel</NavLink>
     </>
   )
 }

@@ -59,16 +59,16 @@ function Radiators() {
       <td>{n.radiatorId}</td>
       <td>{n.name}</td>
       <td>{n.type}</td>
-      <td>{n.output}</td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
+      <td><Temperature>{abs(n.flowTemp - n.returnTemp)}</Temperature></td>
       <td><Power>{n.currentOutput}</Power></td>
     </tr>);
   });
 
   return (
     <>
-      <h1>Radiators</h1>
+      <h1>Radiators <NavLink className="btn btn-primary action-button" to="/radiators/add">Add Radiator</NavLink> </h1>
       <hr />
       {radiators.length === 0 && <div className="alert alert-info">There are no radiators. Add one!</div>}
       {radiators.length > 0 && <table className="table table-striped table-bordered">
@@ -77,10 +77,10 @@ function Radiators() {
             <th style={{ width: 'auto' }}>ID</th>
             <th>Name</th>
             <th>Type</th>
-            <th>@ΔT 50°C</th>
             <th>Flow</th>
             <th>Return</th>
-            <th>Current</th>
+            <th>ΔT</th>
+            <th>Output</th>
           </tr>
         </thead>
         <tbody>
@@ -88,7 +88,6 @@ function Radiators() {
         </tbody>
       </table>
       }
-      <NavLink className="btn btn-primary" to="/radiators/add">Add Radiator</NavLink>
     </>
   )
 }

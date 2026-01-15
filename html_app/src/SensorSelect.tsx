@@ -6,6 +6,7 @@ const SensorSelect = ({ title, selectedSensor, onSelectedSensorChange }: { title
 
     useEffect(() => {
         fetch('/api/sensors').then(response => response.json()).then(data => {
+            // TODO Sort the sensors in some sensible fashion.
             setSensors(data);
         });
     }, []);

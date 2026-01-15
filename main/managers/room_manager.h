@@ -38,7 +38,7 @@ void room_manager_init(room_manager_t *manager);
 room_t *find_room(room_manager_t *manager, uint8_t room_id);
 
 room_t *add_room(room_manager_t *manager, char *name, uint8_t heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
-room_t *update_room(room_manager_t *manager, uint8_t room_id, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids);
+room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
 
 esp_err_t remove_room(room_manager_t *manager, uint8_t room_id);
 

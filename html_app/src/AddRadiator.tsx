@@ -1,21 +1,16 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { NavLink, useNavigate } from "react-router";
+import SensorSelect from "./SensorSelect";
 
 function AddRadiator() {
 
   let navigate = useNavigate();
-  
+
   const [name, setName] = useState<string | undefined>(undefined);
   const [type, setType] = useState(10);
   const [output, setOutput] = useState<number | undefined>(undefined);
   const [flowSensor, setFlowSensor] = useState<string | undefined>(undefined);
   const [returnSensor, setReturnSensor] = useState<string | undefined>(undefined);
-
-  const [sensors, setSensors] = useState<[]>([]);
-
-  useEffect(() => {
-    fetch('/api/sensors').then(response => response.json()).then(data => setSensors(data));
-  }, []);
 
   function handleSubmit(e: any) {
     e.preventDefault();
@@ -47,11 +42,6 @@ function AddRadiator() {
     });
   }
 
-  let sensorOptions = sensors.map((s: any) => {
-    var key = `${s.nodeId}|${s.endpointId}`;
-    return <option key={key} value={key}>{s.vendorName}/{s.productName} (0x{s.nodeId} - 0x{s.endpointId})</option>;
-  });
-
   return (
     <>
       <h1>Add Radiator</h1>
@@ -80,21 +70,13 @@ function AddRadiator() {
           <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
         </div>
         <div className="mb-3">
-          <label htmlFor="flowSensor" className="form-label">Flow Sensor <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="flowSensor" className="form-control" id="flowSensor" value={flowSensor || ''} onChange={(e) => setFlowSensor(e.target.value)} required={true}>
-            <option></option>
-            {sensorOptions}
-          </select>
+          <SensorSelect title="Flow Temperature Sensor" selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
         </div>
         <div className="mb-3">
-          <label htmlFor="returnSensor" className="form-label">Return Sensor <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="returnSensor" className="form-control" id="returnSensor" value={returnSensor || ''} onChange={(e) => setReturnSensor(e.target.value)} required={true}>
-            <option></option>
-            {sensorOptions}
-          </select>
+          <SensorSelect title="Return Temperature Sensor" selectedSensor={returnSensor || ''} onSelectedSensorChange={(e) => setReturnSensor(e)} />
         </div>
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Radiator</button>
-        <NavLink className="btn btn-default" to="/radiators">Back</NavLink>
+        <NavLink className="btn btn-danger" to="/radiators">Cancel</NavLink>
       </form>
     </>
   )

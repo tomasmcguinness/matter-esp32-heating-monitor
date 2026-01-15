@@ -269,7 +269,7 @@ esp_err_t remove_node(node_manager_t *controller, uint64_t node_id)
     return ESP_OK;
 }
 
-matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, char *name)
+matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
 {
     matter_node_t *new_node = (matter_node_t *)malloc(sizeof(matter_node_t));
 
@@ -283,7 +283,8 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, char *name
     new_node->node_id = node_id;
     new_node->vendor_name = "not-specified";
     new_node->product_name = "not-specified";
-    new_node->name = name;
+    new_node->name = NULL;
+    new_node->label = NULL;
 
     new_node->next = controller->node_list;
 
@@ -345,6 +346,18 @@ esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, u
 esp_err_t set_node_name(matter_node_t *node, char *name)
 {
     node->name = name;
+    return ESP_OK;
+}
+
+esp_err_t set_node_label(matter_node_t *node, char *label)
+{
+    node->label = label;
+
+    if(!node->name) {
+        ESP_LOGI(TAG,"Node has no name, so using label");
+        set_node_name(node, label);
+    }
+
     return ESP_OK;
 }
 
@@ -498,6 +511,15 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
 
         memcpy(node->name, ptr, node->name_length);
         ptr += node->name_length;
+
+        // Label
+        node->label_length = *((uint8_t *)ptr);
+        ptr += sizeof(uint8_t);
+
+        node->label = (char *)calloc(node->label_length + 1, sizeof(char));
+
+        memcpy(node->label, ptr, node->label_length);
+        ptr += node->label_length;
         
         // Power Source
         node->power_source = *((uint8_t *)ptr);
@@ -525,6 +547,9 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
 
                 memcpy(ep->name, ptr, ep->name_length);
                 ptr += ep->name_length;
+
+                ep->power_source = *((uint8_t *)ptr);
+                ptr += sizeof(uint8_t);
 
                 ep->device_type_count = *((uint16_t *)ptr);
                 ptr += sizeof(uint16_t);
@@ -573,21 +598,25 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
     {
         required_size += sizeof(uint64_t); // node_id
 
-        // Save basic information.
+        // Basic information.
         required_size += sizeof(uint16_t);
         required_size += current->vendor_name ? strlen(current->vendor_name) : 0;
         required_size += sizeof(uint16_t);
         required_size += current->product_name ? strlen(current->product_name) : 0; 
 
-        // Save Name
+        // Name
         required_size += sizeof(uint8_t);
         required_size += current->name ? strlen(current->name) : 0;
 
-        // Save Power Source
-        required_size += sizeof(uint8_t); // power_source
+        // Save Label
+        required_size += sizeof(uint8_t);
+        required_size += current->label ? strlen(current->label) : 0;
 
-        // Make space for the endpoints
-        required_size += sizeof(uint16_t); // endpoints_count
+        // Power Source
+        required_size += sizeof(uint8_t);
+
+        // Endpoint Count
+        required_size += sizeof(uint16_t);
 
         for (uint16_t e = 0; e < current->endpoints_count; e++)
         {
@@ -596,7 +625,7 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
             required_size += sizeof(uint8_t);
             required_size += current->endpoints[e].name ? strlen(current->endpoints[e].name) : 0;
 
-            // endpoint power_source can go here too.
+            required_size += sizeof(uint8_t); // power_source
 
             required_size += sizeof(uint16_t); // device_type_count
 
@@ -671,6 +700,21 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
             ptr += sizeof(uint8_t);
         }
 
+        // Label
+        if (current->label)
+        {
+            *((uint8_t *)ptr) = strlen(current->label);
+            ptr += sizeof(uint8_t);
+
+            memcpy(ptr, current->label, strlen(current->label));
+            ptr += strlen(current->label);
+        }
+        else
+        {
+            *((uint8_t *)ptr) = 0;
+            ptr += sizeof(uint8_t);
+        }
+
         // Save power source
         *((uint8_t *)ptr) = current->power_source;
         ptr += sizeof(uint8_t);
@@ -698,6 +742,10 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
                 *((uint8_t *)ptr) = 0;
                 ptr += sizeof(uint8_t);
             }
+
+            // Power Source
+            *((uint8_t *)ptr) = ep->power_source;
+            ptr += sizeof(uint8_t);
 
             // Save device types
             *((uint16_t *)ptr) = ep->device_type_count;

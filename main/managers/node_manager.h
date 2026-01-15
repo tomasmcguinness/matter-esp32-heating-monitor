@@ -23,10 +23,17 @@ typedef struct matter_node
     uint16_t product_name_length;
     char *product_name;
     
+    // This is set by the user.
     uint8_t name_length;
     char *name;
 
+    // This comes from the BasicInformation cluster
+    uint8_t label_length;
+    char *label;
+
     uint8_t power_source;
+
+    bool is_subscribed;
 
     endpoint_entry_t *endpoints;
     uint16_t endpoints_count;
@@ -49,8 +56,9 @@ void subscribe_all_temperature_measurements(node_manager_t *manager);
 matter_node_t *find_node(node_manager_t *manager, uint64_t node_id);
 esp_err_t remove_node(node_manager_t *manager, uint64_t node_id);
 
-matter_node_t *add_node(node_manager_t *manager, uint64_t node_id, char *name);
+matter_node_t *add_node(node_manager_t *manager, uint64_t node_id);
 esp_err_t set_node_name(matter_node_t *node, char *name);
+esp_err_t set_node_label(matter_node_t *node, char *label);
 esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source);
 
 endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id);

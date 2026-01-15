@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router";
+import { NavLink, useNavigate } from "react-router";
 import SensorSelect from "./SensorSelect";
 
 function EditHome() {
+
+  const navigate = useNavigate();
 
   const [outdoorTemperatureSensor, setOutdoorTemperatureSensor] = useState<string | undefined>(undefined);
 
@@ -24,7 +26,13 @@ function EditHome() {
     };
     var json = JSON.stringify(object);
 
-    fetch(`/api/home`, { method: "PUT", headers: { 'Content-Type': 'application/json' }, body: json });
+    fetch(`/api/home`, { method: "PUT", headers: { 'Content-Type': 'application/json' }, body: json }).then(r => {
+      if (r.ok) {
+        navigate('/');
+      } else {
+        alert("Failed to update home");
+      }
+    });
   }
 
   return (
@@ -32,7 +40,7 @@ function EditHome() {
       <h1>Edit Home</h1>
       <hr />
       <div className="mb-3">
-        <SensorSelect title="Outdoor Temperature Sensor" selectedSensor={outdoorTemperatureSensor} onSelectedSensorChange={(e:string) => setOutdoorTemperatureSensor(e)} />
+        <SensorSelect title="Outdoor Temperature Sensor" selectedSensor={outdoorTemperatureSensor} onSelectedSensorChange={(e: string) => setOutdoorTemperatureSensor(e)} />
       </div>
       <button className="btn btn-primary" onClick={save} style={{ 'marginRight': '5px' }}>Save</button>
       <NavLink className="btn btn-danger" to={`/`}>Cancel</NavLink>

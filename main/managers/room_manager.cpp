@@ -60,13 +60,18 @@ room_t *find_room(room_manager_t *manager, uint8_t room_id)
     return NULL;
 }
 
-room_t *update_room(room_manager_t *manager, uint8_t room_id, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids)
+room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t temperature_node_id, uint16_t temperature_endpoint_id)
 {
     room_t *room = find_room(manager, room_id);
 
+    room->name = name;
     room->heat_loss_per_degree = heat_loss_per_degree;
+    room->room_temperature_node_id = temperature_node_id;
+    room->room_temperature_endpoint_id = temperature_endpoint_id;
+
     room->radiator_count = radiator_count;
     room->radiators = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
+    
     memcpy(room->radiators, radiator_ids, radiator_count);
 
     save_rooms_to_nvs(manager);

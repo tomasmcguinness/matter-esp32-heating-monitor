@@ -58,7 +58,7 @@ function Rooms() {
 
   return (
     <>
-      <h1>Rooms</h1>
+      <h1>Rooms <NavLink className="btn btn-primary action-button" to="/rooms/add">Add Room</NavLink></h1>
       <hr />
       {rooms.length === 0 && <div className="alert alert-info">There are no rooms. Add one!</div>}
       {rooms.length > 0 && <table className="table table-striped table-bordered">
@@ -75,7 +75,7 @@ function Rooms() {
           {rooms}
         </tbody>
       </table>}
-      <NavLink className="btn btn-primary" to="/rooms/add">Add Room</NavLink>
+      
     </>
   )
 }

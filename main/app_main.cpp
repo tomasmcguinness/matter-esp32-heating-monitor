@@ -74,6 +74,7 @@ static int ws_socket;
 static void ws_async_send(void *arg);
 
 void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data);
+void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path);
 
 #pragma region Command Callbacks
 
@@ -138,7 +139,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                 attr_paths[1] = AttributePathParams(FixedLabel::Id, FixedLabel::Attributes::LabelList::Id);
                                                                 attr_paths[2] = AttributePathParams(PowerSource::Id, PowerSource::Attributes::FeatureMap::Id);
 
-                                                                // TODO We should only ask for this if we knew there were briged nodes.
+                                                                // TODO We should only ask for this if we know there were briged nodes.
                                                                 attr_paths[3] = AttributePathParams(BridgedDeviceBasicInformation::Id, BridgedDeviceBasicInformation::Attributes::NodeLabel::Id);
                                                                 
                                                                 ScopedMemoryBufferWithSize<EventPathParams> event_paths;
@@ -148,7 +149,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                                                                                                             std::move(attr_paths),
                                                                                                                                                             std::move(event_paths),
                                                                                                                                                             attribute_data_cb,
-                                                                                                                                                            nullptr,
+                                                                                                                                                            attribute_data_read_done,
                                                                                                                                                             nullptr);
 
                                                                 read_attr_command->send_command(); },
@@ -186,6 +187,8 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     matter_node_t *node = find_node(&g_node_manager, node_id);
 
+    bool hasTemperatureMeasurements = false;
+
     while (data->Next() == CHIP_NO_ERROR)
     {
         chip::TLV::TLVType listContainerType;
@@ -208,12 +211,13 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                 {
                     ESP_LOGI(TAG, "DeviceTypeID[%d]: %lu", path.mEndpointId, device_type_id);
 
-                    if (device_type_id == 19)
-                    {
-                        ESP_LOGI(TAG, "[%d] BridgedNode found on EndpointID %d", idx, path.mEndpointId);
+                    if(!hasTemperatureMeasurements && device_type_id == 770) {
+                        hasTemperatureMeasurements = true;
                     }
 
-                    if(path.mEndpointId != 0) { // RootNode
+                    // We're only interested in device types that exist on Endpoints other than the root.
+                    if (path.mEndpointId != 0) // RootNode
+                    { 
                         add_device_type(node, path.mEndpointId, device_type_id);
                     }
                 }
@@ -226,54 +230,66 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
     }
 
     data->ExitContainer(containerType);
+
+    if(hasTemperatureMeasurements)
+    {
+        ESP_LOGE(TAG, "The device has temperature measurement clusters. Subscribe to them with persistent subscriptions!");
+
+        auto *args = new std::tuple<uint64_t>(node_id);
+
+        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                   {
+            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
+            
+            uint16_t min_interval = 0;
+            uint16_t max_interval = 15;
+
+            // We want to read a few attributes from the Basic Information cluster.
+            //
+            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+            attr_paths.Alloc(1);
+
+            if (!attr_paths.Get())
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                return;
+            }
+
+            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+            
+            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+            event_paths.Alloc(0);
+
+            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args), 
+                std::move(attr_paths), 
+                std::move(event_paths), 
+                min_interval, 
+                max_interval, 
+                true,
+                attribute_data_cb,
+                nullptr,
+                subscribe_done,
+                subscribe_failed,
+                false);
+
+            if (!cmd)  
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+            }
+            else
+            {
+                esp_err_t err = cmd->send_command();
+                if (err != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                }
+            } 
+        },
+        reinterpret_cast<intptr_t>(args));
+    }
 }
 
-// If this Endpoint is a Temperature Sensor, subscribe to the Sensor.
-//
-// if (device_type_id == 770)
-// {
-//     auto *args = new std::tuple<uint64_t, uint16_t>(node_id, path.mEndpointId);
-
-//     chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-//                                                   {
-//                                               auto *args = reinterpret_cast<std::tuple<uint64_t, uint16_t> *>(arg);
-//     uint16_t min_interval = 0;
-//     uint16_t max_interval = 15;
-
-//     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(
-//         std::get<0>(*args),
-//         std::get<1>(*args),
-//         TemperatureMeasurement::Id,
-//         TemperatureMeasurement::Attributes::MeasuredValue::Id,
-//         esp_matter::controller::SUBSCRIBE_ATTRIBUTE,
-//         min_interval,
-//         max_interval,
-//         false,
-//         attribute_data_cb,
-//         nullptr,
-//         subscribe_done,
-//         subscribe_failed,
-//         false);
-
-//     if (!cmd)
-//     {
-//         ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-//     }
-//     else
-//     {
-//         esp_err_t err = cmd->send_command();
-//         if (err != ESP_OK)
-//         {
-//             ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-//         }
-//     } },
-//                                                   reinterpret_cast<intptr_t>(args));
-// }
-//}
-//}
-//}
-
-static void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path)
+void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path)
 {
     ESP_LOGI(TAG, "\nRead Info done for Nodeid: %016llx  Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI "\n",
              remote_node_id, attr_path[0].mEndpointId, ChipLogValueMEI(attr_path[0].mClusterId), ChipLogValueMEI(attr_path[0].mAttributeId));
@@ -366,7 +382,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 if (data->Get(value) == CHIP_NO_ERROR)
                 {
-                    node->vendor_name = (char *)calloc(1, value.size() + 1);
+                    node->vendor_name = (char *)calloc(value.size() + 1, sizeof(char));
                     memcpy(node->vendor_name, value.data(), value.size());
 
                     ESP_LOGI(TAG, "Vendor Name: %s", node->vendor_name);
@@ -381,7 +397,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 if (data->Get(value) == CHIP_NO_ERROR)
                 {
-                    node->product_name = (char *)calloc(1, value.size() + 1);
+                    node->product_name = (char *)calloc(value.size() + 1, sizeof(char));
                     memcpy(node->product_name, value.data(), value.size());
 
                     ESP_LOGI(TAG, "Product Name: %s", node->product_name);
@@ -396,12 +412,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 if (data->Get(value) == CHIP_NO_ERROR)
                 {
-                    char *node_label = (char *)calloc(1, value.size() + 1);
+                    char *node_label = (char *)calloc(value.size() + 1, sizeof(char));
                     memcpy(node_label, value.data(), value.size());
 
                     matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
-                    set_node_name(node, node_label);
+                    set_node_label(node, node_label);
                 }
             }
         }
@@ -416,7 +432,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             if (data->Get(value) == CHIP_NO_ERROR)
             {
-                char *node_label = (char *)calloc(1, value.size() + 1);
+                char *node_label = (char *)calloc(value.size() + 1, sizeof(char));
                 memcpy(node_label, value.data(), value.size());
 
                 ESP_LOGI(TAG, "Bridged Node Label: %s", node_label);
@@ -436,6 +452,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         ESP_LOGI(TAG, "Temperature Value: %d", temperature);
 
+        bool hasMatched = false;
+
         if (g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId)
         {
             ESP_LOGI(TAG, "Device is assigned to the outdoor temperature sensor");
@@ -444,6 +462,10 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             update_all_rooms_heat_loss(&g_home_manager, &g_room_manager);
 
+            hasMatched = true;
+        }
+
+        if(hasMatched) {
             return;
         }
 
@@ -482,6 +504,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 cJSON_Delete(root);
 
+                hasMatched = true;
+
                 break;
             }
 
@@ -513,6 +537,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 cJSON_Delete(root);
 
+                hasMatched = true;
+
                 break;
             }
 
@@ -533,8 +559,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     char nodeIdStr[32];
     snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
 
-    // TODO Grab the node name from the User??
-    add_node(&g_node_manager, nodeId, "New Node Name");
+    add_node(&g_node_manager, nodeId);
 
     save_nodes_to_nvs(&g_node_manager);
 
@@ -551,31 +576,30 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
         // We want to read a few attributes from the Basic Information cluster.
         //
         ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-        attr_paths.Alloc(5);
+        attr_paths.Alloc(4);
 
-    if (!attr_paths.Get())
-    {
-        ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-        return;
-    }
+        if (!attr_paths.Get())
+        {
+            ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+            return;
+        }
 
-    attr_paths[0] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
-    attr_paths[1] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
-    attr_paths[2] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
-    attr_paths[3] = AttributePathParams(std::get<1>(*args), PowerSource::Id, PowerSource::Attributes::FeatureMap::Id);
-    attr_paths[4] = AttributePathParams(std::get<1>(*args), Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+        attr_paths[0] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
+        attr_paths[1] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
+        attr_paths[2] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
+        attr_paths[3] = AttributePathParams(std::get<1>(*args), Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+
+        ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+        event_paths.Alloc(0);
     
-    ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-    event_paths.Alloc(0);
-    
-    esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
-                                                                                                std::move(attr_paths),
-                                                                                                std::move(event_paths),
-                                                                                                attribute_data_cb,
-                                                                                                attribute_data_read_done,
-                                                                                                nullptr);
+        esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
+                                                                                                    std::move(attr_paths),
+                                                                                                    std::move(event_paths),
+                                                                                                    attribute_data_cb,
+                                                                                                    attribute_data_read_done,
+                                                                                                    nullptr);
 
-    read_attr_command->send_command(); }, reinterpret_cast<intptr_t>(args));
+        read_attr_command->send_command(); }, reinterpret_cast<intptr_t>(args));
 }
 
 static void on_commissioning_failure_callback(ScopedNodeId peer_id,
@@ -686,7 +710,7 @@ static esp_err_t ws_get_handler(httpd_req_t *req)
         uint8_t *buf = NULL;
 
         /* ws_pkt.len + 1 is for NULL termination as we are expecting a string */
-        buf = (uint8_t *)calloc(1, ws_pkt.len + 1);
+        buf = (uint8_t *)calloc(ws_pkt.len + 1, sizeof(uint8_t));
 
         if (buf == NULL)
         {
@@ -804,8 +828,6 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     {
         cJSON *jNode = cJSON_CreateObject();
 
-        ESP_LOGI(TAG, "Node ID: %llu", node->node_id);
-
         cJSON_AddNumberToObject(jNode, "nodeId", node->node_id);
 
         if (node->vendor_name)
@@ -845,9 +867,6 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
             endpoint_entry_t endpoint = node->endpoints[j];
 
-            ESP_LOGI(TAG, "Endpoint ID: %lu", endpoint.endpoint_id);
-            ESP_LOGI(TAG, "DeviceTypes: %lu", endpoint.device_type_count);
-
             cJSON_AddNumberToObject(endpointJSON, "endpointId", endpoint.endpoint_id);
 
             if (endpoint.name)
@@ -866,8 +885,6 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
             for (uint16_t k = 0; k < endpoint.device_type_count; k++)
             {
                 uint32_t device_type_id = endpoint.device_type_ids[k];
-
-                ESP_LOGI(TAG, "DeviceTypeId ID: %lu", device_type_id);
 
                 cJSON *number = cJSON_CreateNumber((double)device_type_id);
                 cJSON_AddItemToArray(device_type_array, number);
@@ -895,26 +912,72 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t node_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting node ...");
+
+    char templatePath[] = "/api/nodes/:nodeId";
+    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
+    UrlTokenBindings bindings(templateItr, req->uri);
+
+    uint64_t node_id = 0;
+
+    if (bindings.hasBinding("nodeId"))
+    {
+        node_id = strtoull(bindings.get("nodeId"), NULL, 10);
+    }
+
+    matter_node_t *node = find_node(&g_node_manager, node_id);
+
+    cJSON *root = cJSON_CreateObject();
+
+    ESP_LOGI(TAG, "Node ID: %llu", node->node_id);
+
+    cJSON_AddNumberToObject(root, "nodeId", node->node_id);
+
+    if (node->name)
+    {
+        cJSON_AddStringToObject(root, "name", node->name);
+    }
+    else
+    {
+        cJSON_AddItemToObject(root, "name", cJSON_CreateNull());
+    }
+
+    if (node->label)
+    {
+        cJSON_AddStringToObject(root, "label", node->label);
+    }
+    else
+    {
+        cJSON_AddItemToObject(root, "label", cJSON_CreateNull());
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_status(req, "200 Accepted");
+
+    const char *json = cJSON_Print(root);
+    httpd_resp_sendstr(req, json);
+    free((void *)json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
 static esp_err_t node_delete_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Unpairing node...");
 
-    size_t size = strlen(req->uri);
+    char templatePath[] = "/api/nodes/:nodeId";
+    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
+    UrlTokenBindings bindings(templateItr, req->uri);
 
-    char *pch = strrchr(req->uri, '/');
-    int index_of_last_slash = pch - req->uri + 1;
+    uint64_t node_id = 0;
 
-    int length_of_nodeId = size - index_of_last_slash;
-
-    char node_id_str[length_of_nodeId + 1];
-
-    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
-
-    node_id_str[length_of_nodeId] = '\0';
-
-    ESP_LOGI(TAG, "Unpairing node  %s", node_id_str);
-
-    uint64_t node_id = strtoull(node_id_str, NULL, 10);
+    if (bindings.hasBinding("nodeId"))
+    {
+        node_id = strtoull(bindings.get("nodeId"), NULL, 10);
+    }
 
     esp_matter::controller::pairing_command_callbacks_t callbacks = {
         .unpair_complete_callback = on_unpair_complete_callback};
@@ -958,71 +1021,101 @@ static esp_err_t node_put_handler(httpd_req_t *req)
         node_id = strtoull(bindings.get("nodeId"), NULL, 10);
     }
 
+    ESP_LOGI(TAG, "PUT node %llu", node_id);
+
+    matter_node_t *node = find_node(&g_node_manager, node_id);
+
+    if (node == NULL)
+    {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "Failed", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
     if (bindings.hasBinding("action"))
     {
         ESP_LOGI(TAG, "Action: %s", bindings.get("action"));
-    }
 
-    ESP_LOGI(TAG, "PUT node %llu", node_id);
-
-    // Select based on the action
-    //
-    if (strcmp("identify", bindings.get("action")) == 0)
-    {
-        ESP_LOGI(TAG, "Sending identify command");
-        chip::DeviceLayer::PlatformMgr().LockChipStack();
-        esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
-        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-    }
-    else if (strcmp("interview", bindings.get("action")) == 0)
-    {
-        ESP_LOGI(TAG, "Sending interview command");
-
-        clear_node_details(&g_node_manager, node_id);
-
-        uint16_t endpointId = 0x0000; // Root
-
-        // We want to read a few attributes from the Basic Information cluster.
+        // Select based on the action
         //
-        ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-        attr_paths.Alloc(4);
-
-        if (!attr_paths.Get())
+        if (strcmp("identify", bindings.get("action")) == 0)
         {
-            ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-            return ESP_FAIL;
+            ESP_LOGI(TAG, "Sending identify command");
+            chip::DeviceLayer::PlatformMgr().LockChipStack();
+            esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
+            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+        }
+        else if (strcmp("interview", bindings.get("action")) == 0)
+        {
+            ESP_LOGI(TAG, "Sending interview command");
+
+            clear_node_details(&g_node_manager, node_id);
+
+            uint16_t endpointId = 0x0000; // Root
+
+            // We want to read a few attributes from the Basic Information cluster.
+            //
+            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+            attr_paths.Alloc(4);
+
+            if (!attr_paths.Get())
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                return ESP_FAIL;
+            }
+
+            attr_paths[0] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
+            attr_paths[1] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
+            attr_paths[2] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
+            attr_paths[3] = AttributePathParams(endpointId, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+
+            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+            event_paths.Alloc(0);
+
+            esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(node_id,
+                                                                                                        std::move(attr_paths),
+                                                                                                        std::move(event_paths),
+                                                                                                        attribute_data_cb,
+                                                                                                        attribute_data_read_done,
+                                                                                                        nullptr);
+
+            chip::DeviceLayer::PlatformMgr().LockChipStack();
+            err = read_attr_command->send_command();
+            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+        }
+        else if (strcmp("update", bindings.get("action")) == 0)
+        {
+        char content[150];
+        size_t recv_size = std::min(req->content_len, sizeof(content));
+
+        esp_err_t err = httpd_req_recv(req, content, recv_size);
+
+        cJSON *root = cJSON_Parse(content);
+
+        if (root == NULL)
+        {
+            ESP_LOGE(TAG, "Failed to parse JSON");
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
+            return ESP_ERR_INVALID_ARG;
         }
 
-        attr_paths[0] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::VendorName::Id);
-        attr_paths[1] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
-        attr_paths[2] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
-        attr_paths[3] = AttributePathParams(endpointId, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+        const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
 
-        ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-        event_paths.Alloc(0);
+        set_node_name(node, nameJSON->valuestring);
+        }
 
-        esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(node_id,
-                                                                                                    std::move(attr_paths),
-                                                                                                    std::move(event_paths),
-                                                                                                    attribute_data_cb,
-                                                                                                    attribute_data_read_done,
-                                                                                                    nullptr);
-
-        chip::DeviceLayer::PlatformMgr().LockChipStack();
-        err = read_attr_command->send_command();
-        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-    }
-
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Action failed");
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_send(req, "Failed", HTTPD_RESP_USE_STRLEN);
-    }
-    else
-    {
-        httpd_resp_set_status(req, "200 OK");
-        httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Action failed");
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_send(req, "Failed", HTTPD_RESP_USE_STRLEN);
+        }
+        else
+        {
+            httpd_resp_set_status(req, "200 OK");
+            httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+        }
     }
 
     return ESP_OK;
@@ -1303,6 +1396,8 @@ static esp_err_t room_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "name", room->name);
     cJSON_AddNumberToObject(root, "temperature", room->temperature);
     cJSON_AddNumberToObject(root, "heatLossPerDegree", room->heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "temperatureSensorNodeId", room->room_temperature_node_id);
+    cJSON_AddNumberToObject(root, "temperatureSensorEndpointId", room->room_temperature_endpoint_id);
     cJSON_AddNumberToObject(root, "heatLoss", room->heat_loss);
 
     cJSON *radiators;
@@ -1377,8 +1472,11 @@ static esp_err_t room_put_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
+    const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
     const cJSON *heatLossPerDegreeJSON = cJSON_GetObjectItemCaseSensitive(root, "heatLossPerDegree");
     const cJSON *radiatorIdsJSON = cJSON_GetObjectItemCaseSensitive(root, "radiatorIds");
+    const cJSON *temperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorNodeId");
+    const cJSON *temperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorEndpointId");
 
     uint8_t radiator_count = cJSON_GetArraySize(radiatorIdsJSON);
     uint8_t *radiator_ids = (uint8_t *)calloc(radiator_count, sizeof(u_int8_t));
@@ -1393,7 +1491,9 @@ static esp_err_t room_put_handler(httpd_req_t *req)
         radiator_ids[i++] = (uint8_t)iterator->valueint;
     }
 
-    update_room(&g_room_manager, room_id, (uint8_t)heatLossPerDegreeJSON->valueint, radiator_count, radiator_ids);
+    update_room(&g_room_manager, room_id, nameJSON->valuestring, (uint8_t)heatLossPerDegreeJSON->valueint, radiator_count, radiator_ids, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint8_t)temperatureSensorEndpointIdJSON->valueint);
+
+    save_rooms_to_nvs(&g_room_manager);
 
     room_t *room = find_room(&g_room_manager, room_id);
     update_room_heat_loss(&g_home_manager, &g_room_manager, room);
@@ -1474,10 +1574,13 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
                     }
 
                     cJSON_AddNumberToObject(jSensor, "endpointId", endpoint.endpoint_id);
-                    
-                    if(endpoint.name) {
+
+                    if (endpoint.name)
+                    {
                         cJSON_AddStringToObject(jSensor, "endpointName", endpoint.name);
-                    } else {
+                    }
+                    else
+                    {
                         cJSON_AddItemToObject(jSensor, "endpointName", cJSON_CreateNull());
                     }
 
@@ -1675,6 +1778,12 @@ static httpd_handle_t start_webserver(void)
         .handler = nodes_get_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t node_get_uri = {
+        .uri = "/api/nodes/*",
+        .method = HTTP_GET,
+        .handler = node_get_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t nodes_delete_uri = {
         .uri = "/api/nodes/*",
         .method = HTTP_DELETE,
@@ -1770,6 +1879,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &home_put_uri);
         httpd_register_uri_handler(server, &nodes_post_uri);
         httpd_register_uri_handler(server, &nodes_get_uri);
+        httpd_register_uri_handler(server, &node_get_uri);
         httpd_register_uri_handler(server, &nodes_delete_uri);
         httpd_register_uri_handler(server, &nodes_put_uri);
         httpd_register_uri_handler(server, &radiators_post_uri);
@@ -1841,9 +1951,9 @@ extern "C" void app_main()
     ESP_ERROR_CHECK(err);
 
     node_manager_init(&g_node_manager);
-    // radiator_manager_init(&g_radiator_manager);
-    // room_manager_init(&g_room_manager);
-    // home_manager_init(&g_home_manager);
+    radiator_manager_init(&g_radiator_manager);
+    room_manager_init(&g_room_manager);
+    home_manager_init(&g_home_manager);
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
