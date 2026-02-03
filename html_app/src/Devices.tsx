@@ -126,7 +126,7 @@ function Devices() {
             <th>Vendor</th>
             <th>Product</th>
             <th>Power</th>
-            <th>Subscribed</th>
+            <th>Sub</th>
           </tr>
         </thead>
         <tbody>

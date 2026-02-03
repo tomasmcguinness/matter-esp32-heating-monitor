@@ -13,7 +13,7 @@ const SensorSelect = ({ title, selectedSensor, onSelectedSensorChange }: { title
 
     let sensorOptions = sensors.map((s: any) => {
         var key = `${s.nodeId}|${s.endpointId}`;
-        return <option key={key} value={key}>{s.nodeName} - {s.endpointName} (0x{s.nodeId} - 0x{s.endpointId})</option>;
+        return <option key={key} value={key}>{s.nodeName} - {s.endpointName} (0x{s.nodeId.toString(16).toUpperCase()} - 0x{s.endpointId})</option>;
     });
 
     return ([

@@ -11,6 +11,8 @@ typedef struct matter_endpoint
 
     uint8_t power_source;
 
+    int16_t measured_value;
+
     uint32_t *device_type_ids;
     uint8_t device_type_count;
 } endpoint_entry_t;
@@ -33,7 +35,8 @@ typedef struct matter_node
 
     uint8_t power_source;
 
-    bool is_subscribed;
+    bool has_subscription;
+    uint32_t subscription_id;
 
     endpoint_entry_t *endpoints;
     uint16_t endpoints_count;
@@ -66,8 +69,8 @@ esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t de
 esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name);
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source);
 
-esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id);
-esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id);
+esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
+esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
 
 esp_err_t clear_node_details(node_manager_t *manager, uint64_t node_id);
 

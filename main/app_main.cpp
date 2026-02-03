@@ -172,7 +172,7 @@ void node_subscription_established_cb(uint64_t remote_node_id, uint32_t subscrip
 
     // Indicate we have a subscription!
     //
-    mark_node_has_subscription(&g_node_manager, remote_node_id);
+    mark_node_has_subscription(&g_node_manager, remote_node_id, subscription_id);
 }
 
 void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscription_id)
@@ -181,7 +181,10 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
 
     // Indicate we have no subscription!
     //
-    mark_node_has_no_subscription(&g_node_manager, remote_node_id);
+    mark_node_has_no_subscription(&g_node_manager, remote_node_id, subscription_id);
+
+    // We need to subscribe!
+    //
 }
 
 void node_subscribe_failed_cb(void *ctx)
@@ -190,7 +193,7 @@ void node_subscribe_failed_cb(void *ctx)
 
     // Indicate we do not have a subscription.
     //
-    //mark_node_has_no_subscription(&g_node_manager, remote_node_id);
+    // mark_node_has_no_subscription(&g_node_manager, remote_node_id);
 }
 
 static void process_device_type_list_attribute_response(uint64_t node_id,
@@ -269,11 +272,6 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                                                       {
             auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
 
-            uint16_t min_interval = 0;
-            uint16_t max_interval = 15;
-
-            // We want to read a few attributes from the Basic Information cluster.
-            //
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
             attr_paths.Alloc(1);
 
@@ -291,8 +289,8 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
             auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
                 std::move(attr_paths),
                 std::move(event_paths),
-                min_interval,
-                max_interval,
+                0,
+                60,
                 false, // <--- Keep Subscriptions
                 attribute_data_cb,
                 nullptr,
@@ -671,9 +669,56 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
 {
     ESP_LOGI(TAG, "on_icd_checkin_callback invoked from node %llu!", clientInfo.peer_node.GetNodeId());
 
-    // If we get a check-in from a node, it means we're not subscribed. 
+    // If we get a check-in from a node, it means we're not subscribed.
     //
+    ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters...");
 
+    auto *args = new std::tuple<uint64_t>(clientInfo.peer_node.GetNodeId());
+
+    chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                  {
+            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
+            
+            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+            attr_paths.Alloc(1);
+
+            if (!attr_paths.Get())
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                return;
+            }
+
+            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+            
+            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+            event_paths.Alloc(0);
+
+            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args), 
+                std::move(attr_paths), 
+                std::move(event_paths), 
+                0, 
+                60, 
+                false, // <--- Keep Subscriptions
+                attribute_data_cb,
+                nullptr,
+                node_subscription_established_cb,
+                node_subscription_terminated_cb,
+                node_subscribe_failed_cb,
+                false);
+
+            if (!cmd)  
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+            }
+            else
+            {
+                esp_err_t err = cmd->send_command();
+                if (err != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                }
+            } },
+                                                  reinterpret_cast<intptr_t>(args));
 }
 
 #pragma endregion
@@ -817,8 +862,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     heating_monitor::controller::pairing_command_callbacks_t callbacks = {
         .commissioning_success_callback = on_commissioning_success_callback,
-        .commissioning_failure_callback = on_commissioning_failure_callback
-    };
+        .commissioning_failure_callback = on_commissioning_failure_callback};
 
     heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
@@ -913,7 +957,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "powerSource", node->power_source);
 
-        cJSON_AddBoolToObject(jNode, "hasSubscription", node->is_subscribed);
+        cJSON_AddBoolToObject(jNode, "hasSubscription", node->has_subscription);
 
         cJSON *endpoint_array = cJSON_CreateArray();
 
@@ -1170,11 +1214,6 @@ static esp_err_t node_put_handler(httpd_req_t *req)
                                                           {
             auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
             
-            uint16_t min_interval = 0;
-            uint16_t max_interval = 15;
-
-            // We want to read a few attributes from the Basic Information cluster.
-            //
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
             attr_paths.Alloc(1);
 
@@ -1192,8 +1231,8 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args), 
                 std::move(attr_paths), 
                 std::move(event_paths), 
-                min_interval, 
-                max_interval, 
+                0, 
+                60, 
                 false, // <--- Keep Subscriptions
                 attribute_data_cb,
                 nullptr,
@@ -1237,15 +1276,15 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Adding a radiator");
 
-    char content[150];
-    size_t recv_size = std::min(req->content_len, sizeof(content));
+    char content[req->content_len];
 
-    esp_err_t err = httpd_req_recv(req, content, recv_size);
+    esp_err_t err = httpd_req_recv(req, content, req->content_len);
 
-    if (err != ESP_OK)
+    if (err <= 0)
     {
-        httpd_resp_set_status(req, "500 Ok");
-        httpd_resp_send(req, "ERROR", HTTPD_RESP_USE_STRLEN);
+        ESP_LOGE(TAG, "Failed to receive data %d", err);
+        httpd_resp_set_status(req, "500");
+        httpd_resp_send(req, "INTERNAL SERVER ERROR", HTTPD_RESP_USE_STRLEN);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1258,6 +1297,8 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
         httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
         return ESP_ERR_INVALID_ARG;
     }
+
+    ESP_LOGI(TAG, "Successfully parsed JSON");
 
     const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
     const cJSON *typeJSON = cJSON_GetObjectItemCaseSensitive(root, "type");
@@ -1284,45 +1325,49 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 
     // Announce this radiator via MQTT.
     //
-    root = cJSON_CreateObject();
+    // root = cJSON_CreateObject();
 
-    cJSON *device = cJSON_CreateObject();
-    cJSON_AddStringToObject(device, "name", "Office Radiator Sensor");
-    cJSON_AddItemToObject(root, "device", device);
+    // cJSON *device = cJSON_CreateObject();
+    // cJSON_AddStringToObject(device, "name", "Office Radiator Sensor");
+    // cJSON_AddItemToObject(root, "device", device);
 
-    cJSON *origin = cJSON_CreateObject();
-    cJSON_AddStringToObject(device, "name", "Heating Monitor");
-    cJSON_AddItemToObject(root, "origin", origin);
+    // cJSON *origin = cJSON_CreateObject();
+    // cJSON_AddStringToObject(device, "name", "Heating Monitor");
+    // cJSON_AddItemToObject(root, "origin", origin);
 
-    cJSON *flow_sensor_component = cJSON_CreateObject();
-    cJSON_AddStringToObject(flow_sensor_component, "p", "sensor");
-    cJSON_AddStringToObject(flow_sensor_component, "device_class", "temperature");
-    cJSON_AddStringToObject(flow_sensor_component, "unit_of_measurement", "°C");
-    cJSON_AddStringToObject(flow_sensor_component, "value_template", "{{ value_json.flow_temperature}}");
-    cJSON_AddStringToObject(flow_sensor_component, "unique_id", "flow_temperature");
+    // cJSON *flow_sensor_component = cJSON_CreateObject();
+    // cJSON_AddStringToObject(flow_sensor_component, "p", "sensor");
+    // cJSON_AddStringToObject(flow_sensor_component, "device_class", "temperature");
+    // cJSON_AddStringToObject(flow_sensor_component, "unit_of_measurement", "°C");
+    // cJSON_AddStringToObject(flow_sensor_component, "value_template", "{{ value_json.flow_temperature}}");
+    // cJSON_AddStringToObject(flow_sensor_component, "unique_id", "flow_temperature");
 
-    cJSON *return_sensor_component = cJSON_CreateObject();
-    cJSON_AddStringToObject(return_sensor_component, "p", "sensor");
-    cJSON_AddStringToObject(return_sensor_component, "device_class", "temperature");
-    cJSON_AddStringToObject(return_sensor_component, "unit_of_measurement", "°C");
-    cJSON_AddStringToObject(return_sensor_component, "value_template", "{{ value_json.return_temperature}}");
-    cJSON_AddStringToObject(return_sensor_component, "unique_id", "return_temperature");
+    // cJSON *return_sensor_component = cJSON_CreateObject();
+    // cJSON_AddStringToObject(return_sensor_component, "p", "sensor");
+    // cJSON_AddStringToObject(return_sensor_component, "device_class", "temperature");
+    // cJSON_AddStringToObject(return_sensor_component, "unit_of_measurement", "°C");
+    // cJSON_AddStringToObject(return_sensor_component, "value_template", "{{ value_json.return_temperature}}");
+    // cJSON_AddStringToObject(return_sensor_component, "unique_id", "return_temperature");
 
-    cJSON *components = cJSON_CreateObject();
+    // cJSON *components = cJSON_CreateObject();
 
-    cJSON_AddItemToObject(components, "flow_temperature", flow_sensor_component);
-    cJSON_AddItemToObject(components, "return_temperature", flow_sensor_component);
+    // cJSON_AddItemToObject(components, "flow_temperature", flow_sensor_component);
+    // cJSON_AddItemToObject(components, "return_temperature", flow_sensor_component);
 
-    cJSON_AddItemToObject(root, "cmps", components);
+    // cJSON_AddItemToObject(root, "cmps", components);
 
-    cJSON_AddStringToObject(root, "state_topic", "radiators/office");
+    // cJSON_AddStringToObject(root, "state_topic", "radiators/office");
 
-    char *payload = cJSON_PrintUnformatted(root);
+    // char *payload = cJSON_PrintUnformatted(root);
 
-    esp_mqtt_client_publish(_mqtt_client, "homeassistant/sensor/radiator/office/config", payload, 0, 0, 0);
+    // esp_mqtt_client_publish(_mqtt_client, "homeassistant/device/radiators/office/config", payload, 0, 0, 0);
 
-    cJSON_Delete(root);
+    // ESP_LOGI(TAG, "Announced radiator via MQTT");
 
+    // cJSON_Delete(root);
+
+    // Return success!
+    //
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
 
@@ -2213,18 +2258,19 @@ static void start_mqtt_service(void)
 
 void start_mdns_service()
 {
-    //initialize mDNS service
+    // initialize mDNS service
     esp_err_t err = mdns_init();
 
-    if (err) {
+    if (err)
+    {
         printf("MDNS Init failed: %d\n", err);
         return;
     }
 
-    //set hostname
+    // set hostname
     mdns_hostname_set("heating-monitor");
 
-    //set default instance
+    // set default instance
     mdns_instance_name_set("Heating Monitor");
 }
 
@@ -2245,14 +2291,13 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
             {
                 server = start_webserver();
                 start_mqtt_service();
-                //start_mdns_service();
             }
         }
         else if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
                  event->Platform.ESPSystemEvent.Id == IP_EVENT_GOT_IP6)
         {
-            // chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
-            //                                               { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
+            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
+                                                           { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
         }
         break;
     case chip::DeviceLayer::DeviceEventType::kSecureSessionEstablished:

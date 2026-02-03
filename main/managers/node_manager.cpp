@@ -52,59 +52,20 @@ void node_manager_init(node_manager_t *controller)
 
 void subscribe_all_temperature_measurements(node_manager_t *manager)
 {
-    struct SubscriptionKey
-    {
-        uint64_t node_id;
-
-        bool operator<(const SubscriptionKey &other) const
-        {
-            return std::tie(node_id) <
-                   std::tie(other.node_id);
-        }
-    };
-
-    std::set<SubscriptionKey> subscribed;
+    ESP_LOGI(TAG, "Subscribing to all temperature measurements...");
 
     matter_node_t *node = manager->node_list;
 
     while (node)
     {
-        SubscriptionKey key{node->node_id};
+        auto *args = new std::tuple<uint64_t>(node->node_id);
 
-        if (subscribed.find(key) != subscribed.end())
-        {
-            continue;
-        }
+        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                      {
+            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
 
-        subscribed.insert(key);
-
-        // Work out how many endpoints we need to subscribe to.
-        //
-        uint8_t temperature_endpoint_count = 0;
-
-        // For each node, we want to subscribe to add the temperature sensor endpoints.
-        //
-        for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
-        {
-            endpoint_entry_t *ep = &node->endpoints[ep_idx];
-
-            for (uint8_t device_type_idx = 0; device_type_idx < ep->device_type_count; ++device_type_idx)
-            {
-                uint32_t device_type_id = ep->device_type_ids[device_type_idx];
-
-                if (device_type_id == 770) // TODO Use the definition for this.
-                {
-                    temperature_endpoint_count++;
-                }
-            }
-        }
-
-        if (temperature_endpoint_count > 0)
-        {
-            // We may need to read multiple attributes to use paths
-            //
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(temperature_endpoint_count);
+            attr_paths.Alloc(1);
 
             if (!attr_paths.Get())
             {
@@ -112,41 +73,23 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
                 return;
             }
 
-            uint8_t temperature_measurement_endpoint_index = 0;
-
-            for (uint16_t ep_idx = 0; ep_idx < node->endpoints_count; ++ep_idx)
-            {
-                endpoint_entry_t *ep = &node->endpoints[ep_idx];
-
-                for (uint8_t device_type_idx = 0; device_type_idx < ep->device_type_count; ++device_type_idx)
-                {
-                    uint32_t device_type_id = ep->device_type_ids[device_type_idx];
-
-                    if (device_type_id == 770)
-                    {
-                        attr_paths[temperature_measurement_endpoint_index++] = AttributePathParams(ep->endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-                        ESP_LOGI(TAG, "Added path to Temperature Measurement for node %llu, endpoint %d", node->node_id, ep->endpoint_id);
-                    }
-                }
-            }
+            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
 
             ScopedMemoryBufferWithSize<EventPathParams> event_paths;
             event_paths.Alloc(0);
 
-            uint16_t min_interval = 0;
-            uint16_t max_interval = 15;
-
-            subscribe_command *cmd = chip::Platform::New<subscribe_command>(node->node_id,
-                                                                            std::move(attr_paths),
-                                                                            std::move(event_paths),
-                                                                            min_interval,
-                                                                            max_interval,
-                                                                            false,
-                                                                            attribute_data_cb,
-                                                                            nullptr,
-                                                                            node_subscription_terminated_cb,
-                                                                            node_subscribe_failed_cb,
-                                                                            false);
+            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
+                std::move(attr_paths),
+                std::move(event_paths),
+                0,
+                60,
+                false, // <--- Keep Subscriptions
+                attribute_data_cb,
+                nullptr,
+                node_subscription_established_cb,
+                node_subscription_terminated_cb,
+                node_subscribe_failed_cb,
+                false); 
 
             if (!cmd)
             {
@@ -154,15 +97,13 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
             }
             else
             {
-                ESP_LOGI(TAG, "Subscribing to Temperature Measurements for node %llu", node->node_id);
                 esp_err_t err = cmd->send_command();
-
                 if (err != ESP_OK)
                 {
                     ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
                 }
-            }
-        }
+            } },
+                                                      reinterpret_cast<intptr_t>(args));
 
         node = node->next;
     }
@@ -357,25 +298,27 @@ esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source)
     return ESP_OK;
 }
 
-esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id)
+esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id)
 {
     matter_node_t *node = find_node(manager, node_id);
 
     if(node) 
     {
-        node->is_subscribed = true;
+        node->has_subscription = true;
+        node->subscription_id = subscription_id;
     }
 
     return ESP_OK;
 }
 
-esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id)
+esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id)
 {
     matter_node_t *node = find_node(manager, node_id);
 
-    if(node) 
+    if(node && node->subscription_id == subscription_id) 
     {
-        node->is_subscribed = false;
+        node->has_subscription = false;
+        node->subscription_id = 0;
     }
 
     return ESP_OK;
