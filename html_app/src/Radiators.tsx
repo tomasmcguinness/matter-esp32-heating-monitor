@@ -54,14 +54,14 @@ function Radiators() {
     fetchRadiators();
   }, []);
 
-  let radiators = radiatorList.map((n: any) => {
+  let radiators = radiatorList.sort((a: any, b: any) => a.radiatorId > b.radiatorId ? 1 : -1).map((n: any) => {
     return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.radiatorId}</td>
       <td>{n.name}</td>
       <td>{n.type}</td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
-      <td><Temperature>{abs(n.flowTemp - n.returnTemp)}</Temperature></td>
+      <td><Temperature>{Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>
       <td><Power>{n.currentOutput}</Power></td>
     </tr>);
   });

@@ -90,13 +90,20 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, 
     return new_radiator;
 }
 
-esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, uint16_t output)
+esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char *name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     radiator_t *radiator = find_radiator(manager, radiator_id);
 
     if (radiator)
     {
-        radiator->output_dt_50 = output;
+        radiator->name = name;
+        radiator->type = type;
+        radiator->output_dt_50 = output_dt_50;
+        radiator->flow_temp_node_id = flow_temp_node_id;
+        radiator->flow_temp_endpoint_id = flowEndpointId;
+        radiator->return_temp_node_id = returnNodeId;
+        radiator->return_temp_endpoint_id = returnEndpointId;
+        
         save_radiators_to_nvs(manager);
 
         return ESP_OK;
@@ -326,8 +333,6 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
         *((uint8_t *)ptr) = strlen(current->name);
         ptr += sizeof(uint8_t);
-
-        ESP_LOGI(TAG,"Saving radiator name len: %u", strlen(current->name));
 
         memcpy(ptr, current->name, strlen(current->name));
         ptr += strlen(current->name);

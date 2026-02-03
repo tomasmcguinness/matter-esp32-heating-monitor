@@ -106,6 +106,7 @@ namespace heating_monitor
                 controller_instance.get_icd_client_storage().RemoveKey(clientInfo);
                 return;
             }
+
             m_device_is_icd = true;
         }
 
@@ -345,6 +346,7 @@ namespace heating_monitor
 
         esp_err_t pairing_command::unpair_device(NodeId node_id)
         {
+            ESP_LOGE(TAG, "Executing unpair_device operation node 0x%" PRIx64, node_id);
             auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
             return controller_instance.unpair(node_id, remove_fabric_handler);
         }

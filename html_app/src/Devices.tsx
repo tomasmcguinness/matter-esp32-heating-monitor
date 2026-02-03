@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
 import PowerSource from "./PowerSource"
+import CheckMark from "./CheckMark";
 
 function Devices() {
 
@@ -77,18 +78,24 @@ function Devices() {
         return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
       });
 
-      return (<tr><td>{endpoint.endpointId}</td><td>{endpoint.endpointName}</td><td>{deviceTypes}</td><td><PowerSource powerSource={endpoint.powerSource} /></td></tr>)
+      return (<tr>
+        <td>{endpoint.endpointId}</td>
+        <td>{endpoint.endpointName}</td>
+        <td>{deviceTypes}</td>
+        <td><PowerSource powerSource={endpoint.powerSource} /></td>
+        </tr>)
     });
 
     return ([<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
-      <td>{n.nodeId.toString(16)}</td>
+      <td>{n.nodeId.toString(16).toUpperCase()}</td>
       <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
       <td><PowerSource powerSource={n.powerSource} /></td>
+      <td>{n.hasSubscription ? <CheckMark /> : <></>}</td>
     </tr>,
     <tr>
-      <td colSpan={5}>
+      <td colSpan={6}>
         <table className="table">
           <thead>
             <tr>
@@ -118,7 +125,8 @@ function Devices() {
             <th>Name</th>
             <th>Vendor</th>
             <th>Product</th>
-            <th/>
+            <th>Power</th>
+            <th>Subscribed</th>
           </tr>
         </thead>
         <tbody>

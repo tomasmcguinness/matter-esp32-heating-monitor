@@ -50,16 +50,6 @@ void node_manager_init(node_manager_t *controller)
     }
 }
 
-void subscribe_done_cb(uint64_t node_id, uint32_t subscription_id)
-{
-    ESP_LOGI(TAG, "Successfully subscribed, node %llu, subscription id 0x%08X", node_id, subscription_id);
-}
-
-void subscribe_failure_cb(void *ctx)
-{
-    ESP_LOGE(TAG, "Failed to subscribe (context: %p)", ctx);
-}
-
 void subscribe_all_temperature_measurements(node_manager_t *manager)
 {
     struct SubscriptionKey
@@ -154,8 +144,8 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
                                                                             false,
                                                                             attribute_data_cb,
                                                                             nullptr,
-                                                                            subscribe_done_cb,
-                                                                            subscribe_failure_cb,
+                                                                            node_subscription_terminated_cb,
+                                                                            node_subscribe_failed_cb,
                                                                             false);
 
             if (!cmd)
@@ -364,6 +354,30 @@ esp_err_t set_node_label(matter_node_t *node, char *label)
 esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source)
 {
     node->power_source = power_source;
+    return ESP_OK;
+}
+
+esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if(node) 
+    {
+        node->is_subscribed = true;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if(node) 
+    {
+        node->is_subscribed = false;
+    }
+
     return ESP_OK;
 }
 

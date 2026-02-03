@@ -66,6 +66,9 @@ esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t de
 esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name);
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source);
 
+esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id);
+esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id);
+
 esp_err_t clear_node_details(node_manager_t *manager, uint64_t node_id);
 
 esp_err_t save_nodes_to_nvs(node_manager_t *manager);
