@@ -50,6 +50,50 @@ void node_manager_init(node_manager_t *controller)
     }
 }
 
+uint64_t get_next_node_id(node_manager_t *manager)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %d", NVS_NAMESPACE, err);
+        return 0;
+    }
+
+    uint64_t next_id = 0;
+    uint64_t current_id = 0;
+    err = nvs_get_u64(nvs_handle, "current_id", &current_id);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND)
+    {
+        // The key doesn't exist. 
+        ESP_LOGI(TAG, "No current_id found in NVS, starting from seed");
+        next_id = 10000;
+    }
+    else if (err == ESP_OK)
+    {
+        // We got the current value. Bump it.
+        ESP_LOGI(TAG, "Found current_id in NVS: %llu", current_id);
+        next_id = current_id + 1;
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Failed to find current_id in NVS: %d", err);
+        nvs_close(nvs_handle);
+        return 0;
+    }
+
+    nvs_set_u64(nvs_handle, "current_id", next_id);
+    nvs_commit(nvs_handle);
+    nvs_close(nvs_handle);  
+
+    ESP_LOGI(TAG, "Next node ID is %llu", next_id);   
+
+    return next_id;
+}
+
 void subscribe_all_temperature_measurements(node_manager_t *manager)
 {
     ESP_LOGI(TAG, "Subscribing to all temperature measurements...");
@@ -227,6 +271,15 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
 
 endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id)
 {
+    // Check if endpoint already exists
+    endpoint_entry_t *existing_endpoint = find_endpoint(node, endpoint_id);
+    
+    if (existing_endpoint)
+    {
+        ESP_LOGW(TAG, "Endpoint %u already exists in node 0x%016llX", endpoint_id, node->node_id);
+        return existing_endpoint;
+    }
+
     endpoint_entry_t *new_endpoints = (endpoint_entry_t *)realloc(node->endpoints, (node->endpoints_count + 1) * sizeof(endpoint_entry_t));
 
     if (!new_endpoints)
@@ -261,7 +314,7 @@ esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *nam
 
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source)
 {
-     endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
+    endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
 
     if (endpoint == NULL)
     {
@@ -284,8 +337,9 @@ esp_err_t set_node_label(matter_node_t *node, char *label)
 {
     node->label = label;
 
-    if(!node->name) {
-        ESP_LOGI(TAG,"Node has no name, so using label");
+    if (!node->name)
+    {
+        ESP_LOGI(TAG, "Node has no name, so using label");
         set_node_name(node, label);
     }
 
@@ -298,11 +352,28 @@ esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source)
     return ESP_OK;
 }
 
+esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
+
+        if (endpoint)
+        {
+            endpoint->measured_value = measured_value;
+        }
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id)
 {
     matter_node_t *node = find_node(manager, node_id);
 
-    if(node) 
+    if (node)
     {
         node->has_subscription = true;
         node->subscription_id = subscription_id;
@@ -315,7 +386,7 @@ esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_i
 {
     matter_node_t *node = find_node(manager, node_id);
 
-    if(node && node->subscription_id == subscription_id) 
+    if (node && node->subscription_id == subscription_id)
     {
         node->has_subscription = false;
         node->subscription_id = 0;
@@ -477,7 +548,7 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
 
         memcpy(node->label, ptr, node->label_length);
         ptr += node->label_length;
-        
+
         // Power Source
         node->power_source = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -559,7 +630,7 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
         required_size += sizeof(uint16_t);
         required_size += current->vendor_name ? strlen(current->vendor_name) : 0;
         required_size += sizeof(uint16_t);
-        required_size += current->product_name ? strlen(current->product_name) : 0; 
+        required_size += current->product_name ? strlen(current->product_name) : 0;
 
         // Name
         required_size += sizeof(uint8_t);

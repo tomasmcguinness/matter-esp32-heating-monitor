@@ -7,6 +7,7 @@ function AddRadiator() {
   let navigate = useNavigate();
 
   const [name, setName] = useState<string | undefined>(undefined);
+  const [mqttName, setMqttName] = useState<string | undefined>(undefined);
   const [type, setType] = useState(10);
   const [output, setOutput] = useState<number | undefined>(undefined);
   const [flowSensor, setFlowSensor] = useState<string | undefined>(undefined);
@@ -23,6 +24,7 @@ function AddRadiator() {
 
     var object: any = {
       name,
+      mqttName: mqttName?.toLowerCase(),
       type,
       output,
       flowSensorNodeId,
@@ -50,6 +52,10 @@ function AddRadiator() {
         <div className="mb-3">
           <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
           <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="mb-3">
+          <label htmlFor="mqttName" className="form-label">MQTT Name</label>
+          <input type="text" name="mqttName" maxLength={20} className="form-control" id="mqttName" placeholder="office" required={false} value={mqttName || ''} onChange={(e) => setMqttName(e.target.value)} />
         </div>
         <div className="mb-3">
           <label htmlFor="type" className="form-label">Type <span style={{ 'color': 'red' }}>*</span></label>

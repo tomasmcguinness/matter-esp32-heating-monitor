@@ -56,6 +56,8 @@ void node_manager_init(node_manager_t *manager);
 
 void subscribe_all_temperature_measurements(node_manager_t *manager);
 
+uint64_t get_next_node_id(node_manager_t *manager);
+
 matter_node_t *find_node(node_manager_t *manager, uint64_t node_id);
 esp_err_t remove_node(node_manager_t *manager, uint64_t node_id);
 
@@ -68,6 +70,7 @@ endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id);
 esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id);
 esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name);
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source);
+esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value);
 
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
 esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);

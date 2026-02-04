@@ -34,6 +34,7 @@ typedef struct
 } room_manager_t;
 
 void room_manager_init(room_manager_t *manager);
+uint8_t get_next_room_id(room_manager_t *manager);
 
 room_t *find_room(room_manager_t *manager, uint8_t room_id);
 

@@ -43,6 +43,45 @@ void radiator_manager_init(radiator_manager_t *manager)
     }
 }
 
+uint8_t get_next_radiator_id(radiator_manager_t *manager)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %d", NVS_NAMESPACE, err);
+        return 0;
+    }
+
+    uint64_t next_id = 0;
+    uint64_t current_id = 0;
+    err = nvs_get_u64(nvs_handle, "current_id", &current_id);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND)
+    {
+        // The key doesn't exist.
+        next_id = 1;
+    }
+    else if (err == ESP_OK)
+    {
+        // We got the current value. Bump it.
+        next_id = current_id + 1;
+    }
+    else
+    {
+        nvs_close(nvs_handle);
+        ESP_LOGE(TAG, "Failed to get current_id from NVS: %d", err);
+        return 0;
+    }
+
+    nvs_set_u64(nvs_handle, "current_id", next_id);
+    nvs_commit(nvs_handle);
+
+    return next_id;
+}
+
 radiator_t *find_radiator(radiator_manager_t *manager, uint8_t radiator_id)
 {
     radiator_t *current = manager->radiator_list;
@@ -60,9 +99,15 @@ radiator_t *find_radiator(radiator_manager_t *manager, uint8_t radiator_id)
     return NULL;
 }
 
-radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
+radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
-    uint8_t new_radiator_id = manager->radiator_count + 1;
+    uint8_t new_radiator_id = get_next_radiator_id(manager);
+
+    if(new_radiator_id == 0)
+    {
+        ESP_LOGE(TAG, "Failed to get next radiator ID");
+        return NULL;
+    }
 
     radiator_t *new_radiator = (radiator_t *)calloc(1, sizeof(radiator_t));
 
@@ -75,6 +120,7 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, 
 
     new_radiator->radiator_id = new_radiator_id;
     new_radiator->name = name;
+    new_radiator->mqtt_name = mqtt_name;
     new_radiator->type = type;
     new_radiator->output_dt_50 = output_dt_50;
     new_radiator->flow_temp_node_id = flow_temp_node_id;
@@ -90,13 +136,14 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, uint8_t type, 
     return new_radiator;
 }
 
-esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char *name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
+esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char *name, char *mqtt_name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     radiator_t *radiator = find_radiator(manager, radiator_id);
 
     if (radiator)
     {
         radiator->name = name;
+        radiator->mqtt_name = mqtt_name;
         radiator->type = type;
         radiator->output_dt_50 = output_dt_50;
         radiator->flow_temp_node_id = flow_temp_node_id;
@@ -188,14 +235,17 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
         radiator->name_len = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
-        ESP_LOGI(TAG, "Radiator name length is %u", radiator->name_len);
-
+        // Name
         radiator->name = (char *)calloc(radiator->name_len + 1, sizeof(char));
 
         memcpy(radiator->name, ptr, radiator->name_len);
         ptr += radiator->name_len;
 
-        ESP_LOGI(TAG, "Radiator name is %s", radiator->name);
+        // MQTT Name
+        radiator->mqtt_name = (char *)calloc(radiator->mqtt_name_len + 1, sizeof(char));
+
+        memcpy(radiator->mqtt_name, ptr, radiator->mqtt_name_len);
+        ptr += radiator->mqtt_name_len;
 
         radiator->type = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -301,15 +351,17 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
     while (current)
     {
-        required_size += sizeof(uint8_t);       // radiator_id
-        required_size += sizeof(uint8_t);       // name length
-        required_size += strlen(current->name); // name
-        required_size += sizeof(uint8_t);       // type
-        required_size += sizeof(uint16_t);      // output
-        required_size += sizeof(uint64_t);      // flow node
-        required_size += sizeof(uint16_t);      // flow endpoint
-        required_size += sizeof(uint64_t);      // return node
-        required_size += sizeof(uint16_t);      // return endpoint
+        required_size += sizeof(uint8_t);           // radiator_id
+        required_size += sizeof(uint8_t);           // name length
+        required_size += strlen(current->name);     // name
+        required_size += sizeof(uint8_t);           // mqtt name length
+        required_size += strlen(current->mqtt_name);// mqtt name
+        required_size += sizeof(uint8_t);           // type
+        required_size += sizeof(uint16_t);          // output
+        required_size += sizeof(uint64_t);          // flow node
+        required_size += sizeof(uint16_t);          // flow endpoint
+        required_size += sizeof(uint64_t);          // return node
+        required_size += sizeof(uint16_t);          // return endpoint
 
         current = current->next;
     }
@@ -336,6 +388,12 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
         memcpy(ptr, current->name, strlen(current->name));
         ptr += strlen(current->name);
+
+        *((uint8_t *)ptr) = strlen(current->mqtt_name);
+        ptr += sizeof(uint8_t);
+
+        memcpy(ptr, current->mqtt_name, strlen(current->mqtt_name));
+        ptr += strlen(current->mqtt_name);
 
         *((uint8_t *)ptr) = current->type;
         ptr += sizeof(uint8_t);

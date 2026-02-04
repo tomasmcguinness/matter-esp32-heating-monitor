@@ -43,6 +43,45 @@ void room_manager_init(room_manager_t *manager)
     }
 }
 
+uint8_t get_next_room_id(room_manager_t *manager)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %d", NVS_NAMESPACE, err);
+        return 0;
+    }
+
+    uint64_t next_id = 0;
+    uint64_t current_id = 0;
+    err = nvs_get_u64(nvs_handle, "current_id", &current_id);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND)
+    {
+        // The key doesn't exist.
+        next_id = 1;
+    }
+    else if (err == ESP_OK)
+    {
+        // We got the current value. Bump it.
+        next_id = current_id + 1;
+    }
+    else
+    {
+        nvs_close(nvs_handle);
+        ESP_LOGE(TAG, "Failed to get current_id from NVS: %d", err);
+        return 0;
+    }
+
+    nvs_set_u64(nvs_handle, "current_id", next_id);
+    nvs_commit(nvs_handle);
+
+    return next_id;
+}
+
 room_t *find_room(room_manager_t *manager, uint8_t room_id)
 {
     room_t *current = manager->room_list;
@@ -81,7 +120,13 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_
 
 room_t *add_room(room_manager_t *manager, char *name, uint8_t heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
 {
-    uint8_t new_room_id = manager->room_count + 1;
+    uint8_t new_room_id = get_next_room_id(manager);
+
+    if(new_room_id == 0)
+    {
+        ESP_LOGE(TAG, "Failed to get next room ID");
+        return NULL;
+    }
 
     room_t *new_room = (room_t *)calloc(1, sizeof(room_t));
     if (!new_room)

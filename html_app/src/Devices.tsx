@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
 import PowerSource from "./PowerSource"
 import CheckMark from "./CheckMark";
+import Temperature from "./Temperature";
 
 function Devices() {
 
@@ -82,6 +83,7 @@ function Devices() {
         <td>{endpoint.endpointId}</td>
         <td>{endpoint.endpointName}</td>
         <td>{deviceTypes}</td>
+        <td><Temperature>{endpoint.measuredValue}</Temperature></td>
         <td><PowerSource powerSource={endpoint.powerSource} /></td>
         </tr>)
     });
@@ -102,6 +104,7 @@ function Devices() {
               <th>ID</th>
               <th>Name</th>
               <th>Devices</th>
+              <th>Measured Value</th>
               <th/>
             </tr>
           </thead>

@@ -57,7 +57,10 @@ esp_err_t load_home_from_nvs(home_manager_t *manager)
 
     err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (err != ESP_OK)
-        return err;
+    {
+        ESP_LOGE(TAG, "Failed to open NVS namespace '%s': %d", NVS_NAMESPACE, err);
+        return 0;
+    }
 
     size_t required_size = 0;
     err = nvs_get_blob(nvs_handle, NVS_KEY, NULL, &required_size);
