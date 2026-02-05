@@ -592,6 +592,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 char *payload = cJSON_PrintUnformatted(root);
 
+                // This will free payload once it's done.
                 httpd_queue_work(server, ws_async_send, payload);
 
                 if (is_mqtt_connected)
@@ -600,12 +601,14 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                     cJSON_AddNumberToObject(root, "flow_temperature", radiator->flow_temperature);
                     cJSON_AddNumberToObject(root, "return_temperature", radiator->return_temperature);
-
-                    const char *topic = "radiators/office";
-
+                    cJSON_AddNumberToObject(root, "output", radiator->output);
+                
+                    char state_topic[61];
+                    snprintf(state_topic, sizeof(state_topic), "radiators/%s", mqttNameJSON->valuestring);
+                    
                     char *payload = cJSON_PrintUnformatted(root);
-                    ESP_LOGI(TAG, "Publishing to MQTT topic %s", topic);
-                    esp_mqtt_client_publish(_mqtt_client, topic, payload, 0, 0, 0);
+                    ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
+                    esp_mqtt_client_publish(_mqtt_client, state_topic, payload, 0, 0, 0);
 
                     cJSON_free(payload);
                     cJSON_Delete(root);
@@ -1271,10 +1274,8 @@ static esp_err_t node_put_handler(httpd_req_t *req)
         }
         else if (strcmp("update", bindings.get("action")) == 0)
         {
-            char content[150];
-            size_t recv_size = std::min(req->content_len, sizeof(content));
-
-            esp_err_t err = httpd_req_recv(req, content, recv_size);
+            char content[req->content_len];
+            esp_err_t err = httpd_req_recv(req, content, req->content_len);
 
             cJSON *root = cJSON_Parse(content);
 
@@ -1461,10 +1462,25 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
         snprintf(return_default_entity_id, sizeof(return_default_entity_id), "sensor.%s_radiator_return_temperature", mqttNameJSON->valuestring);
         cJSON_AddStringToObject(return_sensor_component, "default_entity_id", return_default_entity_id);
 
+        cJSON *output_sensor_component = cJSON_CreateObject();
+        cJSON_AddStringToObject(output_sensor_component, "p", "sensor");
+        cJSON_AddStringToObject(output_sensor_component, "device_class", "temperature");
+        cJSON_AddStringToObject(output_sensor_component, "unit_of_measurement", "°C");
+        cJSON_AddStringToObject(output_sensor_component, "value_template", "{{ value_json.output}}");
+        
+        char output_unique_id[50];
+        snprintf(output_unique_id, sizeof(output_unique_id), "%s_radiator_output_temperature", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(output_sensor_component, "unique_id", output_unique_id);
+
+        char output_default_entity_id[60];
+        snprintf(output_default_entity_id, sizeof(output_default_entity_id), "sensor.%s_output", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(output_sensor_component, "default_entity_id", output_default_entity_id);
+
         cJSON *components = cJSON_CreateObject();
 
         cJSON_AddItemToObject(components, "flow_temperature", flow_sensor_component);
         cJSON_AddItemToObject(components, "return_temperature", return_sensor_component);
+        cJSON_AddItemToObject(components, "output", output_sensor_component);
 
         cJSON_AddItemToObject(root, "cmps", components);
 
@@ -1688,10 +1704,8 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Adding a room...");
 
-    char content[150];
-    size_t recv_size = std::min(req->content_len, sizeof(content));
-
-    esp_err_t err = httpd_req_recv(req, content, recv_size);
+    char content[req->content_len];
+    esp_err_t err = httpd_req_recv(req, content, req->content_len);
 
     cJSON *root = cJSON_Parse(content);
 
@@ -1712,7 +1726,7 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 
     save_rooms_to_nvs(&g_room_manager);
 
-    get_endpoint_measured_value(&g_node_manager, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint, &new_room->temperature);
+    get_endpoint_measured_value(&g_node_manager, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint, &new_room->current_temperature);
 
     update_room_heat_loss(&g_home_manager, &g_room_manager, new_room);
     
@@ -1740,7 +1754,8 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "roomId", room->room_id);
         cJSON_AddStringToObject(jNode, "name", room->name);
-        cJSON_AddNumberToObject(jNode, "temperature", room->temperature);
+        cJSON_AddNumberToObject(jNode, "current_temperature", room->current_temperature);
+        cJSON_AddNumberToObject(jNode, "target_temperature", room->current_temperature);
         cJSON_AddNumberToObject(jNode, "heatLoss", room->heat_loss);
 
         uint16_t total_radiator_output = 0;
@@ -1765,9 +1780,10 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
 
-    const char *json = cJSON_Print(root);
+    const char *json = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, json);
-    free((void *)json);
+    
+    cJSON_free(json);
     cJSON_Delete(root);
 
     return ESP_OK;
@@ -1846,9 +1862,10 @@ static esp_err_t room_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
 
-    const char *json = cJSON_Print(root);
+    const char *json = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, json);
-    free((void *)json);
+
+    cJSON_free(json);
     cJSON_Delete(root);
 
     return ESP_OK;
@@ -1912,7 +1929,7 @@ static esp_err_t room_put_handler(httpd_req_t *req)
     room_t *room = find_room(&g_room_manager, room_id);
 
     get_endpoint_measured_value(&g_node_manager, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint, &room->temperature);
-    
+
     update_room_heat_loss(&g_home_manager, &g_room_manager, room);
 
     httpd_resp_set_status(req, "200 Ok");
@@ -2013,9 +2030,10 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
 
-    const char *json = cJSON_Print(root);
+    const char *json = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, json);
-    free((void *)json);
+
+    cJSON_free(json);
     cJSON_Delete(root);
 
     return ESP_OK;
@@ -2034,9 +2052,10 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
 
-    const char *json = cJSON_Print(root);
+    const char *json = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, json);
-    free((void *)json);
+
+    cJSON_free(json);
     cJSON_Delete(root);
 
     return ESP_OK;
@@ -2046,10 +2065,8 @@ static esp_err_t home_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Updating home...");
 
-    char content[150];
-    size_t recv_size = std::min(req->content_len, sizeof(content));
-
-    esp_err_t err = httpd_req_recv(req, content, recv_size);
+    char content[req->content_len];
+    esp_err_t err = httpd_req_recv(req, content, req->content_len);
 
     cJSON *root = cJSON_Parse(content);
 
@@ -2075,6 +2092,8 @@ static esp_err_t home_put_handler(httpd_req_t *req)
 
     httpd_resp_set_status(req, "201 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+
+    cJSON_Delete(root);
 
     return ESP_OK;
 }

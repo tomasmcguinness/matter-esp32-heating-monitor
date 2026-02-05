@@ -18,8 +18,10 @@ typedef struct room
 
     uint8_t heat_loss_per_degree;
 
+    uint8_t target_temperature;
+
     // Transient data
-    int16_t temperature;
+    int16_t current_temperature;
     int16_t heat_loss;
 
     struct room *next;

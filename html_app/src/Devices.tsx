@@ -89,7 +89,7 @@ function Devices() {
     });
 
     return ([<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
-      <td>0x{n.nodeId.toString(32).toUpperCase()}</td>
+      <td>0x{n.nodeId.toString(16).toUpperCase()}</td>
       <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
