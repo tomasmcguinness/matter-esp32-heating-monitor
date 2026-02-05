@@ -45,7 +45,7 @@ function EditDevice() {
       <hr />
       <div className="mb-3">
           <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
-          <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
+          <input type="text" name="name" maxLength={50} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
         </div>
       <button className="btn btn-primary" onClick={save} style={{ 'marginRight': '5px' }}>Save</button>
       <NavLink className="btn btn-danger" to={`/devices/${nodeId}`}>Cancel</NavLink>

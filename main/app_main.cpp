@@ -183,10 +183,65 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
 
     // Indicate we have no subscription!
     //
-    mark_node_has_no_subscription(&g_node_manager, remote_node_id, subscription_id);
+    bool create_new_subscription = false;
 
-    // We need to subscribe!
+    mark_node_has_no_subscription(&g_node_manager, remote_node_id, subscription_id, &create_new_subscription);
+
+    // The node might still have an active subscription, so only establish another if necessary.
     //
+    if(create_new_subscription) 
+    {
+        ESP_LOGI(TAG, "Re-Subscribing to node %llu...", remote_node_id);
+
+        auto *args = new std::tuple<uint64_t>(remote_node_id);
+
+        // We need to re-subscribe!
+        //
+        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                      {
+            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
+
+            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+            attr_paths.Alloc(1);
+
+            if (!attr_paths.Get())
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                return;
+            }
+
+            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+
+            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+            event_paths.Alloc(0);
+
+            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
+                std::move(attr_paths),
+                std::move(event_paths),
+                0,
+                60,
+                false, // <--- Keep Subscriptions
+                attribute_data_cb,
+                nullptr,
+                node_subscription_established_cb,
+                node_subscription_terminated_cb,
+                node_subscribe_failed_cb,
+                false); 
+
+            if (!cmd)
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+            }
+            else
+            {
+                esp_err_t err = cmd->send_command();
+                if (err != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                }
+            } },
+                                                      reinterpret_cast<intptr_t>(args));
+    }
 }
 
 void node_subscribe_failed_cb(void *ctx)
@@ -362,6 +417,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             set_endpoint_name(node, path.mEndpointId, name);
 
+            free(name);
+
             break;
         }
     }
@@ -446,6 +503,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
                     set_node_label(node, node_label);
+
+                    free(node_label);
                 }
             }
         }
@@ -468,6 +527,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
                 set_endpoint_name(node, path.mEndpointId, node_label);
+
+                free(node_label);
             }
         }
     }
@@ -475,7 +536,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
 
-        
         int16_t temperature;
         chip::app::DataModel::Decode(*data, temperature);
 
@@ -547,9 +607,11 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     ESP_LOGI(TAG, "Publishing to MQTT topic %s", topic);
                     esp_mqtt_client_publish(_mqtt_client, topic, payload, 0, 0, 0);
 
+                    cJSON_free(payload);
                     cJSON_Delete(root);
                 }
 
+                cJSON_free(payload);
                 cJSON_Delete(root);
 
                 hasMatched = true;
@@ -581,6 +643,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 char *payload = cJSON_PrintUnformatted(root);
 
+                // This will free payload once it's done.
                 httpd_queue_work(server, ws_async_send, payload);
 
                 cJSON_Delete(root);
@@ -778,11 +841,16 @@ static void ws_async_send(void *arg)
 {
     ESP_LOGI(TAG, "Sending message over websocket...");
 
+    // Grab a copy of the payload.
+    //
+    char *payload = (char *)calloc(1, strlen((char *)arg) + 1);
+    memcpy(payload, arg, strlen((char *)arg));
+
     httpd_ws_frame_t ws_pkt;
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
 
-    ws_pkt.payload = (uint8_t *)arg;
-    ws_pkt.len = strlen((char *)arg);
+    ws_pkt.payload = (uint8_t *)payload;
+    ws_pkt.len = strlen(payload);
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     ws_pkt.final = true;
 
@@ -790,7 +858,7 @@ static void ws_async_send(void *arg)
 
     ESP_LOGI(TAG, "Send result: %u", err);
 
-    free(arg);
+    free(payload);
 }
 
 static esp_err_t ws_get_handler(httpd_req_t *req)
@@ -842,7 +910,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     uint64_t node_id = get_next_node_id(&g_node_manager);
 
-    if(node_id == 0)
+    if (node_id == 0)
     {
         ESP_LOGE(TAG, "Failed to get a valid node ID for commissioning");
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -909,7 +977,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         char *dataset = "0e080000000000010000000300000d4a0300001435060004001fffe00208d58ddc1f3cf637620708fdb9d4afcd2632ac0510ee2cd1f3ddd63150e855bac3de75ab54030f4f70656e5468726561642d3166363201021f620410703f90f849c5a0d001a2738ce8dd771d0c0402a0f7f8";
 
         if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
-        { 
+        {
             return ESP_ERR_INVALID_ARG;
         }
 
@@ -1156,6 +1224,9 @@ static esp_err_t node_put_handler(httpd_req_t *req)
         if (strcmp("identify", bindings.get("action")) == 0)
         {
             ESP_LOGI(TAG, "Sending identify command");
+
+            // TODO Schedule this!
+            //
             chip::DeviceLayer::PlatformMgr().LockChipStack();
             esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
             chip::DeviceLayer::PlatformMgr().UnlockChipStack();
@@ -1218,6 +1289,10 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
 
             set_node_name(node, nameJSON->valuestring);
+
+            save_nodes_to_nvs(&g_node_manager);
+
+            cJSON_Delete(root);
         }
         else if (strcmp("subscribe", bindings.get("action")) == 0)
         {
@@ -1338,53 +1413,78 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "Radiator saved");
 
+    if (is_mqtt_connected)
+    {
+        // Announce this radiator via MQTT.
+        //
+        cJSON *root = cJSON_CreateObject();
+
+        char device_name[32];
+        snprintf(device_name, sizeof(device_name), "%s Radiator", nameJSON->valuestring);
+
+        ESP_LOGI(TAG, "Announcing device `%s` via MQTT", device_name);
+
+        cJSON *device = cJSON_CreateObject();
+        cJSON_AddStringToObject(device, "name", device_name);
+        cJSON_AddItemToObject(root, "device", device);
+
+        cJSON *origin = cJSON_CreateObject();
+        cJSON_AddStringToObject(device, "name", "Heating Monitor");
+        cJSON_AddStringToObject(device, "url", "https://github.com/tomasmcguinness/matter-esp32-heating-monitor");
+        cJSON_AddItemToObject(root, "origin", origin);
+
+        cJSON *flow_sensor_component = cJSON_CreateObject();
+        cJSON_AddStringToObject(flow_sensor_component, "p", "sensor");
+        cJSON_AddStringToObject(flow_sensor_component, "device_class", "temperature");
+        cJSON_AddStringToObject(flow_sensor_component, "unit_of_measurement", "°C");
+        cJSON_AddStringToObject(flow_sensor_component, "value_template", "{{ value_json.flow_temperature}}");
+
+        char flow_unique_id[50];
+        snprintf(flow_unique_id, sizeof(flow_unique_id), "%s_radiator_flow_temperature", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(flow_sensor_component, "unique_id", flow_unique_id);
+
+        char flow_default_entity_id[60];
+        snprintf(flow_default_entity_id, sizeof(flow_default_entity_id), "sensor.%s_radiator_flow_temperature", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(flow_sensor_component, "default_entity_id", flow_default_entity_id);
+
+        cJSON *return_sensor_component = cJSON_CreateObject();
+        cJSON_AddStringToObject(return_sensor_component, "p", "sensor");
+        cJSON_AddStringToObject(return_sensor_component, "device_class", "temperature");
+        cJSON_AddStringToObject(return_sensor_component, "unit_of_measurement", "°C");
+        cJSON_AddStringToObject(return_sensor_component, "value_template", "{{ value_json.return_temperature}}");
+
+        char return_unique_id[50];
+        snprintf(return_unique_id, sizeof(return_unique_id), "%s_radiator_return_temperature", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(return_sensor_component, "unique_id", return_unique_id);
+
+        char return_default_entity_id[60];
+        snprintf(return_default_entity_id, sizeof(return_default_entity_id), "sensor.%s_radiator_return_temperature", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(return_sensor_component, "default_entity_id", return_default_entity_id);
+
+        cJSON *components = cJSON_CreateObject();
+
+        cJSON_AddItemToObject(components, "flow_temperature", flow_sensor_component);
+        cJSON_AddItemToObject(components, "return_temperature", return_sensor_component);
+
+        cJSON_AddItemToObject(root, "cmps", components);
+
+        char state_topic[60];
+        snprintf(state_topic, sizeof(state_topic), "radiators/%s", mqttNameJSON->valuestring);
+        cJSON_AddStringToObject(root, "state_topic", state_topic);
+
+        char *payload = cJSON_PrintUnformatted(root);
+
+        char config_topic[80];
+        snprintf(config_topic, sizeof(config_topic), "homeassistant/device/radiators/%s/config", mqttNameJSON->valuestring);
+        esp_mqtt_client_publish(_mqtt_client, config_topic, payload, 0, 0, 0);
+
+        ESP_LOGI(TAG, "Announced radiator via MQTT");
+
+        cJSON_free(payload);
+        cJSON_Delete(root);
+    }
+
     cJSON_Delete(root);
-
-    // Announce this radiator via MQTT.
-    //
-    root = cJSON_CreateObject();
-
-    char device_name[32];
-    snprintf(device_name, sizeof(device_name), "%s Radiator", nameJSON->valuestring);
-
-    cJSON *device = cJSON_CreateObject();
-    cJSON_AddStringToObject(device, "name", device_name);
-    cJSON_AddItemToObject(root, "device", device);
-
-    cJSON *origin = cJSON_CreateObject();
-    cJSON_AddStringToObject(device, "name", "Heating Monitor");
-    cJSON_AddItemToObject(root, "origin", origin);
-
-    cJSON *flow_sensor_component = cJSON_CreateObject();
-    cJSON_AddStringToObject(flow_sensor_component, "p", "sensor");
-    cJSON_AddStringToObject(flow_sensor_component, "device_class", "temperature");
-    cJSON_AddStringToObject(flow_sensor_component, "unit_of_measurement", "°C");
-    cJSON_AddStringToObject(flow_sensor_component, "value_template", "{{ value_json.flow_temperature}}");
-    cJSON_AddStringToObject(flow_sensor_component, "unique_id", "flow_temperature");
-
-    cJSON *return_sensor_component = cJSON_CreateObject();
-    cJSON_AddStringToObject(return_sensor_component, "p", "sensor");
-    cJSON_AddStringToObject(return_sensor_component, "device_class", "temperature");
-    cJSON_AddStringToObject(return_sensor_component, "unit_of_measurement", "°C");
-    cJSON_AddStringToObject(return_sensor_component, "value_template", "{{ value_json.return_temperature}}");
-    cJSON_AddStringToObject(return_sensor_component, "unique_id", "return_temperature");
-
-    cJSON *components = cJSON_CreateObject();
-
-    cJSON_AddItemToObject(components, "flow_temperature", flow_sensor_component);
-    cJSON_AddItemToObject(components, "return_temperature", flow_sensor_component);
-
-    cJSON_AddItemToObject(root, "cmps", components);
-
-    cJSON_AddStringToObject(root, "state_topic", "radiators/office");
-
-    char *payload = cJSON_PrintUnformatted(root);
-
-    esp_mqtt_client_publish(_mqtt_client, "homeassistant/device/radiators/office/config", payload, 0, 0, 0);
-
-    ESP_LOGI(TAG, "Announced radiator via MQTT");
-
-    // cJSON_Delete(root);
 
     // Return success!
     //
@@ -1454,6 +1554,7 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
 
     cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
     cJSON_AddStringToObject(root, "name", radiator->name);
+    cJSON_AddStringToObject(root, "mqttName", radiator->mqtt_name);
     cJSON_AddNumberToObject(root, "type", radiator->type);
     cJSON_AddNumberToObject(root, "output", radiator->output_dt_50);
 
@@ -1469,9 +1570,10 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 Accepted");
 
-    const char *json = cJSON_Print(root);
+    char *json = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, json);
-    free((void *)json);
+    
+    cJSON_free(json);
     cJSON_Delete(root);
 
     return ESP_OK;
@@ -1492,10 +1594,8 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
         radiator_id = strtoull(bindings.get("radiatorId"), NULL, 10);
     }
 
-    char content[150];
-    size_t recv_size = std::min(req->content_len, sizeof(content));
-
-    esp_err_t err = httpd_req_recv(req, content, recv_size);
+    char content[req->content_len];
+    esp_err_t err = httpd_req_recv(req, content, req->content_len);
 
     cJSON *root = cJSON_Parse(content);
 
@@ -1527,8 +1627,12 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
                     (uint64_t)returnSensorNodeIdJSON->valueint,
                     (uint16_t)returnSensorEndpointIdJSON->valueint);
 
-    httpd_resp_set_status(req, "200 Ok");
-    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+    save_radiators_to_nvs(&g_radiator_manager);   
+
+    httpd_resp_set_status(req, "201 NoContent");
+    httpd_resp_send(req, "", HTTPD_RESP_USE_STRLEN);
+
+    cJSON_Delete(root);
 
     return ESP_OK;
 }
@@ -1544,21 +1648,38 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
 
     int length_of_nodeId = size - index_of_last_slash;
 
-    char node_id_str[length_of_nodeId + 1];
+    char id_str[length_of_nodeId + 1];
 
-    memcpy(node_id_str, &req->uri[index_of_last_slash], length_of_nodeId);
+    memcpy(id_str, &req->uri[index_of_last_slash], length_of_nodeId);
 
-    node_id_str[length_of_nodeId] = '\0';
+    id_str[length_of_nodeId] = '\0';
+    ESP_LOGI(TAG, "Deleting radiator %s", id_str);
 
-    ESP_LOGI(TAG, "Deleting radiator %s", node_id_str);
+    uint8_t id = (uint8_t)strtoul(id_str, NULL, 10);
 
-    uint8_t node_id = (uint8_t)strtoul(node_id_str, NULL, 10);
+    char mqtt_name[50];
+    esp_err_t err = remove_radiator(&g_radiator_manager, id, &mqtt_name[0]);
 
-    remove_radiator(&g_radiator_manager, node_id);
+    if (err == ESP_OK)
+    {
+        if (is_mqtt_connected)
+        {
+            char config_topic[80];
+            snprintf(config_topic, sizeof(config_topic), "homeassistant/device/radiators/%s/config", mqtt_name);
+            esp_mqtt_client_publish(_mqtt_client, config_topic, "", 0, 0, 0);
 
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_status(req, "200 OK");
-    httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+            ESP_LOGI(TAG, "Announced radiator removal via MQTT");
+        }
+
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_status(req, "200 OK");
+        httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
+    }
+    else
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Failed to remove radiator", HTTPD_RESP_USE_STRLEN);
+    }
 
     return ESP_OK;
 }
@@ -1587,8 +1708,14 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     const cJSON *temperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorEndpointId");
     const cJSON *heatLossPerDegreeJSON = cJSON_GetObjectItemCaseSensitive(root, "heatLossPerDegree");
 
-    add_room(&g_room_manager, nameJSON->valuestring, (uint8_t)heatLossPerDegreeJSON->valueint, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint);
+    room_t *new_room = add_room(&g_room_manager, nameJSON->valuestring, (uint8_t)heatLossPerDegreeJSON->valueint, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint);
 
+    save_rooms_to_nvs(&g_room_manager);
+
+    get_endpoint_measured_value(&g_node_manager, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint, &new_room->temperature);
+
+    update_room_heat_loss(&g_home_manager, &g_room_manager, new_room);
+    
     // TODO Return the new room in JSON!
     //
     httpd_resp_set_status(req, "200 Ok");
@@ -1746,10 +1873,8 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 
     uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
 
-    char content[150];
-    size_t recv_size = std::min(req->content_len, sizeof(content));
-
-    esp_err_t err = httpd_req_recv(req, content, recv_size);
+    char content[req->content_len];
+    esp_err_t err = httpd_req_recv(req, content, req->content_len);
 
     cJSON *root = cJSON_Parse(content);
 
@@ -1785,10 +1910,15 @@ static esp_err_t room_put_handler(httpd_req_t *req)
     save_rooms_to_nvs(&g_room_manager);
 
     room_t *room = find_room(&g_room_manager, room_id);
+
+    get_endpoint_measured_value(&g_node_manager, (uint64_t)temperatureSensorNodeIdJSON->valueint, (uint16_t)temperatureSensorEndpointIdJSON->valueint, &room->temperature);
+    
     update_room_heat_loss(&g_home_manager, &g_room_manager, room);
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+
+    cJSON_Delete(root);
 
     return ESP_OK;
 }
@@ -1813,7 +1943,6 @@ static esp_err_t rooms_delete_handler(httpd_req_t *req)
 
     remove_room(&g_room_manager, room_id);
 
-    httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
     httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
 
@@ -1939,6 +2068,10 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     g_home_manager.outdoor_temp_endpoint_id = (uint64_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
 
     save_home_to_nvs(&g_home_manager);
+
+    // Copy the outdoor temperature from the sensor to the home manager so that it's available immediately.
+    //
+    get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
 
     httpd_resp_set_status(req, "201 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
@@ -2318,7 +2451,6 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         else if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
                  event->Platform.ESPSystemEvent.Id == IP_EVENT_GOT_IP6)
         {
-            
         }
         break;
     case chip::DeviceLayer::DeviceEventType::kSecureSessionEstablished:
@@ -2328,7 +2460,7 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     case chip::DeviceLayer::DeviceEventType::kServerReady:
         ESP_LOGI(TAG, "kServerReady");
         chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
-                                                           { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
+                                                      { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
         break;
     default:
         break;
@@ -2352,8 +2484,8 @@ extern "C" void app_main()
     room_manager_init(&g_room_manager);
     home_manager_init(&g_home_manager);
 
-    //err = StatusDisplayMgr().Init();
-    //ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "StatusDisplay::Init() failed, err:%d", err));
+    // err = StatusDisplayMgr().Init();
+    // ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "StatusDisplay::Init() failed, err:%d", err));
 
 #if CONFIG_ENABLE_CHIP_SHELL
     esp_matter::console::diagnostics_register_commands();
@@ -2379,5 +2511,7 @@ extern "C" void app_main()
     uint32_t num_active_read_handlers = chip::app::InteractionModelEngine::GetInstance()->GetNumActiveReadHandlers(chip::app::ReadHandler::InteractionType::Subscribe);
     ESP_LOGI(TAG, "There are %u active read handlers", num_active_read_handlers);
 
-    // list_registered_icd();
+    heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
+
+    list_registered_icd();
 }

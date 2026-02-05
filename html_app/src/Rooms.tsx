@@ -28,11 +28,6 @@ function Rooms() {
 
   useEffect(() => {
     const fetchRooms = async () => {
-      // setRoomList([{
-      //   "roomId": 1,
-      //   "name": "Office",
-      //   "temperature": 2039
-      // }]);
 
       var response = await fetch("/api/rooms");
 
@@ -46,9 +41,8 @@ function Rooms() {
   }, []);
 
   // TODO Sort by name
-  let rooms = roomList.map((n: any) => {
+  let rooms = roomList.sort((a: any, b: any) => a.name.localeCompare(b.name)).map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
-      <td>{n.roomId}</td>
       <td>{n.name}</td>
       <td><Temperature>{n.temperature}</Temperature></td>
       <td><Power>{n.heatLoss}</Power></td>
@@ -64,11 +58,11 @@ function Rooms() {
       {rooms.length > 0 && <table className="table table-striped table-bordered">
         <thead>
           <tr>
-            <th style={{ width: 'auto' }}>ID</th>
             <th>Name</th>
             <th>Temperature</th>
-            <th>Heat Loss</th>
+            <th>Est. Heat Loss</th>
             <th>Radiator Output</th>
+            <th>Act. Heat Loss</th>
           </tr>
         </thead>
         <tbody>

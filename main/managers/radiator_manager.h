@@ -50,7 +50,7 @@ radiator_t *find_radiator(radiator_manager_t *manager, uint8_t radiator_id);
 radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_name, uint8_t type, uint16_t output, uint64_t flowNodeId, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId);
 esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char *name, char *mqtt_name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId);
 
-esp_err_t remove_radiator(radiator_manager_t *manager, uint8_t radiator_id);
+esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id, char *mqtt_name);
 
 esp_err_t load_radiators_from_nvs(radiator_manager_t *manager);
 esp_err_t save_radiators_to_nvs(radiator_manager_t *manager);

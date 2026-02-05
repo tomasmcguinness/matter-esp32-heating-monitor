@@ -103,11 +103,13 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_nam
 {
     uint8_t new_radiator_id = get_next_radiator_id(manager);
 
-    if(new_radiator_id == 0)
+    if (new_radiator_id == 0)
     {
         ESP_LOGE(TAG, "Failed to get next radiator ID");
         return NULL;
     }
+
+    ESP_LOGE(TAG, "Adding a radiator with ID %d", new_radiator_id);
 
     radiator_t *new_radiator = (radiator_t *)calloc(1, sizeof(radiator_t));
 
@@ -119,8 +121,12 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_nam
     memset(new_radiator, 0, sizeof(radiator_t));
 
     new_radiator->radiator_id = new_radiator_id;
-    new_radiator->name = name;
-    new_radiator->mqtt_name = mqtt_name;
+    new_radiator->name = (char *)malloc(strlen(name) + 1);
+    strcpy(new_radiator->name, name);
+
+    new_radiator->mqtt_name = (char *)malloc(strlen(mqtt_name) + 1);
+    strcpy(new_radiator->mqtt_name, mqtt_name);
+    
     new_radiator->type = type;
     new_radiator->output_dt_50 = output_dt_50;
     new_radiator->flow_temp_node_id = flow_temp_node_id;
@@ -142,16 +148,20 @@ esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char
 
     if (radiator)
     {
-        radiator->name = name;
-        radiator->mqtt_name = mqtt_name;
+        free(radiator->name);
+        radiator->name = (char *)malloc(strlen(name) + 1);
+        strcpy(radiator->name, name);
+
+        free(radiator->mqtt_name);
+        radiator->mqtt_name = (char *)malloc(strlen(mqtt_name) + 1);
+        strcpy(radiator->mqtt_name, mqtt_name);
+
         radiator->type = type;
         radiator->output_dt_50 = output_dt_50;
         radiator->flow_temp_node_id = flow_temp_node_id;
         radiator->flow_temp_endpoint_id = flowEndpointId;
         radiator->return_temp_node_id = returnNodeId;
         radiator->return_temp_endpoint_id = returnEndpointId;
-        
-        save_radiators_to_nvs(manager);
 
         return ESP_OK;
     }
@@ -277,7 +287,7 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
     return ESP_OK;
 }
 
-esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id)
+esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id, char *mqtt_name)
 {
     if (!controller)
     {
@@ -317,7 +327,10 @@ esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id)
 
     ESP_LOGI(TAG, "Removing radiator 0x%016llX", radiator_id);
 
+    strcpy(mqtt_name, current->mqtt_name);
+
     free(current);
+
     controller->radiator_count--;
 
     esp_err_t save_err = save_radiators_to_nvs(controller);
@@ -351,17 +364,17 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
     while (current)
     {
-        required_size += sizeof(uint8_t);           // radiator_id
-        required_size += sizeof(uint8_t);           // name length
-        required_size += strlen(current->name);     // name
-        required_size += sizeof(uint8_t);           // mqtt name length
-        required_size += strlen(current->mqtt_name);// mqtt name
-        required_size += sizeof(uint8_t);           // type
-        required_size += sizeof(uint16_t);          // output
-        required_size += sizeof(uint64_t);          // flow node
-        required_size += sizeof(uint16_t);          // flow endpoint
-        required_size += sizeof(uint64_t);          // return node
-        required_size += sizeof(uint16_t);          // return endpoint
+        required_size += sizeof(uint8_t);            // radiator_id
+        required_size += sizeof(uint8_t);            // name length
+        required_size += strlen(current->name);      // name
+        required_size += sizeof(uint8_t);            // mqtt name length
+        required_size += strlen(current->mqtt_name); // mqtt name
+        required_size += sizeof(uint8_t);            // type
+        required_size += sizeof(uint16_t);           // output
+        required_size += sizeof(uint64_t);           // flow node
+        required_size += sizeof(uint16_t);           // flow endpoint
+        required_size += sizeof(uint64_t);           // return node
+        required_size += sizeof(uint16_t);           // return endpoint
 
         current = current->next;
     }

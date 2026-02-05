@@ -51,7 +51,7 @@ function AddRadiator() {
       <form method="post" onSubmit={handleSubmit}>
         <div className="mb-3">
           <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
-          <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
+          <input type="text" name="name" maxLength={50} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="mb-3">
           <label htmlFor="mqttName" className="form-label">MQTT Name</label>

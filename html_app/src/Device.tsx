@@ -32,7 +32,7 @@ function Device() {
 
   return (
     <>
-      <h1>Device - {nodeId}
+      <h1>Device - {(nodeId as any)?.toString(64).toUpperCase()}
         <NavLink className="btn btn-primary action-button" to={`/devices/${nodeId}/edit`}>Edit</NavLink>
         <button className="btn btn-danger action-button" onClick={removeNode} style={{ 'marginRight': '5px' }}>
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className="bi bi-trash3" viewBox="0 0 16 16">

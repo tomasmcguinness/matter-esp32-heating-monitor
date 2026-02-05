@@ -89,7 +89,7 @@ function Devices() {
     });
 
     return ([<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
-      <td>{n.nodeId.toString(16).toUpperCase()}</td>
+      <td>0x{n.nodeId.toString(32).toUpperCase()}</td>
       <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
@@ -101,7 +101,7 @@ function Devices() {
         <table className="table">
           <thead>
             <tr>
-              <th>ID</th>
+              <th>NodeID</th>
               <th>Name</th>
               <th>Devices</th>
               <th>Measured Value</th>
@@ -124,7 +124,7 @@ function Devices() {
       {nodes.length > 0 && <table className="table table-striped table-bordered">
         <thead>
           <tr>
-            <th>ID</th>
+            <th>Endpoint</th>
             <th>Name</th>
             <th>Vendor</th>
             <th>Product</th>

@@ -103,7 +103,10 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_
 {
     room_t *room = find_room(manager, room_id);
 
-    room->name = name;
+    free(room->name);
+    room->name = (char *)malloc(strlen(name) + 1);
+    strcpy(room->name, name);
+
     room->heat_loss_per_degree = heat_loss_per_degree;
     room->room_temperature_node_id = temperature_node_id;
     room->room_temperature_endpoint_id = temperature_endpoint_id;
@@ -112,8 +115,6 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_
     room->radiators = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
     
     memcpy(room->radiators, radiator_ids, radiator_count);
-
-    save_rooms_to_nvs(manager);
 
     return room;
 }
@@ -137,18 +138,20 @@ room_t *add_room(room_manager_t *manager, char *name, uint8_t heat_loss_per_degr
     memset(new_room, 0, sizeof(room_t));
 
     new_room->room_id = new_room_id;
-    new_room->name = name;
+    
+    new_room->name = (char *)malloc(strlen(name) + 1);
+    strcpy(new_room->name, name);
+
     new_room->room_temperature_node_id = room_temperature_node_id;
     new_room->room_temperature_endpoint_id = room_temperature_endpoint_id;
     new_room->heat_loss_per_degree = heat_loss_per_degree;
+
     new_room->radiator_count = 0;
 
     new_room->next = manager->room_list;
 
     manager->room_list = new_room;
     manager->room_count++;
-
-    save_rooms_to_nvs(manager);
 
     return new_room;
 }

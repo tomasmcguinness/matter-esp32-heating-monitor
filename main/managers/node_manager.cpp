@@ -273,7 +273,7 @@ endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id)
 {
     // Check if endpoint already exists
     endpoint_entry_t *existing_endpoint = find_endpoint(node, endpoint_id);
-    
+
     if (existing_endpoint)
     {
         ESP_LOGW(TAG, "Endpoint %u already exists in node 0x%016llX", endpoint_id, node->node_id);
@@ -307,7 +307,8 @@ esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *nam
         return ESP_FAIL;
     }
 
-    endpoint->name = name;
+    endpoint->name = (char *)malloc(strlen(name) + 1);
+    strcpy(endpoint->name, name);
 
     return ESP_OK;
 }
@@ -329,13 +330,21 @@ esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, u
 
 esp_err_t set_node_name(matter_node_t *node, char *name)
 {
-    node->name = name;
+    if(node->name) 
+    {
+        free(node->name);
+    }
+
+    node->name = (char *)malloc(strlen(name) + 1);
+    strcpy(node->name, name);
+
     return ESP_OK;
 }
 
 esp_err_t set_node_label(matter_node_t *node, char *label)
 {
-    node->label = label;
+    node->label = (char *)malloc(strlen(label) + 1);
+    strcpy(node->label, label);
 
     if (!node->name)
     {
@@ -369,6 +378,23 @@ esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
     return ESP_OK;
 }
 
+esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value)
+{
+     matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
+
+        if (endpoint)
+        {
+            *measured_value = endpoint->measured_value;
+        }
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id)
 {
     matter_node_t *node = find_node(manager, node_id);
@@ -382,7 +408,7 @@ esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, 
     return ESP_OK;
 }
 
-esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id)
+esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id, bool *create_new_subscription)
 {
     matter_node_t *node = find_node(manager, node_id);
 
@@ -390,6 +416,8 @@ esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_i
     {
         node->has_subscription = false;
         node->subscription_id = 0;
+
+        *create_new_subscription = true;
     }
 
     return ESP_OK;
@@ -799,5 +827,7 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
 
     nvs_close(nvs_handle);
 
-    return err;
+    ESP_LOGI(TAG, "Nodes have been saved successfully...");
+
+    return ESP_OK;
 }

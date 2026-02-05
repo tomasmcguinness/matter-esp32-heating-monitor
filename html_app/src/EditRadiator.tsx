@@ -9,6 +9,7 @@ function EditRadiator() {
   let navigate = useNavigate();
 
   const [name, setName] = useState<string>('');
+  const [mqttName, setMqttName] = useState<string>('');
   const [type, setType] = useState(10);
   const [output, setOutput] = useState<number>(0);
   const [flowSensor, setFlowSensor] = useState<string>('0|0');
@@ -18,6 +19,7 @@ function EditRadiator() {
     fetch('/api/sensors').then(response => response.json()).then(_ => {
       fetch(`/api/radiators/${radiatorId}`).then(response => response.json()).then(data => {
         setName(data.name);
+        setMqttName(data.mqttName);
         setType(data.type);
         setOutput(data.output);
         setFlowSensor(`${data.flowSensorNodeId}|${data.flowSensorEndpointId}`);
@@ -37,6 +39,7 @@ function EditRadiator() {
 
     var object: any = {
       name,
+      mqttName,
       type,
       output,
       flowSensorNodeId,
@@ -63,6 +66,10 @@ function EditRadiator() {
         <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
         <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
       </div>
+       <div className="mb-3">
+          <label htmlFor="mqttName" className="form-label">MQTT Name</label>
+          <input type="text" name="mqttName" maxLength={20} className="form-control" id="mqttName" placeholder="office" required={false} value={mqttName || ''} onChange={(e) => setMqttName(e.target.value)} />
+        </div>
       <div className="mb-3">
         <label htmlFor="type" className="form-label">Type <span style={{ 'color': 'red' }}>*</span></label>
         <select name="type" className="form-control" id="type" required={true} value={type} onChange={(e) => setType(parseInt(e.target.value))}>
