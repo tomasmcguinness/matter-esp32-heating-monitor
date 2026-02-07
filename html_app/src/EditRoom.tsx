@@ -11,6 +11,7 @@ function EditRoom() {
   const [radiators, setRadiators] = useState<any>([]);
   
   const [name, setName] = useState<string>('');
+  const [targetTemperature, setTargetTemperature] = useState<number>(0);
   const [heatLossPerDegree, setHeatLossPerDegree] = useState<number>(0);
   const [temperatureSensor, setTemperatureSensor] = useState<string>('0|0');
 
@@ -34,6 +35,7 @@ function EditRoom() {
       if (response.ok) {
         let data = await response.json();
         setName(data.name);
+        setTargetTemperature(data.targetTemperature/100);
         setHeatLossPerDegree(data.heatLossPerDegree);
         setTemperatureSensor(`${data.temperatureSensorNodeId}|${data.temperatureSensorEndpointId}`);
       }
@@ -51,6 +53,7 @@ function EditRoom() {
 
     var json = JSON.stringify({
       name,
+      targetTemperature: targetTemperature * 100,
       heatLossPerDegree,
       radiatorIds,
       temperatureSensorNodeId,
@@ -84,7 +87,11 @@ function EditRoom() {
         <input type="string" name="name" maxLength={20} className="form-control" id="name" placeholder="Room Name e.g. Office" required={true} value={name} onChange={(e) => setName(e.target.value)} />
       </div>
       <div className="mb-3">
-        <label htmlFor="heatLoss" className="form-label">Heat Loss Per °C<span style={{ 'color': 'red' }}>*</span></label>
+        <label htmlFor="targetTemperature" className="form-label">Target Temperature <span style={{ 'color': 'red' }}>*</span></label>
+        <input type="number" name="targetTemperature" maxLength={20} className="form-control" id="targetTemperature" placeholder="20" required={true} value={targetTemperature || ''} onChange={(e) => setTargetTemperature(parseInt(e.target.value))} />
+      </div>
+      <div className="mb-3">
+        <label htmlFor="heatLoss" className="form-label">Heat Loss Per W/°C<span style={{ 'color': 'red' }}>*</span></label>
         <input type="number" name="heatLoss" maxLength={20} className="form-control" id="heatLoss" placeholder="25" required={true} value={heatLossPerDegree || ''} onChange={(e) => setHeatLossPerDegree(parseInt(e.target.value))} />
       </div>
       <div className="mb-3">

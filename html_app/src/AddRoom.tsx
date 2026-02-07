@@ -9,6 +9,7 @@ function AddRoom() {
   const [name, setName] = useState<string | undefined>(undefined);
   const [temperatureSensor, setTemperatureSensor] = useState<string | undefined>(undefined);
   const [heatLossPerDegree, setHeatLossPerDegree] = useState<string | undefined>(undefined);
+  const [targetTemperature, setTargetTemperature] = useState<number | undefined>(undefined);
 
   function handleSubmit(e: any) {
     e.preventDefault();
@@ -18,6 +19,7 @@ function AddRoom() {
 
     var object: any = {
       name,
+      targetTemperature: targetTemperature! * 100,
       temperatureSensorNodeId,
       temperatureSensorEndpointId,
       heatLossPerDegree: parseInt(heatLossPerDegree!)
@@ -44,7 +46,11 @@ function AddRoom() {
           <input type="text" name="name" maxLength={20} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="mb-3">
-          <label htmlFor="heatLoss" className="form-label">Heat Loss Per Degree <span style={{ 'color': 'red' }}>*</span></label>
+          <label htmlFor="targetTemperature" className="form-label">Target Temperature <span style={{ 'color': 'red' }}>*</span></label>
+          <input type="number" name="targetTemperature" maxLength={20} className="form-control" id="targetTemperature" placeholder="20" required={true} value={targetTemperature || ''} onChange={(e) => setTargetTemperature(parseInt(e.target.value))} />
+        </div>
+        <div className="mb-3">
+          <label htmlFor="heatLoss" className="form-label">Calculated Heat Loss (W/°C) <span style={{ 'color': 'red' }}>*</span></label>
           <input type="number" name="heatLoss" maxLength={20} className="form-control" id="heatLoss" placeholder="25" required={true} value={heatLossPerDegree || ''} onChange={(e) => setHeatLossPerDegree(e.target.value)} />
         </div>
         <div className="mb-3">

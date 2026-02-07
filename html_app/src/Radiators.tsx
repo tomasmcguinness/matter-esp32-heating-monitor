@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router"
 import Temperature from "./Temperature.tsx";
 import { WebSocketContext } from './WSContext.jsx';
 import Power from "./Power.tsx";
+import RadiatorType from "./RadiatorType.tsx";
 
 function Radiators() {
 
@@ -57,7 +58,7 @@ function Radiators() {
   let radiators = radiatorList.sort((a: any, b: any) => a.radiatorId > b.radiatorId ? 1 : -1).map((n: any) => {
     return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
-      <td>{n.type}</td>
+      <td><RadiatorType>{n.type}</RadiatorType></td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
       <td><Temperature>{Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>

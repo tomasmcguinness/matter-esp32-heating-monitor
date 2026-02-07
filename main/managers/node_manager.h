@@ -2,6 +2,8 @@
 #include <stdbool.h>
 #include "esp_matter.h"
 
+#pragma once
+
 typedef struct matter_endpoint
 {
     uint16_t endpoint_id;

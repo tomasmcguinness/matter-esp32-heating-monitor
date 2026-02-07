@@ -99,7 +99,7 @@ room_t *find_room(room_manager_t *manager, uint8_t room_id)
     return NULL;
 }
 
-room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t temperature_node_id, uint16_t temperature_endpoint_id)
+room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_t target_temperature, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t temperature_node_id, uint16_t temperature_endpoint_id)
 {
     room_t *room = find_room(manager, room_id);
 
@@ -107,7 +107,9 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_
     room->name = (char *)malloc(strlen(name) + 1);
     strcpy(room->name, name);
 
-    room->heat_loss_per_degree = heat_loss_per_degree;
+    room->target_temperature = target_temperature;
+    room->calculated_heat_loss_per_degree = heat_loss_per_degree;
+
     room->room_temperature_node_id = temperature_node_id;
     room->room_temperature_endpoint_id = temperature_endpoint_id;
 
@@ -119,7 +121,7 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, uint8_
     return room;
 }
 
-room_t *add_room(room_manager_t *manager, char *name, uint8_t heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
+room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature, uint8_t calculated_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
 {
     uint8_t new_room_id = get_next_room_id(manager);
 
@@ -142,9 +144,10 @@ room_t *add_room(room_manager_t *manager, char *name, uint8_t heat_loss_per_degr
     new_room->name = (char *)malloc(strlen(name) + 1);
     strcpy(new_room->name, name);
 
+    new_room->target_temperature = target_temperature;
     new_room->room_temperature_node_id = room_temperature_node_id;
     new_room->room_temperature_endpoint_id = room_temperature_endpoint_id;
-    new_room->heat_loss_per_degree = heat_loss_per_degree;
+    new_room->calculated_heat_loss_per_degree = calculated_heat_loss_per_degree;
 
     new_room->radiator_count = 0;
 
@@ -281,8 +284,9 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             return ESP_ERR_NO_MEM;
         }
 
-        room->heat_loss = 0;
-        room->temperature = 0;
+        room->current_temperature = 0;
+        room->current_heat_loss_per_degree = 0;
+        room->expected_heat_loss = 0;
 
         room->room_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -301,6 +305,9 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
         memcpy(room->name, ptr, room->name_len);
         ptr += room->name_len;
 
+        room->target_temperature = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
         room->radiator_count = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
@@ -315,7 +322,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             ESP_LOGI(TAG, "Loaded radiator %u from NVS", room->radiators[r]);
         }
 
-        room->heat_loss_per_degree = *((uint8_t *)ptr);
+        room->calculated_heat_loss_per_degree = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
         ESP_LOGI(TAG, "Loaded room %u from NVS", room->room_id);
@@ -354,6 +361,7 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
         required_size += sizeof(uint16_t);      // room_temperature_endpoint_id
         required_size += sizeof(uint8_t);       // name length
         required_size += strlen(current->name); // name
+        required_size += sizeof(uint16_t);      // target_temperature
         required_size += sizeof(uint8_t);       // radiator count
         required_size += sizeof(uint8_t) * current->radiator_count;
         required_size += sizeof(uint8_t); // heat_loss_per_degree
@@ -390,6 +398,9 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
         memcpy(ptr, current->name, strlen(current->name));
         ptr += strlen(current->name);
 
+        *((uint16_t *)ptr) = current->target_temperature;
+        ptr += sizeof(uint16_t);
+        
         *((uint8_t *)ptr) = current->radiator_count;
         ptr += sizeof(uint8_t);
 
@@ -399,7 +410,7 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
             ptr += sizeof(uint8_t);
         }
 
-        *((uint8_t *)ptr) = current->heat_loss_per_degree;
+        *((uint8_t *)ptr) = current->calculated_heat_loss_per_degree;
         ptr += sizeof(uint8_t);
 
         current = current->next;

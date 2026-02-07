@@ -40,13 +40,15 @@ function Rooms() {
     fetchRooms();
   }, []);
 
-  // TODO Sort by name
   let rooms = roomList.sort((a: any, b: any) => a.name.localeCompare(b.name)).map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
-      <td><Temperature>{n.temperature}</Temperature></td>
-      <td><Power>{n.heatLoss}</Power></td>
+      <td><Temperature>{n.targetTemperature}</Temperature></td>
+      <td><Power>{n.expectedHeatLoss}</Power></td>
+      <td><Temperature>{n.currentTemperature}</Temperature></td>
       <td><Power>{n.combinedRadiatorOutput}</Power></td>
+      <td><Power>{n.currentHeatLoss}</Power></td>
+      
     </tr>);
   });
 
@@ -59,17 +61,19 @@ function Rooms() {
         <thead>
           <tr>
             <th>Name</th>
-            <th>Temperature</th>
-            <th>Est. Heat Loss</th>
+            <th>Target Temp</th>
+            <th>Expected Heat Loss</th>
+            <th>Current Temp</th>
             <th>Radiator Output</th>
-            <th>Act. Heat Loss</th>
+            <th>Current Heat Loss</th>
+            <th>Difference</th>
           </tr>
         </thead>
         <tbody>
           {rooms}
         </tbody>
       </table>}
-      
+
     </>
   )
 }

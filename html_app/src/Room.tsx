@@ -65,7 +65,7 @@ function Room() {
             Temperature
           </div>
           <div className="card-body">
-            <p className="card-title"><Temperature>{room.temperature}</Temperature></p>
+            <p className="card-title"><Temperature>{room.current_temperature}</Temperature></p>
           </div>
         </div>
         <div className="card">

@@ -3,7 +3,7 @@
 
 static const char *TAG = "calculations_manager";
 
-void update_radiator_outputs(radiator_manager_t *radiator_manager, room_manager_t *room_manager, radiator_t *radiator)
+void update_radiator_outputs(node_manager_t *node_manager, radiator_manager_t *radiator_manager, room_manager_t *room_manager, radiator_t *radiator)
 {
     ESP_LOGI(TAG, "Calculating output for radiator %u", radiator->radiator_id);
 
@@ -34,9 +34,9 @@ void update_radiator_outputs(radiator_manager_t *radiator_manager, room_manager_
 
                 // Perform calculations if we have data!
                 //
-                if (room->temperature > 0)
+                if (room->current_temperature > 0)
                 {
-                    double deltaT = mwt - (double)room->temperature / 100;
+                    double deltaT = mwt - (double)room->current_temperature / 100;
 
                     ESP_LOGI(TAG, "Radiator %u has a MWT->Room ΔT of %f", radiator->radiator_id, deltaT);
 
@@ -67,33 +67,55 @@ void update_radiator_outputs(radiator_manager_t *radiator_manager, room_manager_
     }
 }
 
-void update_room_heat_loss(home_manager_t *home_manager, room_manager_t *room_manager, room_t *room)
+void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager,room_t *room)
 {
     ESP_LOGI(TAG, "Calculating heat loss for room %u", room->room_id);
 
-    if (room->heat_loss_per_degree <= 0)
-    {
-        ESP_LOGI(TAG, "Skipping calculation as room has no heat loss per degree figure");
-        return;
-    }
+    int16_t current_temperature = 0;
+    get_endpoint_measured_value(node_manager, room->room_temperature_node_id, room->room_temperature_endpoint_id, &current_temperature);
 
-    double delta_t = abs((double)room->temperature/100) + abs((double)home_manager->outdoor_temperature/100);
+    room->current_temperature = current_temperature;
+
+    double delta_t = abs((double)current_temperature / 100) + abs((double)home_manager->outdoor_temperature / 100);
+
+    ESP_LOGI(TAG, "Room %u has a current temperature of %d", room->room_id, current_temperature);
+
+    ESP_LOGI(TAG, "Calculating predicted heat loss for room %u", room->room_id);
 
     ESP_LOGI(TAG, "Outdoor temperature is %d", home_manager->outdoor_temperature);
-    ESP_LOGI(TAG, "Room %u has a temperature of %d", room->room_id, room->temperature);
+    ESP_LOGI(TAG, "Room %u has a temperature of %d", room->room_id, room->current_temperature);
     ESP_LOGI(TAG, "Room %u has a room -> outdoors ΔT of %f", room->room_id, delta_t);
-    ESP_LOGI(TAG, "Room %u has heat loss of %u W/°C", room->room_id, room->heat_loss_per_degree);
+    ESP_LOGI(TAG, "Room %u has a calculated heat loss of %u W/°C", room->room_id, room->calculated_heat_loss_per_degree);
 
-    room->heat_loss = delta_t * room->heat_loss_per_degree;
+    room->expected_heat_loss = delta_t * room->calculated_heat_loss_per_degree;
+
+    // Calculate the actual heat loss based on the radiator outputs if we can.
+    //
+    if (room->radiator_count > 0)
+    {
+        uint16_t total_radiator_output = 0;
+
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            radiator_t *radiator = find_radiator(radiator_manager, room->radiators[r]);
+
+            if (radiator)
+            {
+                total_radiator_output += radiator->heat_output;
+            }
+        }
+
+        room->current_heat_loss_per_degree = total_radiator_output / delta_t;
+    }
 }
 
-void update_all_rooms_heat_loss(home_manager_t *home_manager, room_manager_t *room_manager)
+void update_all_rooms_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
 {
     room_t *room = room_manager->room_list;
 
     while (room != NULL)
     {
-        update_room_heat_loss(home_manager, room_manager, room);
+        update_room_heat_loss(node_manager, home_manager, room_manager, radiator_manager, room);
         room = room->next;
     }
 }

@@ -142,7 +142,7 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_nam
     return new_radiator;
 }
 
-esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char *name, char *mqtt_name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
+radiator_t *update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char *name, char *mqtt_name, uint8_t type, uint16_t output_dt_50, uint64_t flow_temp_node_id, uint16_t flowEndpointId, uint64_t returnNodeId, uint16_t returnEndpointId)
 {
     radiator_t *radiator = find_radiator(manager, radiator_id);
 
@@ -163,10 +163,10 @@ esp_err_t update_radiator(radiator_manager_t *manager, uint8_t radiator_id, char
         radiator->return_temp_node_id = returnNodeId;
         radiator->return_temp_endpoint_id = returnEndpointId;
 
-        return ESP_OK;
+        return radiator;
     }
 
-    return ESP_FAIL;
+    return nullptr;
 }
 
 void radiator_manager_free(radiator_manager_t *manager)
@@ -242,16 +242,19 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
         radiator->radiator_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
+        // Name
         radiator->name_len = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
-        // Name
         radiator->name = (char *)calloc(radiator->name_len + 1, sizeof(char));
 
         memcpy(radiator->name, ptr, radiator->name_len);
         ptr += radiator->name_len;
 
         // MQTT Name
+        radiator->mqtt_name_len = *((uint8_t *)ptr);
+        ptr += sizeof(uint8_t);        
+
         radiator->mqtt_name = (char *)calloc(radiator->mqtt_name_len + 1, sizeof(char));
 
         memcpy(radiator->mqtt_name, ptr, radiator->mqtt_name_len);
