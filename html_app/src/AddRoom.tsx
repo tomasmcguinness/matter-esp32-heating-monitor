@@ -54,7 +54,7 @@ function AddRoom() {
           <input type="number" name="heatLoss" maxLength={20} className="form-control" id="heatLoss" placeholder="25" required={true} value={heatLossPerDegree || ''} onChange={(e) => setHeatLossPerDegree(e.target.value)} />
         </div>
         <div className="mb-3">
-          <SensorSelect title="Room Temperature Sensor" selectedSensor={temperatureSensor || ''} onSelectedSensorChange={(e) => setTemperatureSensor(e)} />
+          <SensorSelect deviceType={770} title="Room Temperature Sensor" required={true} selectedSensor={temperatureSensor || ''} onSelectedSensorChange={(e) => setTemperatureSensor(e)} />
         </div>
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Room</button>
         <NavLink className="btn btn-cancel" to="/rooms">Cancel</NavLink>

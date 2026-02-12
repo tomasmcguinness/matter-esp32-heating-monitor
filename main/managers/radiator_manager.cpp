@@ -126,7 +126,7 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_nam
 
     new_radiator->mqtt_name = (char *)malloc(strlen(mqtt_name) + 1);
     strcpy(new_radiator->mqtt_name, mqtt_name);
-    
+
     new_radiator->type = type;
     new_radiator->output_dt_50 = output_dt_50;
     new_radiator->flow_temp_node_id = flow_temp_node_id;
@@ -169,6 +169,64 @@ radiator_t *update_radiator(radiator_manager_t *manager, uint8_t radiator_id, ch
     return nullptr;
 }
 
+esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id, char *mqtt_name)
+{
+    if (!controller)
+    {
+        ESP_LOGE(TAG, "Invalid controller pointer");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    radiator_t *current = controller->radiator_list;
+    radiator_t *prev = NULL;
+    bool found = false;
+
+    while (current)
+    {
+        if (current->radiator_id == radiator_id)
+        {
+            found = true;
+            break;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    if (!found)
+    {
+        ESP_LOGE(TAG, "Radiator 0x%016llX not found", radiator_id);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (prev)
+    {
+        prev->next = current->next;
+    }
+    else
+    {
+        controller->radiator_list = current->next;
+    }
+
+    ESP_LOGI(TAG, "Removing radiator %u", radiator_id);
+
+    strcpy(mqtt_name, current->mqtt_name);
+
+    free(current);
+
+    controller->radiator_count--;
+
+    esp_err_t save_err = save_radiators_to_nvs(controller);
+
+    if (save_err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save radiators after removal: 0x%x", save_err);
+        return save_err;
+    }
+
+    ESP_LOGI(TAG, "Radiator 0x%016llX successfully removed", radiator_id);
+    return ESP_OK;
+}
+
 void radiator_manager_free(radiator_manager_t *manager)
 {
     radiator_t *current = manager->radiator_list;
@@ -200,7 +258,9 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
 
     err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (err != ESP_OK)
+    {
         return err;
+    }
 
     size_t required_size = 0;
     err = nvs_get_blob(nvs_handle, NVS_KEY, NULL, &required_size);
@@ -253,7 +313,7 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
 
         // MQTT Name
         radiator->mqtt_name_len = *((uint8_t *)ptr);
-        ptr += sizeof(uint8_t);        
+        ptr += sizeof(uint8_t);
 
         radiator->mqtt_name = (char *)calloc(radiator->mqtt_name_len + 1, sizeof(char));
 
@@ -285,66 +345,9 @@ esp_err_t load_radiators_from_nvs(radiator_manager_t *manager)
     }
 
     manager->radiator_count = radiator_count;
+
     free(buffer);
 
-    return ESP_OK;
-}
-
-esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id, char *mqtt_name)
-{
-    if (!controller)
-    {
-        ESP_LOGE(TAG, "Invalid controller pointer");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    radiator_t *current = controller->radiator_list;
-    radiator_t *prev = NULL;
-    bool found = false;
-
-    while (current)
-    {
-        if (current->radiator_id == radiator_id)
-        {
-            found = true;
-            break;
-        }
-        prev = current;
-        current = current->next;
-    }
-
-    if (!found)
-    {
-        ESP_LOGE(TAG, "Radiator 0x%016llX not found", radiator_id);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    if (prev)
-    {
-        prev->next = current->next;
-    }
-    else
-    {
-        controller->radiator_list = current->next;
-    }
-
-    ESP_LOGI(TAG, "Removing radiator 0x%016llX", radiator_id);
-
-    strcpy(mqtt_name, current->mqtt_name);
-
-    free(current);
-
-    controller->radiator_count--;
-
-    esp_err_t save_err = save_radiators_to_nvs(controller);
-
-    if (save_err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to save radiators after removal: 0x%x", save_err);
-        return save_err;
-    }
-
-    ESP_LOGI(TAG, "Radiator 0x%016llX successfully removed", radiator_id);
     return ESP_OK;
 }
 
@@ -360,10 +363,14 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
 
     err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK)
+    {
         return err;
+    }
 
     size_t required_size = sizeof(uint8_t); // radiator_count
     radiator_t *current = manager->radiator_list;
+
+    manager->radiator_count = 0;
 
     while (current)
     {
@@ -380,6 +387,8 @@ esp_err_t save_radiators_to_nvs(radiator_manager_t *manager)
         required_size += sizeof(uint16_t);           // return endpoint
 
         current = current->next;
+
+        manager->radiator_count++;
     }
 
     uint8_t *buffer = (uint8_t *)malloc(required_size);

@@ -108,24 +108,24 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_
     strcpy(room->name, name);
 
     room->target_temperature = target_temperature;
-    room->calculated_heat_loss_per_degree = heat_loss_per_degree;
+    room->survey_heat_loss_per_degree = heat_loss_per_degree;
 
     room->room_temperature_node_id = temperature_node_id;
     room->room_temperature_endpoint_id = temperature_endpoint_id;
 
     room->radiator_count = radiator_count;
     room->radiators = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
-    
+
     memcpy(room->radiators, radiator_ids, radiator_count);
 
     return room;
 }
 
-room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature, uint8_t calculated_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
+room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
 {
     uint8_t new_room_id = get_next_room_id(manager);
 
-    if(new_room_id == 0)
+    if (new_room_id == 0)
     {
         ESP_LOGE(TAG, "Failed to get next room ID");
         return NULL;
@@ -140,14 +140,14 @@ room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature
     memset(new_room, 0, sizeof(room_t));
 
     new_room->room_id = new_room_id;
-    
+
     new_room->name = (char *)malloc(strlen(name) + 1);
     strcpy(new_room->name, name);
 
     new_room->target_temperature = target_temperature;
     new_room->room_temperature_node_id = room_temperature_node_id;
     new_room->room_temperature_endpoint_id = room_temperature_endpoint_id;
-    new_room->calculated_heat_loss_per_degree = calculated_heat_loss_per_degree;
+    new_room->survey_heat_loss_per_degree = survey_heat_loss_per_degree;
 
     new_room->radiator_count = 0;
 
@@ -245,7 +245,9 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
 
     err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
     if (err != ESP_OK)
+    {
         return err;
+    }
 
     size_t required_size = 0;
     err = nvs_get_blob(nvs_handle, NVS_KEY, NULL, &required_size);
@@ -258,6 +260,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
     uint8_t *buffer = (uint8_t *)malloc(required_size);
     if (!buffer)
     {
+        manager->room_count = 0;
         nvs_close(nvs_handle);
         return ESP_ERR_NO_MEM;
     }
@@ -286,7 +289,8 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
 
         room->current_temperature = 0;
         room->current_heat_loss_per_degree = 0;
-        room->expected_heat_loss = 0;
+        room->predicted_heat_loss_at_target = 0;
+        room->estimated_heat_loss_at_target = 0;
 
         room->room_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -322,7 +326,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             ESP_LOGI(TAG, "Loaded radiator %u from NVS", room->radiators[r]);
         }
 
-        room->calculated_heat_loss_per_degree = *((uint8_t *)ptr);
+        room->survey_heat_loss_per_degree = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
         ESP_LOGI(TAG, "Loaded room %u from NVS", room->room_id);
@@ -400,7 +404,7 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
 
         *((uint16_t *)ptr) = current->target_temperature;
         ptr += sizeof(uint16_t);
-        
+
         *((uint8_t *)ptr) = current->radiator_count;
         ptr += sizeof(uint8_t);
 
@@ -410,7 +414,7 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
             ptr += sizeof(uint8_t);
         }
 
-        *((uint8_t *)ptr) = current->calculated_heat_loss_per_degree;
+        *((uint8_t *)ptr) = current->survey_heat_loss_per_degree;
         ptr += sizeof(uint8_t);
 
         current = current->next;

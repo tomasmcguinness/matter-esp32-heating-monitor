@@ -202,7 +202,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
             auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
 
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(1);
+            attr_paths.Alloc(2);
 
             if (!attr_paths.Get())
             {
@@ -211,6 +211,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
             }
 
             attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+            attr_paths[1] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
 
             ScopedMemoryBufferWithSize<EventPathParams> event_paths;
             event_paths.Alloc(0);
@@ -275,6 +276,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
     matter_node_t *node = find_node(&g_node_manager, node_id);
 
     bool hasTemperatureMeasurements = false;
+    bool hasFlowMeasurements = false;
 
     while (data->Next() == CHIP_NO_ERROR)
     {
@@ -303,6 +305,11 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                         hasTemperatureMeasurements = true;
                     }
 
+                    if (!hasFlowMeasurements && device_type_id == 774)
+                    {
+                        hasFlowMeasurements = true;
+                    }
+
                     // We're only interested in device types that exist on Endpoints other than the root.
                     if (path.mEndpointId != 0) // RootNode
                     {
@@ -319,9 +326,9 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     data->ExitContainer(containerType);
 
-    if (hasTemperatureMeasurements)
+    if (hasTemperatureMeasurements || hasFlowMeasurements)
     {
-        ESP_LOGI(TAG, "The device has temperature measurement clusters. Subscribe to them with persistent subscriptions!");
+        ESP_LOGI(TAG, "The device has temperature measurement clusters. Subscribe to them");
 
         auto *args = new std::tuple<uint64_t>(node_id);
 
@@ -330,7 +337,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
             auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
 
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(1);
+            attr_paths.Alloc(2);
 
             if (!attr_paths.Get())
             {
@@ -339,6 +346,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
             }
 
             attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+            attr_paths[1] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
 
             ScopedMemoryBufferWithSize<EventPathParams> event_paths;
             event_paths.Alloc(0);
@@ -532,6 +540,23 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
         }
     }
+    else if (path.mClusterId == FlowMeasurement::Id && path.mAttributeId == FlowMeasurement::Attributes::MeasuredValue::Id)
+    {
+        ESP_LOGI(TAG, "Processing FlowMeasurement->MeasuredValue attribute response...");
+
+        uint16_t flow;
+        chip::app::DataModel::Decode(*data, flow);
+
+        ESP_LOGI(TAG, "Flow Value: %d", flow);
+
+        set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, flow);
+
+        if (g_home_manager.heat_source_flow_rate_node_id == remote_node_id && g_home_manager.heat_source_flow_rate_endpoint_id == path.mEndpointId)
+        {
+            g_home_manager.heat_source_flow_rate = flow;
+            update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
+        }
+    }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
@@ -552,6 +577,22 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             g_home_manager.outdoor_temperature = temperature;
 
             update_all_rooms_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager);
+
+            hasMatched = true;
+        }
+        else if (g_home_manager.heat_source_flow_temp_node_id == remote_node_id && g_home_manager.heat_source_flow_temp_endpoint_id == path.mEndpointId)
+        {
+            ESP_LOGI(TAG, "Device is assigned to the heat source flow temperature sensor");
+
+            g_home_manager.heat_source_flow_temperature = temperature;
+
+            hasMatched = true;
+        }
+        else if (g_home_manager.heat_source_return_temp_node_id == remote_node_id && g_home_manager.heat_source_return_temp_endpoint_id == path.mEndpointId)
+        {
+            ESP_LOGI(TAG, "Device is assigned to the heat source return temperature sensor");
+
+            g_home_manager.heat_source_return_temperature = temperature;
 
             hasMatched = true;
         }
@@ -588,7 +629,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     cJSON_AddNumberToObject(root, "returnTemp", temperature);
                 }
 
-                update_radiator_outputs(&g_node_manager, &g_radiator_manager, &g_room_manager, radiator);
+                update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, radiator);
 
                 char *payload = cJSON_PrintUnformatted(root);
 
@@ -1305,7 +1346,7 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
             
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(1);
+            attr_paths.Alloc(2);
 
             if (!attr_paths.Get())
             {
@@ -1314,6 +1355,7 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             }
 
             attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+            attr_paths[1] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
             
             ScopedMemoryBufferWithSize<EventPathParams> event_paths;
             event_paths.Alloc(0);
@@ -1413,6 +1455,8 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 
     get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
     get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
+
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
 
     ESP_LOGI(TAG, "Radiator saved");
 
@@ -1761,9 +1805,12 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "roomId", room->room_id);
         cJSON_AddStringToObject(jNode, "name", room->name);
+
         cJSON_AddNumberToObject(jNode, "targetTemperature", room->target_temperature);
-        cJSON_AddNumberToObject(jNode, "expectedHeatLoss", room->expected_heat_loss);
         cJSON_AddNumberToObject(jNode, "currentTemperature", room->current_temperature);
+
+        cJSON_AddNumberToObject(jNode, "predictedHeatLossAtTarget", room->predicted_heat_loss_at_target);
+        cJSON_AddNumberToObject(jNode, "estimatedHeatLossAtTarget", room->estimated_heat_loss_at_target);
 
         uint16_t total_radiator_output = 0;
 
@@ -1841,10 +1888,10 @@ static esp_err_t room_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "targetTemperature", room->target_temperature);
     cJSON_AddNumberToObject(root, "temperatureSensorNodeId", room->room_temperature_node_id);
     cJSON_AddNumberToObject(root, "temperatureSensorEndpointId", room->room_temperature_endpoint_id);
-    // cJSON_AddNumberToObject(root, "currentHeatLoss", room->current_heat_loss);
-    // cJSON_AddNumberToObject(root, "heatLossPerDegree", room->heat_loss_per_degree);
-    cJSON_AddNumberToObject(root, "currentHeatLoss", 0);
-    cJSON_AddNumberToObject(root, "heatLossPerDegree", 0);
+    cJSON_AddNumberToObject(root, "heatLossPerDegree", room->survey_heat_loss_per_degree);
+
+    cJSON_AddNumberToObject(root, "predictedHeatLossAtTarget", room->predicted_heat_loss_at_target);
+    cJSON_AddNumberToObject(root, "estimatedHeatLossAtTarget", room->estimated_heat_loss_at_target);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -1952,7 +1999,7 @@ static esp_err_t room_put_handler(httpd_req_t *req)
     update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, updated_room);
 
     httpd_resp_set_status(req, "200 Ok");
-    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "Updated", HTTPD_RESP_USE_STRLEN);
 
     cJSON_Delete(root);
 
@@ -1998,7 +2045,7 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
 
 static esp_err_t sensors_get_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Getting all temperature sensors ...");
+    ESP_LOGI(TAG, "Getting all sensors ...");
 
     cJSON *root = cJSON_CreateArray();
 
@@ -2014,32 +2061,31 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
             {
                 uint32_t device_type_id = endpoint.device_type_ids[k];
 
-                if (device_type_id == 770)
+                cJSON *jSensor = cJSON_CreateObject();
+                cJSON_AddNumberToObject(jSensor, "nodeId", node->node_id);
+                cJSON_AddNumberToObject(jSensor, "deviceTypeId", endpoint.device_type_ids[k]);
+
+                if (node->name)
                 {
-                    cJSON *jSensor = cJSON_CreateObject();
-                    cJSON_AddNumberToObject(jSensor, "nodeId", node->node_id);
-                    if (node->name)
-                    {
-                        cJSON_AddStringToObject(jSensor, "nodeName", node->name);
-                    }
-                    else
-                    {
-                        cJSON_AddItemToObject(jSensor, "nodeName", cJSON_CreateNull());
-                    }
-
-                    cJSON_AddNumberToObject(jSensor, "endpointId", endpoint.endpoint_id);
-
-                    if (endpoint.name)
-                    {
-                        cJSON_AddStringToObject(jSensor, "endpointName", endpoint.name);
-                    }
-                    else
-                    {
-                        cJSON_AddItemToObject(jSensor, "endpointName", cJSON_CreateNull());
-                    }
-
-                    cJSON_AddItemToArray(root, jSensor);
+                    cJSON_AddStringToObject(jSensor, "nodeName", node->name);
                 }
+                else
+                {
+                    cJSON_AddItemToObject(jSensor, "nodeName", cJSON_CreateNull());
+                }
+
+                cJSON_AddNumberToObject(jSensor, "endpointId", endpoint.endpoint_id);
+
+                if (endpoint.name)
+                {
+                    cJSON_AddStringToObject(jSensor, "endpointName", endpoint.name);
+                }
+                else
+                {
+                    cJSON_AddItemToObject(jSensor, "endpointName", cJSON_CreateNull());
+                }
+
+                cJSON_AddItemToArray(root, jSensor);
             }
         }
 
@@ -2062,11 +2108,30 @@ static esp_err_t home_get_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Getting home...");
 
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
+
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorNodeId", g_home_manager.outdoor_temp_node_id);
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorEndpointId", g_home_manager.outdoor_temp_endpoint_id);
+
+    cJSON_AddNumberToObject(root, "heatSourceFlowTempSensorNodeId", g_home_manager.heat_source_flow_temp_node_id);
+    cJSON_AddNumberToObject(root, "heatSourceFlowTempSensorEndpointId", g_home_manager.heat_source_flow_temp_endpoint_id);
+    cJSON_AddNumberToObject(root, "heatSourceReturnTempSensorNodeId", g_home_manager.heat_source_return_temp_node_id);
+    cJSON_AddNumberToObject(root, "heatSourceReturnTempSensorEndpointId", g_home_manager.heat_source_return_temp_endpoint_id);
+    cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorNodeId", g_home_manager.heat_source_flow_rate_node_id);
+    cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorEndpointId", g_home_manager.heat_source_flow_rate_endpoint_id);
+
+    cJSON_AddNumberToObject(root, "heatSourceFlowTemperature", g_home_manager.heat_source_flow_temperature);
+    cJSON_AddNumberToObject(root, "heatSourceReturnTemperature", g_home_manager.heat_source_return_temperature);
+    cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_source_flow_rate);
+    cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
+
+    cJSON_AddNumberToObject(root, "predictedHeatLoss", g_home_manager.total_predicted_heat_loss);
+    cJSON_AddNumberToObject(root, "estimatedHeatLoss", g_home_manager.total_estimated_heat_loss);
+    cJSON_AddNumberToObject(root, "radiatorCount", g_home_manager.radiator_count);
+    cJSON_AddNumberToObject(root, "totalRadiatorOutput", g_home_manager.total_radiator_output);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
@@ -2099,15 +2164,32 @@ static esp_err_t home_put_handler(httpd_req_t *req)
 
     const cJSON *outdoorTemperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorNodeId");
     const cJSON *outdoorTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorTemperatureSensorEndpointId");
+    const cJSON *flowTemperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowTemperatureSensorNodeId");
+    const cJSON *flowTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowTemperatureSensorEndpointId");
+    const cJSON *returnTemperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnTemperatureSensorNodeId");
+    const cJSON *returnTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnTemperatureSensorEndpointId");
+    const cJSON *flowRateSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowRateSensorNodeId");
+    const cJSON *flowRateSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowRateSensorEndpointId");
 
     g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
-    g_home_manager.outdoor_temp_endpoint_id = (uint64_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
+    g_home_manager.outdoor_temp_endpoint_id = (uint16_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
+    g_home_manager.heat_source_flow_temp_node_id = (uint64_t)flowTemperatureSensorNodeIdJSON->valueint;
+    g_home_manager.heat_source_flow_temp_endpoint_id = (uint16_t)flowTemperatureSensorEndpointIdJSON->valueint;
+    g_home_manager.heat_source_return_temp_node_id = (uint64_t)returnTemperatureSensorNodeIdJSON->valueint;
+    g_home_manager.heat_source_return_temp_endpoint_id = (uint16_t)returnTemperatureSensorEndpointIdJSON->valueint;
+    g_home_manager.heat_source_flow_rate_node_id = (uint64_t)flowRateSensorNodeIdJSON->valueint;
+    g_home_manager.heat_source_flow_rate_endpoint_id = (uint16_t)flowRateSensorEndpointIdJSON->valueint;
 
     save_home_to_nvs(&g_home_manager);
 
     // Copy the outdoor temperature from the sensor to the home manager so that it's available immediately.
     //
     get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
+    get_endpoint_measured_value(&g_node_manager, g_home_manager.heat_source_flow_temp_node_id, g_home_manager.heat_source_flow_temp_endpoint_id, &g_home_manager.heat_source_flow_temperature);
+    get_endpoint_measured_value(&g_node_manager, g_home_manager.heat_source_return_temp_node_id, g_home_manager.heat_source_return_temp_endpoint_id, &g_home_manager.heat_source_return_temperature);
+    get_endpoint_measured_value_uint16(&g_node_manager, g_home_manager.heat_source_flow_rate_node_id, g_home_manager.heat_source_flow_rate_endpoint_id, &g_home_manager.heat_source_flow_rate);
+
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
 
     httpd_resp_set_status(req, "201 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);

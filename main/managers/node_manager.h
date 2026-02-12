@@ -73,6 +73,7 @@ esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t de
 esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name);
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source);
 esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value);
+esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t *measured_value);
 
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
 esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id, bool *create_new_subscription);

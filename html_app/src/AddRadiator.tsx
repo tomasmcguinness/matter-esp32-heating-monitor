@@ -76,10 +76,10 @@ function AddRadiator() {
           <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
         </div>
         <div className="mb-3">
-          <SensorSelect title="Flow Temperature Sensor" selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
+          <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={true} selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
         </div>
         <div className="mb-3">
-          <SensorSelect title="Return Temperature Sensor" selectedSensor={returnSensor || ''} onSelectedSensorChange={(e) => setReturnSensor(e)} />
+          <SensorSelect deviceType={770} title="Return Temperature Sensor" required={true} selectedSensor={returnSensor || ''} onSelectedSensorChange={(e) => setReturnSensor(e)} />
         </div>
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Radiator</button>
         <NavLink className="btn btn-danger" to="/radiators">Cancel</NavLink>

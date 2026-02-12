@@ -395,6 +395,23 @@ esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
     return ESP_OK;
 }
 
+esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t *measured_value)
+{
+     matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
+
+        if (endpoint)
+        {
+            *measured_value = (uint16_t)endpoint->measured_value;
+        }
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id)
 {
     matter_node_t *node = find_node(manager, node_id);
