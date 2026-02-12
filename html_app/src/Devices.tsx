@@ -2,7 +2,6 @@ import { useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
 import PowerSource from "./PowerSource"
 import CheckMark from "./CheckMark";
-import Temperature from "./Temperature";
 
 function Devices() {
 
@@ -27,11 +26,11 @@ function Devices() {
 
     let endpoints = n.endpoints.sort((a: any, b: any) => a.endpointId > b.endpointId ? 1 : -1).map((endpoint: any) => {
 
-      const deviceTypes = endpoint.deviceTypes.map((dt: number) => {
+      const deviceTypes = endpoint.deviceTypes.map((deviceTypeId: number) => {
 
-        var name = dt.toString();
+        var name = deviceTypeId.toString();
 
-        switch (dt) {
+        switch (deviceTypeId) {
           case 777:
             name = "Heat Pump";
             break;
@@ -62,6 +61,9 @@ function Devices() {
           case 773:
             name = "Pressure Sensor";
             break;
+          case 774:
+            name = "Flow Sensor";
+            break;
           case 775:
             name = "Humidity Sensor";
             break;
@@ -76,14 +78,14 @@ function Devices() {
             break;
         }
 
-        return (<span key={dt} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
+        return (<span key={deviceTypeId} className="badge bg-primary" style={{ marginRight: '5px' }}>{name}</span>)
       });
 
       return (<tr>
         <td>{endpoint.endpointId}</td>
         <td>{endpoint.endpointName}</td>
         <td>{deviceTypes}</td>
-        <td><Temperature>{endpoint.measuredValue}</Temperature></td>
+        <td>{endpoint.measuredValue}</td>
         <td><PowerSource powerSource={endpoint.powerSource} /></td>
         </tr>)
     });

@@ -3,7 +3,7 @@
 
 static const char *TAG = "calculations_manager";
 
-void update_radiator_outputs(node_manager_t *node_manager, radiator_manager_t *radiator_manager, room_manager_t *room_manager, radiator_t *radiator)
+void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_manager, radiator_manager_t *radiator_manager, room_manager_t *room_manager, radiator_t *radiator)
 {
     ESP_LOGI(TAG, "Calculating output for radiator %u", radiator->radiator_id);
 
@@ -65,9 +65,11 @@ void update_radiator_outputs(node_manager_t *node_manager, radiator_manager_t *r
 
         room = room->next;
     }
+
+    update_home(home_manager, room_manager, radiator_manager);
 }
 
-void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager,room_t *room)
+void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager, room_t *room)
 {
     ESP_LOGI(TAG, "Calculating heat loss for room %u", room->room_id);
 
@@ -76,18 +78,22 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
     room->current_temperature = current_temperature;
 
-    double delta_t = abs((double)current_temperature / 100) + abs((double)home_manager->outdoor_temperature / 100);
+    ESP_LOGI(TAG, "Room %u has a current temperature of %d", room->room_id, room->current_temperature);
 
-    ESP_LOGI(TAG, "Room %u has a current temperature of %d", room->room_id, current_temperature);
+    double target_temperature_delta_t = abs((double)room->target_temperature / 100) + abs((double)home_manager->outdoor_temperature / 100);
+    double current_delta_t = abs((double)room->current_temperature / 100) + abs((double)home_manager->outdoor_temperature / 100);
 
-    ESP_LOGI(TAG, "Calculating predicted heat loss for room %u", room->room_id);
+    ESP_LOGI(TAG, "Predicted target heat loss for room %u", room->room_id);
 
     ESP_LOGI(TAG, "Outdoor temperature is %d", home_manager->outdoor_temperature);
-    ESP_LOGI(TAG, "Room %u has a temperature of %d", room->room_id, room->current_temperature);
-    ESP_LOGI(TAG, "Room %u has a room -> outdoors ΔT of %f", room->room_id, delta_t);
-    ESP_LOGI(TAG, "Room %u has a calculated heat loss of %u W/°C", room->room_id, room->calculated_heat_loss_per_degree);
+    ESP_LOGI(TAG, "Room %u has a target temperature of %d", room->room_id, room->target_temperature);
+    ESP_LOGI(TAG, "Room %u has a target temperature -> outdoor temperature ΔT of %f", room->room_id, target_temperature_delta_t);
+    ESP_LOGI(TAG, "Room %u has a current temperature -> outdoor temperature ΔT of %f", room->room_id, current_delta_t);
+    ESP_LOGI(TAG, "Room %u has a survey heat loss of %u W/°C", room->room_id, room->survey_heat_loss_per_degree);
 
-    room->expected_heat_loss = delta_t * room->calculated_heat_loss_per_degree;
+    room->predicted_heat_loss_at_target = target_temperature_delta_t * room->survey_heat_loss_per_degree;
+
+    ESP_LOGI(TAG, "Room %u has a predicted heat loss of %u W at target temperature", room->room_id, room->predicted_heat_loss_at_target);
 
     // Calculate the actual heat loss based on the radiator outputs if we can.
     //
@@ -105,8 +111,16 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
             }
         }
 
-        room->current_heat_loss_per_degree = total_radiator_output / delta_t;
+        room->current_heat_loss_per_degree = total_radiator_output / current_delta_t;
     }
+
+    ESP_LOGI(TAG, "Room %u has a current heat loss of %u W/°C", room->room_id, room->current_heat_loss_per_degree);
+
+    room->estimated_heat_loss_at_target = target_temperature_delta_t * room->current_heat_loss_per_degree;
+
+    ESP_LOGI(TAG, "Room %u has a estimated heat loss of %u W at target temperature", room->room_id, room->estimated_heat_loss_at_target);
+
+    update_home(home_manager, room_manager, radiator_manager);
 }
 
 void update_all_rooms_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
@@ -118,4 +132,48 @@ void update_all_rooms_heat_loss(node_manager_t *node_manager, home_manager_t *ho
         update_room_heat_loss(node_manager, home_manager, room_manager, radiator_manager, room);
         room = room->next;
     }
+
+    update_home(home_manager, room_manager, radiator_manager);
+}
+
+void update_home(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
+{
+    // Compute heat source output.
+    //
+    if (home_manager->heat_source_flow_rate == 0 || home_manager->heat_source_flow_temperature == 0 || home_manager->heat_source_return_temperature == 0)
+    {
+        ESP_LOGI(TAG, "Can't calculate heat source output as we don't have all the required data yet");
+        home_manager->heat_source_output = 0;
+    }
+    else
+    {
+        double flow_rate_litres_per_second = (double)home_manager->heat_source_flow_rate / 360.0; // This isn't strictly correct.
+        double delta_t = ((double)home_manager->heat_source_flow_temperature / 100.0) - ((double)home_manager->heat_source_return_temperature / 100.0);
+
+        uint16_t output = flow_rate_litres_per_second * delta_t * 4186; // 4186 is the specific heat capacity of water in J/kg°C, and our flow rate is in L/s which is kg/s, so this gives us watts.
+        home_manager->heat_source_output = output;
+    }
+
+    // Compute total predicted heat loss across all rooms.
+    // Compute total estimated heat loss across all rooms.
+    room_t *room = room_manager->room_list;
+
+    while (room)
+    {
+        home_manager->total_predicted_heat_loss += room->predicted_heat_loss_at_target;
+        home_manager->total_estimated_heat_loss += room->estimated_heat_loss_at_target;
+
+        room = room->next;
+    }
+
+    // Compute total radiator output across all rooms.
+    radiator_t *radiator = radiator_manager->radiator_list;
+
+    while (radiator)
+    {
+        home_manager->total_radiator_output += radiator->heat_output;
+        radiator = radiator->next;
+    }
+
+    // TODO UFH.
 }

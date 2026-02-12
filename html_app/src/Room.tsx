@@ -65,7 +65,7 @@ function Room() {
             Temperature
           </div>
           <div className="card-body">
-            <p className="card-title"><Temperature>{room.current_temperature}</Temperature></p>
+            <p className="card-title"><h3><Temperature>{room.currentTemperature}</Temperature></h3></p>
           </div>
         </div>
         <div className="card">
@@ -73,15 +73,7 @@ function Room() {
             Heat Loss W/°C
           </div>
           <div className="card-body">
-            <p className="card-title"><Power>{room.heatLossPerDegree}</Power></p>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-header">
-            Heat Loss W
-          </div>
-          <div className="card-body">
-            <p className="card-title"><Power>{room.heatLoss}</Power></p>
+            <p className="card-title"><h3>{room.heatLossPerDegree}</h3></p>
           </div>
         </div>
       </div>

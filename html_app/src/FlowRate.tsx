@@ -1,6 +1,6 @@
 import { Children } from 'react';
 
-function Temperature({ children }: { children: any }) {
+function FlowRate({ children }: { children: any }) {
 
     const firstChild = Children.toArray(children)[0];
 
@@ -14,9 +14,9 @@ function Temperature({ children }: { children: any }) {
         return <span>-</span>;
     }
 
-    var formattedTemp = (temp / 100.0).toFixed(1);
+    var formattedTemp = (temp / 36.0).toFixed(2);
 
-    return <span>{formattedTemp}°C</span>;
+    return <span>{formattedTemp}L/s</span>;
 }
 
-export default Temperature;
+export default FlowRate;

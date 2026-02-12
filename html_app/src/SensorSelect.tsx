@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 
-const SensorSelect = ({ title, selectedSensor, onSelectedSensorChange }: { title: string, selectedSensor: string | undefined, onSelectedSensorChange: (id:string) => void }) => {
+const SensorSelect = ({ title, required, deviceType, selectedSensor, onSelectedSensorChange }: { title: string, required: boolean, deviceType: number, selectedSensor: string | undefined, onSelectedSensorChange: (id:string) => void }) => {
 
     const [sensors, setSensors] = useState<[]>([]);
 
     useEffect(() => {
         fetch('/api/sensors').then(response => response.json()).then(data => {
-            // TODO Sort the sensors in some sensible fashion.
-            setSensors(data);
+            // Present sensors that match the device type
+            setSensors(data.filter((s: any) => s.deviceTypeId === deviceType));
         });
     }, []);
 
@@ -17,8 +17,8 @@ const SensorSelect = ({ title, selectedSensor, onSelectedSensorChange }: { title
     });
 
     return ([
-        <label htmlFor="sensor" className="form-label">{title} <span style={{ 'color': 'red' }}>*</span></label>,
-        <select name="sensor" className="form-control" id="temperatureSensor" value={selectedSensor || ''} onChange={(e) => onSelectedSensorChange(e.target.value)} required={true}>
+        <label htmlFor="sensor" className="form-label">{title} {required && <span style={{ 'color': 'red' }}>*</span>}</label>,
+        <select name="sensor" className="form-control" id="temperatureSensor" value={selectedSensor || ''} onChange={(e) => onSelectedSensorChange(e.target.value)} required={required}>
             <option value=''></option>
             {sensorOptions}
         </select>]);
