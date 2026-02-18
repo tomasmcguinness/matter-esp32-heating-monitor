@@ -87,7 +87,7 @@ namespace heating_monitor
 
         void pairing_command::OnICDRegistrationComplete(ScopedNodeId nodeId, uint32_t icdCounter)
         {
-            //ESP_LOGI(TAG, "ICD Registration Complete for device " ChipLogFormatX64, ChipLogValueX64(nodeId));
+            // ESP_LOGI(TAG, "ICD Registration Complete for device " ChipLogFormatX64, ChipLogValueX64(nodeId));
 
             auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
             NodeId commissioner_node_id = controller_instance.get_commissioner()->GetNodeId();
@@ -243,7 +243,7 @@ namespace heating_monitor
                     .SetICDMonitoredSubject(commissioner_node_id)
                     .SetICDSymmetricKey(pairing_command::get_instance().m_icd_symmetric_key);
             }
-            
+
             controller_instance.get_commissioner()->RegisterPairingDelegate(&pairing_command::get_instance());
             controller_instance.get_commissioner()->PairDevice(nodeId, payload, commissioning_params,
                                                                DiscoveryType::kDiscoveryNetworkOnly);
@@ -346,9 +346,29 @@ namespace heating_monitor
 
         esp_err_t pairing_command::unpair_device(NodeId node_id)
         {
-            ESP_LOGE(TAG, "Executing unpair_device operation node 0x%" PRIx64, node_id);
+            ESP_LOGI(TAG, "Executing unpair_device operation node 0x%" PRIx64, node_id);
             auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
-            return controller_instance.unpair(node_id, remove_fabric_handler);
+            controller_instance.unpair(node_id, remove_fabric_handler);
+
+            auto &icd_client_storage =  esp_matter::controller::matter_controller_client::get_instance().get_icd_client_storage();
+            auto iter = icd_client_storage.IterateICDClientInfo();
+
+            if (iter == nullptr)
+            {
+                return ESP_ERR_NO_MEM;
+            }
+            app::ICDClientInfo info;
+            while (iter->Next(info))
+            {
+                if(info.peer_node.GetNodeId() == node_id)
+                {
+                    ESP_LOGE(TAG, "Unpairing with ICD device. Remove storage entry");
+                    controller_instance.get_icd_client_storage().DeleteEntry(ScopedNodeId(node_id, controller_instance.get_fabric_index()));
+                    break;
+                }
+            }
+
+            return ESP_OK;
         }
 
     } // namespace controller

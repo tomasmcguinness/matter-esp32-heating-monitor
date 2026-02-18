@@ -80,6 +80,7 @@ home_manager_t g_home_manager = {0};
 esp_mqtt_client_handle_t _mqtt_client;
 static bool is_mqtt_connected = false;
 
+static bool has_subscribed_on_startup = false;
 static httpd_handle_t server;
 static int ws_socket;
 
@@ -170,7 +171,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
 
 void node_subscription_established_cb(uint64_t remote_node_id, uint32_t subscription_id)
 {
-    ESP_LOGI(TAG, "Successfully subscribed, node %llu, subscription id 0x%08X", remote_node_id, subscription_id);
+    ESP_LOGI(TAG, "Successfully subscribed, node 0x%016llX, subscription id 0x%08X", remote_node_id, subscription_id);
 
     // Indicate we have a subscription!
     //
@@ -179,7 +180,7 @@ void node_subscription_established_cb(uint64_t remote_node_id, uint32_t subscrip
 
 void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscription_id)
 {
-    ESP_LOGI(TAG, "Subscription terminated, node %llu, subscription id 0x%08X", remote_node_id, subscription_id);
+    ESP_LOGI(TAG, "Subscription terminated, node 0x%016llX, subscription id 0x%08X", remote_node_id, subscription_id);
 
     // Indicate we have no subscription!
     //
@@ -191,7 +192,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     //
     if (create_new_subscription)
     {
-        ESP_LOGI(TAG, "Re-Subscribing to node %llu...", remote_node_id);
+        ESP_LOGI(TAG, "Re-Subscribing to node 0x%016llX...", remote_node_id);
 
         auto *args = new std::tuple<uint64_t>(remote_node_id);
 
@@ -712,7 +713,27 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     char nodeIdStr[22];
     snprintf(nodeIdStr, sizeof(nodeIdStr), "%" PRIu64, nodeId);
 
-    add_node(&g_node_manager, nodeId);
+    bool is_icd_device = false;
+
+    auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+    auto &icd_client_storage = esp_matter::controller::matter_controller_client::get_instance().get_icd_client_storage();
+    auto iter = icd_client_storage.IterateICDClientInfo();
+
+    if (iter != nullptr)
+    {
+        app::ICDClientInfo info;
+        while (iter->Next(info))
+        {
+            if (info.peer_node.GetNodeId() == nodeId)
+            {
+                ESP_LOGI(TAG, "Device is ICD");
+                is_icd_device = true;
+                break;
+            }
+        }
+    }
+
+    add_node(&g_node_manager, nodeId, is_icd_device);
 
     save_nodes_to_nvs(&g_node_manager);
 
@@ -777,16 +798,22 @@ static void on_unpair_complete_callback(NodeId removed_node, CHIP_ERROR error)
 
 static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
 {
+    // A check-in from an ICD device means it has no subscriptions.
+    //
     ESP_LOGI(TAG, "on_icd_checkin_callback invoked from node %llu!", clientInfo.peer_node.GetNodeId());
 
-    // If we get a check-in from a node, it means we're not subscribed.
-    //
-    ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters...");
+    bool create_new_subscription = false;
+    mark_node_has_no_subscription(&g_node_manager, clientInfo.peer_node.GetNodeId(), 0, &create_new_subscription);
+    save_nodes_to_nvs(&g_node_manager);
+    
+    if (create_new_subscription)
+    {
+        ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters...");
 
-    auto *args = new std::tuple<uint64_t>(clientInfo.peer_node.GetNodeId());
+        auto *args = new std::tuple<uint64_t>(clientInfo.peer_node.GetNodeId());
 
-    chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                  {
+        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                      {
             auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
             
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
@@ -828,7 +855,8 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
                     ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
                 }
             } },
-                                                  reinterpret_cast<intptr_t>(args));
+                                                      reinterpret_cast<intptr_t>(args));
+    }
 }
 
 #pragma endregion
@@ -1050,6 +1078,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         cJSON *jNode = cJSON_CreateObject();
 
         cJSON_AddNumberToObject(jNode, "nodeId", node->node_id);
+        cJSON_AddBoolToObject(jNode, "isIcd", node->is_icd);
 
         if (node->vendor_name)
         {
@@ -1546,10 +1575,17 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
         cJSON_Delete(root);
     }
 
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddNumberToObject(response, "radiatorId", new_radiator->radiator_id);
+    char *response_payload = cJSON_PrintUnformatted(response);
+
     // Return success!
     //
     httpd_resp_set_status(req, "200 Ok");
-    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, response_payload, HTTPD_RESP_USE_STRLEN);
+
+    cJSON_free(response_payload);
+    cJSON_Delete(response);
 
     cJSON_Delete(root);
 
@@ -2571,6 +2607,12 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         else if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
                  event->Platform.ESPSystemEvent.Id == IP_EVENT_GOT_IP6)
         {
+            if (!has_subscribed_on_startup)
+            {
+                chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
+                                                              { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
+                has_subscribed_on_startup = true;
+            }
         }
         break;
     case chip::DeviceLayer::DeviceEventType::kSecureSessionEstablished:
@@ -2579,8 +2621,6 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         break;
     case chip::DeviceLayer::DeviceEventType::kServerReady:
         ESP_LOGI(TAG, "kServerReady");
-        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
-                                                      { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
         break;
     default:
         break;

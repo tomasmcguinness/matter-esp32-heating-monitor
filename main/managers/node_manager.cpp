@@ -68,7 +68,7 @@ uint64_t get_next_node_id(node_manager_t *manager)
 
     if (err == ESP_ERR_NVS_NOT_FOUND)
     {
-        // The key doesn't exist. 
+        // The key doesn't exist.
         ESP_LOGI(TAG, "No current_id found in NVS, starting from seed");
         next_id = 10000;
     }
@@ -87,9 +87,9 @@ uint64_t get_next_node_id(node_manager_t *manager)
 
     nvs_set_u64(nvs_handle, "current_id", next_id);
     nvs_commit(nvs_handle);
-    nvs_close(nvs_handle);  
+    nvs_close(nvs_handle);
 
-    ESP_LOGI(TAG, "Next node ID is %llu", next_id);   
+    ESP_LOGI(TAG, "Next node ID is %llu", next_id);
 
     return next_id;
 }
@@ -102,6 +102,8 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
 
     while (node)
     {
+        // TODO Only attempt to subscribe to a non-icd device.
+        //
         auto *args = new std::tuple<uint64_t>(node->node_id);
 
         chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
@@ -244,7 +246,7 @@ esp_err_t remove_node(node_manager_t *controller, uint64_t node_id)
     return ESP_OK;
 }
 
-matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
+matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, bool is_icd)
 {
     matter_node_t *new_node = (matter_node_t *)malloc(sizeof(matter_node_t));
 
@@ -256,6 +258,7 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id)
     memset(new_node, 0, sizeof(matter_node_t));
 
     new_node->node_id = node_id;
+    new_node->is_icd = is_icd;
     new_node->vendor_name = "not-specified";
     new_node->product_name = "not-specified";
     new_node->name = NULL;
@@ -330,7 +333,7 @@ esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, u
 
 esp_err_t set_node_name(matter_node_t *node, char *name)
 {
-    if(node->name) 
+    if (node->name)
     {
         free(node->name);
     }
@@ -380,7 +383,7 @@ esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
 
 esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value)
 {
-     matter_node_t *node = find_node(manager, node_id);
+    matter_node_t *node = find_node(manager, node_id);
 
     if (node)
     {
@@ -397,7 +400,7 @@ esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
 
 esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t *measured_value)
 {
-     matter_node_t *node = find_node(manager, node_id);
+    matter_node_t *node = find_node(manager, node_id);
 
     if (node)
     {
@@ -429,7 +432,7 @@ esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_i
 {
     matter_node_t *node = find_node(manager, node_id);
 
-    if (node && node->subscription_id == subscription_id)
+    if (node && (node->subscription_id == subscription_id || subscription_id == 0))
     {
         node->has_subscription = false;
         node->subscription_id = 0;
@@ -556,6 +559,9 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         node->node_id = *((uint64_t *)ptr);
         ptr += sizeof(uint64_t);
 
+        node->is_icd = *((bool *)ptr);
+        ptr += sizeof(bool);
+
         ESP_LOGI(TAG, "Processing node 0x%016llX from NVS", node->node_id);
 
         // Vendor
@@ -671,6 +677,8 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
     {
         required_size += sizeof(uint64_t); // node_id
 
+        required_size += sizeof(bool); // is_icd
+
         // Basic information.
         required_size += sizeof(uint16_t);
         required_size += current->vendor_name ? strlen(current->vendor_name) : 0;
@@ -727,6 +735,9 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
     {
         *((uint64_t *)ptr) = current->node_id;
         ptr += sizeof(uint64_t);
+
+        *((bool *)ptr) = current->is_icd;
+        ptr += sizeof(bool);
 
         // Vendor
         if (current->vendor_name)

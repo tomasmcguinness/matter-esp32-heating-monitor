@@ -22,6 +22,7 @@ typedef struct matter_endpoint
 typedef struct matter_node
 {
     uint64_t node_id;
+    bool is_icd;
     uint16_t vendor_name_length;
     char *vendor_name;
     uint16_t product_name_length;
@@ -63,7 +64,7 @@ uint64_t get_next_node_id(node_manager_t *manager);
 matter_node_t *find_node(node_manager_t *manager, uint64_t node_id);
 esp_err_t remove_node(node_manager_t *manager, uint64_t node_id);
 
-matter_node_t *add_node(node_manager_t *manager, uint64_t node_id);
+matter_node_t *add_node(node_manager_t *manager, uint64_t node_id, bool is_icd_device);
 esp_err_t set_node_name(matter_node_t *node, char *name);
 esp_err_t set_node_label(matter_node_t *node, char *label);
 esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source);
