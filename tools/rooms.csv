@@ -1,1 +1,6 @@
-Office,21,18,0x2717,1
+Office,21,0x2717,1,18,office
+Bathroom,22,0x2717,1,18,bathroom
+Front Bedroom,18,0x2717,1,18,front_bedroom
+Back Bedroom,18,0x2717,1,18,back_bedroom
+Master Bedroom,18,0x2717,1,19,master_bedroom
+Landing,18,0x2717,1,18,landing
