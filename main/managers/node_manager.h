@@ -23,12 +23,14 @@ typedef struct matter_node
 {
     uint64_t node_id;
     bool is_icd;
+    
     uint16_t vendor_name_length;
     char *vendor_name;
+
     uint16_t product_name_length;
     char *product_name;
-    
-    // This is set by the user.
+
+   // This is set by the user.
     uint8_t name_length;
     char *name;
 
@@ -37,6 +39,8 @@ typedef struct matter_node
     char *label;
 
     uint8_t power_source;
+
+    uint64_t ext_address;
 
     bool has_subscription;
     uint32_t subscription_id;
@@ -68,6 +72,7 @@ matter_node_t *add_node(node_manager_t *manager, uint64_t node_id, bool is_icd_d
 esp_err_t set_node_name(matter_node_t *node, char *name);
 esp_err_t set_node_label(matter_node_t *node, char *label);
 esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source);
+esp_err_t set_node_ext_address(matter_node_t *node, uint64_t ext_address);
 
 endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id);
 esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id);

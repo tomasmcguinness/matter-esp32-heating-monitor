@@ -391,6 +391,9 @@ void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferW
 
 void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
 {
+    // This handles all teh attribute updates. 
+    // It doesn't commit the changes to nvs. That is done by attribute_data_read_done, which is called once all the attributes in the Read command are done.
+    //
     ChipLogProgress(chipTool, "attribute_data_cb: Nodeid: %016llx Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
@@ -446,7 +449,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
             else if ((feature_map & (uint32_t)PowerSource::Feature::kBattery))
             {
-                ESP_LOGI(TAG, "PowerSource: BAT");
+                ESP_LOGI(TAG, "PowerSource: BATTERY");
             }
 
             matter_node_t *node = find_node(&g_node_manager, remote_node_id);
@@ -461,7 +464,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
         }
     }
-
     else if (path.mClusterId == BasicInformation::Id)
     {
         ESP_LOGI(TAG, "Processing BasicInformation response...");
@@ -541,6 +543,17 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
         }
     }
+    else if(path.mClusterId == ThreadNetworkDiagnostics::Id && path.mAttributeId == ThreadNetworkDiagnostics::Attributes::ExtAddress::Id)
+    {
+         ESP_LOGI(TAG, "Processing ThreadNetworkDiagnostics->ExtAddress attribute response...");
+
+        uint64_t extAddress;
+        chip::app::DataModel::Decode(*data, extAddress);
+
+        matter_node_t *node = find_node(&g_node_manager, remote_node_id);
+
+        set_node_ext_address(node, extAddress);
+    }
     else if (path.mClusterId == FlowMeasurement::Id && path.mAttributeId == FlowMeasurement::Attributes::MeasuredValue::Id)
     {
         ESP_LOGI(TAG, "Processing FlowMeasurement->MeasuredValue attribute response...");
@@ -552,6 +565,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, flow);
 
+        // If this FlowMeasurement is set in the home, update it's value.
+        //
         if (g_home_manager.heat_source_flow_rate_node_id == remote_node_id && g_home_manager.heat_source_flow_rate_endpoint_id == path.mEndpointId)
         {
             g_home_manager.heat_source_flow_rate = flow;
@@ -571,6 +586,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         bool hasMatched = false;
 
+        // If this TemperatureMeasurement is set in the home, update it's value.
+        //
         if (g_home_manager.outdoor_temp_node_id == remote_node_id && g_home_manager.outdoor_temp_endpoint_id == path.mEndpointId)
         {
             ESP_LOGI(TAG, "Device is assigned to the outdoor temperature sensor");
@@ -750,7 +767,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
         // We want to read a few attributes from the Basic Information cluster.
         //
         ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-        attr_paths.Alloc(4);
+        attr_paths.Alloc(5);
 
         if (!attr_paths.Get())
         {
@@ -762,6 +779,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
         attr_paths[1] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
         attr_paths[2] = AttributePathParams(std::get<1>(*args), BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
         attr_paths[3] = AttributePathParams(std::get<1>(*args), Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+        attr_paths[4] = AttributePathParams(std::get<1>(*args), ThreadNetworkDiagnostics::Id, ThreadNetworkDiagnostics::Attributes::ExtAddress::Id);
 
         ScopedMemoryBufferWithSize<EventPathParams> event_paths;
         event_paths.Alloc(0);
@@ -1043,8 +1061,12 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
 
         // TODO Get this from configuration.
-        // Assumes Thread. This comes from my iPhone!
-        char *dataset = "0e080000000000010000000300000d4a0300001435060004001fffe00208d58ddc1f3cf637620708fdb9d4afcd2632ac0510ee2cd1f3ddd63150e855bac3de75ab54030f4f70656e5468726561642d3166363201021f620410703f90f849c5a0d001a2738ce8dd771d0c0402a0f7f8";
+        // OTBR Dataset
+                         0e08000000000001000000030000194a0300000b35060004001fffe00208eb1915c32ec911830708fd86541fdf34f57e0510305d5e9632aa6d44b5b649d07a924b3b030f4f70656e5468726561642d613662650102a6be0410a915d61a1d5621728008e2f91602f25f0c0402a0f7f8
+        char *dataset = "0e08000000000001000000030000194a0300000b35060004001fffe00208eb1915c32ec911830708fd86541fdf34f57e0510305d5e9632aa6d44b5b649d07a924b3b030f4f70656e5468726561642d613662650102a6be0410a915d61a1d5621728008e2f91602f25f0c0402a0f7f8";
+
+        // HomePod Dataset
+        //"0e080000000000010000000300000d4a0300001435060004001fffe00208d58ddc1f3cf637620708fdb9d4afcd2632ac0510ee2cd1f3ddd63150e855bac3de75ab54030f4f70656e5468726561642d3166363201021f620410703f90f849c5a0d001a2738ce8dd771d0c0402a0f7f8";
 
         if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
         {
@@ -1108,6 +1130,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         }
 
         cJSON_AddNumberToObject(jNode, "powerSource", node->power_source);
+        cJSON_AddNumberToObject(jNode, "extAddress", node->ext_address);
 
         cJSON_AddBoolToObject(jNode, "hasSubscription", node->has_subscription);
 
@@ -1314,7 +1337,7 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             // We want to read a few attributes from the Basic Information cluster.
             //
             ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(4);
+            attr_paths.Alloc(5);
 
             if (!attr_paths.Get())
             {
@@ -1326,6 +1349,7 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             attr_paths[1] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::ProductName::Id);
             attr_paths[2] = AttributePathParams(endpointId, BasicInformation::Id, BasicInformation::Attributes::NodeLabel::Id);
             attr_paths[3] = AttributePathParams(endpointId, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+            attr_paths[4] = AttributePathParams(endpointId, ThreadNetworkDiagnostics::Id, ThreadNetworkDiagnostics::Attributes::ExtAddress::Id);
 
             ScopedMemoryBufferWithSize<EventPathParams> event_paths;
             event_paths.Alloc(0);

@@ -263,6 +263,7 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, bool is_ic
     new_node->product_name = "not-specified";
     new_node->name = NULL;
     new_node->label = NULL;
+    new_node->ext_address = 0; // If 0, assume device isn't thread.
 
     new_node->next = controller->node_list;
 
@@ -361,6 +362,12 @@ esp_err_t set_node_label(matter_node_t *node, char *label)
 esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source)
 {
     node->power_source = power_source;
+    return ESP_OK;
+}
+
+esp_err_t set_node_ext_address(matter_node_t *node, uint64_t ext_address)
+{
+    node->ext_address = ext_address;
     return ESP_OK;
 }
 
@@ -604,6 +611,10 @@ esp_err_t load_nodes_from_nvs(node_manager_t *controller)
         node->power_source = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
+        // ExtAddress
+        node->ext_address = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+
         // Endpoints
         node->endpoints_count = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
@@ -695,6 +706,9 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
 
         // Power Source
         required_size += sizeof(uint8_t);
+
+        // ExtAddress
+        required_size += sizeof(uint64_t);
 
         // Endpoint Count
         required_size += sizeof(uint16_t);
@@ -802,6 +816,10 @@ esp_err_t save_nodes_to_nvs(node_manager_t *manager)
         // Save power source
         *((uint8_t *)ptr) = current->power_source;
         ptr += sizeof(uint8_t);
+
+        // ExtAddress
+        *((uint64_t *)ptr) = current->ext_address;
+        ptr += sizeof(uint64_t);
 
         // Save endpoints
         *((uint16_t *)ptr) = current->endpoints_count;
