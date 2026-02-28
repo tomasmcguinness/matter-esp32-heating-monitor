@@ -608,13 +608,13 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     cJSON_AddNumberToObject(root, "lqi", lqi);
                     break;
 
-                 case 6: // AverageRSSI
+                case 6: // AverageRSSI
                     int8_t average_rssi;
                     chip::app::DataModel::Decode(*data, average_rssi);
 
                     cJSON_AddNumberToObject(root, "averageRssi", average_rssi);
                     break;
-                
+
                 case 11: // FullThreadDevice
                     bool full_thread_device;
                     chip::app::DataModel::Decode(*data, full_thread_device);
@@ -2405,6 +2405,51 @@ static esp_err_t network_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t icd_counter_delete_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Resetting the ICD Counter Offset ...");
+
+    char templatePath[] = "/api/icd_counter/:nodeId";
+    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
+    UrlTokenBindings bindings(templateItr, req->uri);
+
+    uint64_t node_id = 0;
+
+    if (bindings.hasBinding("nodeId"))
+    {
+        node_id = strtoull(bindings.get("nodeId"), NULL, 10);
+    }
+
+    ESP_LOGI(TAG, "Delete node %llu", node_id);
+
+    auto &icd_client_storage = matter_controller_client::get_instance().get_icd_client_storage();
+    auto iter = icd_client_storage.IterateICDClientInfo();
+    if (iter == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+    app::DefaultICDClientStorage::ICDClientInfoIteratorWrapper wrapper(iter);
+    app::ICDClientInfo info;
+    while (iter->Next(info)) 
+    {
+        ESP_LOGI(TAG, "Checking the ICD record for node %llu...", info.peer_node.GetNodeId());
+
+        // Find the matching record
+        if(node_id == info.peer_node.GetNodeId())
+        {
+            ESP_LOGI(TAG, "Found the ICD record for node %llu. Resetting offset...", node_id);
+            info.offset = 0;
+            icd_client_storage.StoreEntry(info);
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_status(req, "201 OK");
+    httpd_resp_send(req, "Deleted", HTTPD_RESP_USE_STRLEN);
+
+    return ESP_OK;
+}
+
 static esp_err_t write_index_html(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve root");
@@ -2495,7 +2540,7 @@ httpd_handle_t start_webserver(void)
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
 
-    config.max_uri_handlers = 25;
+    config.max_uri_handlers = 30;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
@@ -2622,6 +2667,12 @@ httpd_handle_t start_webserver(void)
         .handler = network_post_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t icd_counter_delete_uri = {
+        .uri = "/api/icd_counter/*",
+        .method = HTTP_DELETE,
+        .handler = icd_counter_delete_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -2655,6 +2706,7 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
         httpd_register_uri_handler(server, &network_post_uri);
+        httpd_register_uri_handler(server, &icd_counter_delete_uri);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
