@@ -391,7 +391,7 @@ void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferW
 
 void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
 {
-    // This handles all teh attribute updates. 
+    // This handles all teh attribute updates.
     // It doesn't commit the changes to nvs. That is done by attribute_data_read_done, which is called once all the attributes in the Read command are done.
     //
     ChipLogProgress(chipTool, "attribute_data_cb: Nodeid: %016llx Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
@@ -543,9 +543,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
         }
     }
-    else if(path.mClusterId == ThreadNetworkDiagnostics::Id && path.mAttributeId == ThreadNetworkDiagnostics::Attributes::ExtAddress::Id)
+    else if (path.mClusterId == ThreadNetworkDiagnostics::Id && path.mAttributeId == ThreadNetworkDiagnostics::Attributes::ExtAddress::Id)
     {
-         ESP_LOGI(TAG, "Processing ThreadNetworkDiagnostics->ExtAddress attribute response...");
+        ESP_LOGI(TAG, "Processing ThreadNetworkDiagnostics->ExtAddress attribute response...");
 
         uint64_t extAddress;
         chip::app::DataModel::Decode(*data, extAddress);
@@ -553,6 +553,96 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
         set_node_ext_address(node, extAddress);
+    }
+    else if (path.mClusterId == ThreadNetworkDiagnostics::Id && path.mAttributeId == ThreadNetworkDiagnostics::Attributes::NeighborTable::Id)
+    {
+        ESP_LOGI(TAG, "Processing ThreadNetworkDiagnostics->NeighborTable attribute response...");
+
+        // Read the list of neighbours and send them via websockets.
+        //
+        chip::TLV::TLVType containerType;
+
+        if (data->EnterContainer(containerType) != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to enter TLV container");
+            return;
+        }
+
+        while (data->Next() == CHIP_NO_ERROR)
+        {
+            chip::TLV::TLVType listContainerType;
+
+            if (data->EnterContainer(listContainerType) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to enter TLV container");
+                return;
+            }
+
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddStringToObject(root, "channel", "network");
+
+            matter_node_t *node = find_node(&g_node_manager, remote_node_id);
+
+            cJSON_AddNumberToObject(root, "extAddress", node->ext_address);
+
+            while (data->Next() == CHIP_NO_ERROR)
+            {
+                chip::TLV::Tag tag = data->GetTag();
+
+                int tagNumber = TLV::TagNumFromTag(tag);
+
+                ESP_LOGI(TAG, "Processing Tag ID: %d", tagNumber);
+
+                switch (tagNumber)
+                {
+                case 0: // ExtAddress
+                    uint64_t ext_address;
+                    chip::app::DataModel::Decode(*data, ext_address);
+
+                    cJSON_AddNumberToObject(root, "neighborExtAddress", ext_address);
+                    break;
+                case 5:
+                    uint8_t lqi;
+                    chip::app::DataModel::Decode(*data, lqi);
+
+                    cJSON_AddNumberToObject(root, "lqi", lqi);
+                    break;
+
+                 case 6: // AverageRSSI
+                    int8_t average_rssi;
+                    chip::app::DataModel::Decode(*data, average_rssi);
+
+                    cJSON_AddNumberToObject(root, "averageRssi", average_rssi);
+                    break;
+                
+                case 11: // FullThreadDevice
+                    bool full_thread_device;
+                    chip::app::DataModel::Decode(*data, full_thread_device);
+
+                    cJSON_AddBoolToObject(root, "fullThreadDevice", full_thread_device);
+                    break;
+
+                case 13: // IsChild
+                    bool is_child;
+                    chip::app::DataModel::Decode(*data, is_child);
+
+                    cJSON_AddBoolToObject(root, "isChild", is_child);
+                    break;
+                }
+            }
+
+            data->ExitContainer(containerType);
+
+            // All the tags have been process so sent it.
+            char *payload = cJSON_PrintUnformatted(root);
+
+            // This will free payload once it's done.
+            httpd_queue_work(server, ws_async_send, payload);
+
+            cJSON_Delete(root);
+        }
+
+        data->ExitContainer(containerType);
     }
     else if (path.mClusterId == FlowMeasurement::Id && path.mAttributeId == FlowMeasurement::Attributes::MeasuredValue::Id)
     {
@@ -821,12 +911,14 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
     ESP_LOGI(TAG, "on_icd_checkin_callback invoked from node %llu!", clientInfo.peer_node.GetNodeId());
 
     bool create_new_subscription = false;
+
     mark_node_has_no_subscription(&g_node_manager, clientInfo.peer_node.GetNodeId(), 0, &create_new_subscription);
+
     save_nodes_to_nvs(&g_node_manager);
-    
+
     if (create_new_subscription)
     {
-        ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters...");
+        ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters after ICD CheckIn received...");
 
         auto *args = new std::tuple<uint64_t>(clientInfo.peer_node.GetNodeId());
 
@@ -1178,6 +1270,7 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
 
     // TODO Add caching!!
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_status(req, "200 Accepted");
 
     const char *json = cJSON_Print(root);
@@ -2258,6 +2351,60 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t network_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Start to map Thread network...");
+
+    matter_node_t *node = g_node_manager.node_list;
+
+    while (node)
+    {
+        // Request the neightbour table from all wired Thread sensors.
+        //
+        if (node->ext_address != 0 && !node->is_icd)
+        {
+            auto *args = new std::tuple<uint64_t>(node->node_id);
+
+            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                          {
+            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
+                                                        
+            // We want to read a few attributes from the Basic Information cluster.
+            //
+            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+            attr_paths.Alloc(1);
+
+            if (!attr_paths.Get())
+            {
+                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                return;
+            }
+
+            attr_paths[0] = AttributePathParams(0x0, ThreadNetworkDiagnostics::Id, ThreadNetworkDiagnostics::Attributes::NeighborTable::Id);
+
+            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+            event_paths.Alloc(0);
+        
+            esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
+                                                                                                        std::move(attr_paths),
+                                                                                                        std::move(event_paths),
+                                                                                                        attribute_data_cb,
+                                                                                                        attribute_data_read_done,
+                                                                                                        nullptr);
+
+            read_attr_command->send_command(); }, reinterpret_cast<intptr_t>(args));
+        }
+
+        node = node->next;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_status(req, "201 OK");
+
+    return ESP_OK;
+}
+
 static esp_err_t write_index_html(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve root");
@@ -2469,6 +2616,12 @@ httpd_handle_t start_webserver(void)
         .handler = sensors_get_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t network_post_uri = {
+        .uri = "/api/network",
+        .method = HTTP_POST,
+        .handler = network_post_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -2501,6 +2654,7 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &rooms_delete_uri);
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
+        httpd_register_uri_handler(server, &network_post_uri);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
@@ -2632,8 +2786,8 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         {
             if (!has_subscribed_on_startup)
             {
-                chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
-                                                              { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
+                // chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t ctx)
+                //                                               { subscribe_all_temperature_measurements(&g_node_manager); }, 0);
                 has_subscribed_on_startup = true;
             }
         }

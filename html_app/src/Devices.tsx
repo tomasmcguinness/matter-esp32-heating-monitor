@@ -8,6 +8,7 @@ function Devices() {
   let navigate = useNavigate();
 
   let [nodeList, setNodeList] = useState<any>([]);
+  let [showEndpoints, setShowEndpoints] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchNodes = async () => {
@@ -87,49 +88,66 @@ function Devices() {
         <td>{deviceTypes}</td>
         <td>{endpoint.measuredValue}</td>
         <td><PowerSource powerSource={endpoint.powerSource} /></td>
-        </tr>)
+      </tr>)
     });
 
-    return ([<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
+    var rows = [];
+
+    rows.push(<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
       <td>0x{n.nodeId.toString(16).toUpperCase()}</td>
       <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
+      <td>{n.extAddress}</td>
       <td><PowerSource powerSource={n.powerSource} /></td>
       <td>{n.hasSubscription ? <CheckMark /> : <></>}</td>
-    </tr>,
-    <tr>
-      <td colSpan={6}>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>NodeID</th>
-              <th>Name</th>
-              <th>Devices</th>
-              <th>Measured Value</th>
-              <th/>
-            </tr>
-          </thead>
-          <tbody>
-            {endpoints}
-          </tbody>
-        </table>
-      </td>
-    </tr>]);
+    </tr>);
+
+    if (showEndpoints) {
+      rows.push(<tr>
+        <td colSpan={6}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Name</th>
+                <th>Devices</th>
+                <th>Measured Value</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {endpoints}
+            </tbody>
+          </table>
+        </td>
+      </tr>);
+    }
+
+    return (rows);
+
   });
 
   return (
     <>
-      <h1>Devices <NavLink className="btn btn-primary action-button" to="/devices/add">Add Device</NavLink></h1>
+      <h1>Devices      
+         <NavLink className="btn btn-primary action-button" to="/devices/add">Add Device</NavLink></h1>
       <hr />
+      <div className="form-check" style={{marginBottom: '10px'}}>
+  <input className="form-check-input" type="checkbox" checked={showEndpoints} id="flexCheckDefault" defaultChecked={false}  onChange={e => setShowEndpoints(e.target.checked)} />
+  <label className="form-check-label" htmlFor="flexCheckDefault">
+    Show Endpoints
+  </label>
+</div>
       {nodes.length === 0 && <div className="alert alert-info">There are no devices. Add one!</div>}
       {nodes.length > 0 && <table className="table table-striped table-bordered">
         <thead>
           <tr>
-            <th>Endpoint</th>
+            <th>Node</th>
             <th>Name</th>
             <th>Vendor</th>
             <th>Product</th>
+            <th>ExtAddress</th>
             <th>Power</th>
             <th>Sub</th>
           </tr>
@@ -142,4 +160,4 @@ function Devices() {
   )
 }
 
-export default Devices
+export default Devices;
