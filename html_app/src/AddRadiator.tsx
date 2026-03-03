@@ -62,6 +62,7 @@ function AddRadiator() {
           <select name="type" className="form-control" id="type" required={true} value={type} onChange={(e) => setType(parseInt(e.target.value))}>
             <option value="0">Designer</option>
             <option value="1">Towel</option>
+            <option value="2">Column</option>
             <option value="10">Type 10 (P1)</option>
             <option value="11">Type 11 (K1)</option>
             <option value="20">Type 20</option>

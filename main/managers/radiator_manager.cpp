@@ -109,7 +109,7 @@ radiator_t *add_radiator(radiator_manager_t *manager, char *name, char *mqtt_nam
         return NULL;
     }
 
-    ESP_LOGE(TAG, "Adding a radiator with ID %d", new_radiator_id);
+    ESP_LOGI(TAG, "Adding a radiator with ID %d", new_radiator_id);
 
     radiator_t *new_radiator = (radiator_t *)calloc(1, sizeof(radiator_t));
 

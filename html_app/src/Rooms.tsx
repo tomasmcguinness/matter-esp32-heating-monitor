@@ -44,11 +44,8 @@ function Rooms() {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
       <td><Temperature>{n.currentTemperature}</Temperature></td>
-      <td><Power>{n.combinedRadiatorOutput}</Power></td>
-
-      <td><Temperature>{n.targetTemperature}</Temperature></td>
-      <td><Power>{n.predictedHeatLossAtTarget}</Power></td>      
-      <td><Power>{n.estimatedHeatLossAtTarget}</Power></td>
+      <td><Power>{n.predictedHeatLossAtCurrentTemperature}</Power></td>      
+      <td><Power>{n.estimatedHeatLossAtCurrentTemperature}</Power></td>
       <td>-</td>
     </tr>);
   });
@@ -63,10 +60,8 @@ function Rooms() {
           <tr>
             <th>Name</th>
             <th>Current Temp</th>
-            <th>Radiator Output</th>
-            <th>Target Temp</th>
-            <th>Predicted Heat Loss @ Target</th>
-            <th>Estimated Heat Loss @ Target</th>
+            <th>Predicted Heat Loss</th>
+            <th>Estimated Heat Loss</th>
             <th>Difference</th>
           </tr>
         </thead>

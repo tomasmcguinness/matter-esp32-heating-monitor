@@ -13,6 +13,8 @@ function RadiatorType({ children }: { children: any }) {
       return <span>Designer</span>;
     case 1:
       return <span>Towel</span>;
+    case 2:
+      return <span>Column</span>;
     case 10:
       return <span>Type 10 (P1)</span>;
     case 11:

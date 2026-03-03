@@ -7,8 +7,11 @@
 typedef struct room
 {
     uint8_t room_id;
+
     uint8_t name_len;
     char *name;
+    uint8_t mqtt_name_len;
+    char *mqtt_name;
 
     uint8_t radiator_count;
     uint8_t *radiators;
@@ -26,8 +29,11 @@ typedef struct room
 
     int16_t current_heat_loss_per_degree;
 
-    int16_t estimated_heat_loss_at_target;
-    int16_t predicted_heat_loss_at_target;
+    int16_t estimated_heat_loss_at_target_temperature;
+    int16_t estimated_heat_loss_at_current_temperature;
+
+    int16_t predicted_heat_loss_at_target_temperature;
+    int16_t predicted_heat_loss_at_current_temperature;
 
     struct room *next;
 
@@ -45,7 +51,7 @@ uint8_t get_next_room_id(room_manager_t *manager);
 
 room_t *find_room(room_manager_t *manager, uint8_t room_id);
 
-room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
+room_t *add_room(room_manager_t *manager, char *name, char *mqtt_name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
 room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_t target_temperature, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
 
 esp_err_t remove_room(room_manager_t *manager, uint8_t room_id);

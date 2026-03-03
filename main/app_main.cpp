@@ -660,7 +660,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         if (g_home_manager.heat_source_flow_rate_node_id == remote_node_id && g_home_manager.heat_source_flow_rate_endpoint_id == path.mEndpointId)
         {
             g_home_manager.heat_source_flow_rate = flow;
-            update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
+            update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
         }
     }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
@@ -684,7 +684,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             g_home_manager.outdoor_temperature = temperature;
 
-            update_all_rooms_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager);
+            // A change in outside temperature impacts all the rooms.
+            //
+            update_all_rooms_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 
             hasMatched = true;
         }
@@ -737,33 +739,13 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     cJSON_AddNumberToObject(root, "returnTemp", temperature);
                 }
 
-                update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, radiator);
+                update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
 
                 char *payload = cJSON_PrintUnformatted(root);
 
                 // This will free payload once it's done.
                 httpd_queue_work(server, ws_async_send, payload);
 
-                if (is_mqtt_connected)
-                {
-                    cJSON *root = cJSON_CreateObject();
-
-                    cJSON_AddNumberToObject(root, "flow_temperature", radiator->flow_temperature);
-                    cJSON_AddNumberToObject(root, "return_temperature", radiator->return_temperature);
-                    cJSON_AddNumberToObject(root, "output", radiator->heat_output);
-
-                    char state_topic[61];
-                    snprintf(state_topic, sizeof(state_topic), "radiators/%s", radiator->mqtt_name);
-
-                    char *payload = cJSON_PrintUnformatted(root);
-                    ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
-                    esp_mqtt_client_publish(_mqtt_client, state_topic, payload, 0, 0, 0);
-
-                    cJSON_free(payload);
-                    cJSON_Delete(root);
-                }
-
-                cJSON_free(payload);
                 cJSON_Delete(root);
 
                 hasMatched = true;
@@ -784,7 +766,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGI(TAG, "Device is assigned to room %u", room->room_id);
 
-                update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, room);
+                update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, room);
 
                 cJSON *root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "channel", "room");
@@ -822,7 +804,6 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
 
     bool is_icd_device = false;
 
-    auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
     auto &icd_client_storage = esp_matter::controller::matter_controller_client::get_instance().get_icd_client_storage();
     auto iter = icd_client_storage.IterateICDClientInfo();
 
@@ -1601,7 +1582,7 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
     get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
     get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
 
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 
     ESP_LOGI(TAG, "Radiator saved");
 
@@ -1676,7 +1657,7 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
         cJSON_AddItemToObject(root, "cmps", components);
 
         char state_topic[60];
-        snprintf(state_topic, sizeof(state_topic), "radiators/%s", mqttNameJSON->valuestring);
+        snprintf(state_topic, sizeof(state_topic), "heating_monitor/radiators/%s", mqttNameJSON->valuestring);
         cJSON_AddStringToObject(root, "state_topic", state_topic);
 
         char *payload = cJSON_PrintUnformatted(root);
@@ -1918,6 +1899,7 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     }
 
     const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
+    const cJSON *mqttNameJSON = cJSON_GetObjectItemCaseSensitive(root, "mqttName");
     const cJSON *targetTemperatureJSON = cJSON_GetObjectItemCaseSensitive(root, "targetTemperature");
     const cJSON *heatLossPerDegreeJSON = cJSON_GetObjectItemCaseSensitive(root, "heatLossPerDegree");
     const cJSON *temperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorNodeId");
@@ -1925,15 +1907,17 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 
     room_t *new_room = add_room(&g_room_manager,
                                 nameJSON->valuestring,
+                                mqttNameJSON->valuestring,
                                 (uint16_t)targetTemperatureJSON->valueint,
-                                (uint8_t)heatLossPerDegreeJSON->valueint, (uint64_t)temperatureSensorNodeIdJSON->valueint,
+                                (uint8_t)heatLossPerDegreeJSON->valueint, 
+                                (uint64_t)temperatureSensorNodeIdJSON->valueint,
                                 (uint16_t)temperatureSensorEndpointIdJSON->valueint);
 
     save_rooms_to_nvs(&g_room_manager);
 
-    update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, new_room);
+    update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, new_room);
 
-    // TODO Return the new room in JSON!
+    // TODO Return the ID in JSON!
     //
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
@@ -1961,8 +1945,10 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "targetTemperature", room->target_temperature);
         cJSON_AddNumberToObject(jNode, "currentTemperature", room->current_temperature);
 
-        cJSON_AddNumberToObject(jNode, "predictedHeatLossAtTarget", room->predicted_heat_loss_at_target);
-        cJSON_AddNumberToObject(jNode, "estimatedHeatLossAtTarget", room->estimated_heat_loss_at_target);
+        cJSON_AddNumberToObject(jNode, "predictedHeatLossAtTargetTemperature", room->predicted_heat_loss_at_target_temperature);
+        cJSON_AddNumberToObject(jNode, "predictedHeatLossAtCurrentTemperature", room->predicted_heat_loss_at_current_temperature);
+        cJSON_AddNumberToObject(jNode, "estimatedHeatLossAtTargetTemperature", room->estimated_heat_loss_at_target_temperature);
+        cJSON_AddNumberToObject(jNode, "estimatedHeatLossAtCurrentTemperature", room->estimated_heat_loss_at_current_temperature);
 
         uint16_t total_radiator_output = 0;
 
@@ -2042,8 +2028,8 @@ static esp_err_t room_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "temperatureSensorEndpointId", room->room_temperature_endpoint_id);
     cJSON_AddNumberToObject(root, "heatLossPerDegree", room->survey_heat_loss_per_degree);
 
-    cJSON_AddNumberToObject(root, "predictedHeatLossAtTarget", room->predicted_heat_loss_at_target);
-    cJSON_AddNumberToObject(root, "estimatedHeatLossAtTarget", room->estimated_heat_loss_at_target);
+    cJSON_AddNumberToObject(root, "predictedHeatLossAtTargetTemperature", room->predicted_heat_loss_at_target_temperature);
+    cJSON_AddNumberToObject(root, "predictedHeatLossAtTargetTemperature", room->estimated_heat_loss_at_target_temperature);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -2148,7 +2134,7 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 
     get_endpoint_measured_value(&g_node_manager, temperatureSensorNodeIdJSON->valueint, temperatureSensorEndpointIdJSON->valueint, &updated_room->current_temperature);
 
-    update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, updated_room);
+    update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, updated_room);
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "Updated", HTTPD_RESP_USE_STRLEN);
@@ -2260,7 +2246,7 @@ static esp_err_t home_get_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Getting home...");
 
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 
     cJSON *root = cJSON_CreateObject();
 
@@ -2280,8 +2266,8 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_source_flow_rate);
     cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
 
-    cJSON_AddNumberToObject(root, "predictedHeatLoss", g_home_manager.total_predicted_heat_loss);
-    cJSON_AddNumberToObject(root, "estimatedHeatLoss", g_home_manager.total_estimated_heat_loss);
+    cJSON_AddNumberToObject(root, "predictedHeatLossAtCurrentTemperature", g_home_manager.total_predicted_heat_loss_at_current_temperature);
+    cJSON_AddNumberToObject(root, "estimatedHeatLossAtCurrentTemperature", g_home_manager.total_estimated_heat_loss_at_current_temperature);
     cJSON_AddNumberToObject(root, "radiatorCount", g_home_manager.radiator_count);
     cJSON_AddNumberToObject(root, "totalRadiatorOutput", g_home_manager.total_radiator_output);
 
@@ -2341,7 +2327,7 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     get_endpoint_measured_value(&g_node_manager, g_home_manager.heat_source_return_temp_node_id, g_home_manager.heat_source_return_temp_endpoint_id, &g_home_manager.heat_source_return_temperature);
     get_endpoint_measured_value_uint16(&g_node_manager, g_home_manager.heat_source_flow_rate_node_id, g_home_manager.heat_source_flow_rate_endpoint_id, &g_home_manager.heat_source_flow_rate);
 
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager);
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 
     httpd_resp_set_status(req, "201 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);

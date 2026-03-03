@@ -2,6 +2,7 @@ import { NavLink } from "react-router"
 import Temperature from "./Temperature"
 import { useEffect, useState } from "react";
 import FlowRate from "./FlowRate";
+import Power from "./Power";
 
 function Home() {
 
@@ -27,8 +28,8 @@ function Home() {
         setHeatSourceFlowRate(data.heatSourceFlowRate);
         setHeatSourceOutput(data.heatSourceOutput);
 
-        setTotalPredictedHeatLoss(data.predictedHeatLoss);
-        setTotalEstimatedHeatLoss(data.estimatedHeatLoss);
+        setTotalPredictedHeatLoss(data.predictedHeatLossAtCurrentTemperature);
+        setTotalEstimatedHeatLoss(data.estimatedHeatLossAtCurrentTemperature);
         setRadiatorCount(data.radiatorCount);
         setTotalRadiatorOutput(data.totalRadiatorOutput);
       }
@@ -57,7 +58,7 @@ function Home() {
             Predicted Heat Loss
           </div>
           <div className="card-body">
-            <p className="card-title"><h3>{totalPredictedHeatLoss}W</h3></p>
+            <p className="card-title"><h3><Power>{totalPredictedHeatLoss}</Power></h3></p>
           </div>
         </div>
         <div className="card">
@@ -65,7 +66,7 @@ function Home() {
             Estimated Heat Loss
           </div>
           <div className="card-body">
-            <p className="card-title"><h3>{totalEstimatedHeatLoss}W</h3></p>
+            <p className="card-title"><h3><Power>{totalEstimatedHeatLoss}</Power></h3></p>
           </div>
         </div>
       </div>

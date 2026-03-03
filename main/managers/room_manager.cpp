@@ -121,7 +121,7 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_
     return room;
 }
 
-room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
+room_t *add_room(room_manager_t *manager, char *name, char *mqtt_name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
 {
     uint8_t new_room_id = get_next_room_id(manager);
 
@@ -143,6 +143,9 @@ room_t *add_room(room_manager_t *manager, char *name, int16_t target_temperature
 
     new_room->name = (char *)malloc(strlen(name) + 1);
     strcpy(new_room->name, name);
+
+    new_room->mqtt_name = (char *)malloc(strlen(mqtt_name) + 1);
+    strcpy(new_room->mqtt_name, mqtt_name);
 
     new_room->target_temperature = target_temperature;
     new_room->room_temperature_node_id = room_temperature_node_id;
@@ -289,8 +292,10 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
 
         room->current_temperature = 0;
         room->current_heat_loss_per_degree = 0;
-        room->predicted_heat_loss_at_target = 0;
-        room->estimated_heat_loss_at_target = 0;
+        room->predicted_heat_loss_at_target_temperature = 0;
+        room->predicted_heat_loss_at_current_temperature = 0;
+        room->estimated_heat_loss_at_target_temperature = 0;
+        room->estimated_heat_loss_at_current_temperature = 0;
 
         room->room_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -301,6 +306,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
         room->room_temperature_endpoint_id = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
 
+        // Name
         room->name_len = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
@@ -308,6 +314,15 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
 
         memcpy(room->name, ptr, room->name_len);
         ptr += room->name_len;
+
+        // MQTT Name
+        room->mqtt_name_len = *((uint8_t *)ptr);
+        ptr += sizeof(uint8_t);
+
+        room->mqtt_name = (char *)calloc(room->mqtt_name_len + 1, sizeof(char));
+
+        memcpy(room->mqtt_name, ptr, room->mqtt_name_len);
+        ptr += room->mqtt_name_len;
 
         room->target_temperature = *((uint16_t *)ptr);
         ptr += sizeof(uint16_t);
@@ -365,6 +380,8 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
         required_size += sizeof(uint16_t);      // room_temperature_endpoint_id
         required_size += sizeof(uint8_t);       // name length
         required_size += strlen(current->name); // name
+        required_size += sizeof(uint8_t);            // mqtt name length
+        required_size += strlen(current->mqtt_name); // mqtt name
         required_size += sizeof(uint16_t);      // target_temperature
         required_size += sizeof(uint8_t);       // radiator count
         required_size += sizeof(uint8_t) * current->radiator_count;
@@ -401,6 +418,12 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
 
         memcpy(ptr, current->name, strlen(current->name));
         ptr += strlen(current->name);
+
+        *((uint8_t *)ptr) = strlen(current->mqtt_name);
+        ptr += sizeof(uint8_t);
+
+        memcpy(ptr, current->mqtt_name, strlen(current->mqtt_name));
+        ptr += strlen(current->mqtt_name);
 
         *((uint16_t *)ptr) = current->target_temperature;
         ptr += sizeof(uint16_t);
