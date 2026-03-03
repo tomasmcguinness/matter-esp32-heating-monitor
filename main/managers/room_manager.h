@@ -27,7 +27,7 @@ typedef struct room
     int16_t current_temperature;
     int16_t total_radiator_output;
 
-    int16_t current_heat_loss_per_degree;
+    int16_t actual_heat_loss_per_degree;
 
     int16_t estimated_heat_loss_at_target_temperature;
     int16_t estimated_heat_loss_at_current_temperature;

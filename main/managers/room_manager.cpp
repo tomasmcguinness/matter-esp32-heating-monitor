@@ -291,7 +291,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
         }
 
         room->current_temperature = 0;
-        room->current_heat_loss_per_degree = 0;
+        room->actual_heat_loss_per_degree = 0;
         room->predicted_heat_loss_at_target_temperature = 0;
         room->predicted_heat_loss_at_current_temperature = 0;
         room->estimated_heat_loss_at_target_temperature = 0;

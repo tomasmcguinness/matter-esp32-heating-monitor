@@ -53,29 +53,25 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
                     radiator->heat_output = (uint16_t)adjusted_output;
 
                     ESP_LOGI(TAG, "Radiator %u has a calculated output of %uW", radiator->radiator_id, radiator->heat_output);
-
-                    cJSON *root = cJSON_CreateObject();
-
-                    cJSON_AddNumberToObject(root, "flow_temperature", (double)radiator->flow_temperature / 100);
-                    cJSON_AddNumberToObject(root, "return_temperature", (double)radiator->return_temperature / 100);
-                    cJSON_AddNumberToObject(root, "output", radiator->heat_output);
-
-                    char state_topic[61];
-                    snprintf(state_topic, sizeof(state_topic), "heating_monitor/radiators/%s", radiator->mqtt_name);
-
-                    char *payload = cJSON_PrintUnformatted(root);
-                    ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
-                    esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
-
-                    cJSON_free(payload);
-                    cJSON_Delete(root);
-
-                    update_room_heat_loss(node_manager, home_manager, room_manager, radiator_manager, mqtt_client, room);
                 }
-                else
-                {
-                    ESP_LOGI(TAG, "Can't continue the output calculation for Radiator %u as the room has no reported temperature", radiator->radiator_id);
-                }
+
+                cJSON *root = cJSON_CreateObject();
+
+                cJSON_AddNumberToObject(root, "flow_temperature", (double)radiator->flow_temperature / 100);
+                cJSON_AddNumberToObject(root, "return_temperature", (double)radiator->return_temperature / 100);
+                cJSON_AddNumberToObject(root, "output", radiator->heat_output);
+
+                char state_topic[61];
+                snprintf(state_topic, sizeof(state_topic), "heating_monitor/radiators/%s", radiator->mqtt_name);
+
+                char *payload = cJSON_PrintUnformatted(root);
+                ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
+                esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+
+                cJSON_free(payload);
+                cJSON_Delete(root);
+
+                update_room_heat_loss(node_manager, home_manager, room_manager, radiator_manager, mqtt_client, room);
 
                 break;
             }
@@ -130,25 +126,25 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
         ESP_LOGI(TAG, "Room %u has an input of %u W", room->room_id, total_radiator_output);
 
-        room->current_heat_loss_per_degree = total_radiator_output / current_delta_t;
+        room->actual_heat_loss_per_degree = total_radiator_output / current_delta_t;
 
-        ESP_LOGI(TAG, "Room %u has a current heat loss of %u W/°C", room->room_id, room->current_heat_loss_per_degree);
+        ESP_LOGI(TAG, "Room %u has an actual heat loss of %u W/°C", room->room_id, room->actual_heat_loss_per_degree);
     }
     else
     {
         ESP_LOGI(TAG, "Room %u has no radiators, so estimated heat loss cannot be calculated", room->room_id);
     }
 
-    room->estimated_heat_loss_at_target_temperature = target_temperature_delta_t * room->current_heat_loss_per_degree;
-    room->estimated_heat_loss_at_current_temperature = current_delta_t * room->current_heat_loss_per_degree;
+    room->estimated_heat_loss_at_target_temperature = target_temperature_delta_t * room->actual_heat_loss_per_degree;
+    room->estimated_heat_loss_at_current_temperature = current_delta_t * room->actual_heat_loss_per_degree;
 
     ESP_LOGI(TAG, "Room %u has a estimated heat loss of %u W at target temperature", room->room_id, room->estimated_heat_loss_at_target_temperature);
 
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "current_temperature", (double)room->current_temperature / 100);
-    cJSON_AddNumberToObject(root, "predicted_heat_loss_at_current_temperature", room->predicted_heat_loss_at_current_temperature);
-    cJSON_AddNumberToObject(root, "estimated_heat_loss_at_current_temperature", room->estimated_heat_loss_at_current_temperature);
+    cJSON_AddNumberToObject(root, "survey_heat_loss_per_degree", room->survey_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "actual_heat_loss_per_degree", room->actual_heat_loss_per_degree);
 
     char state_topic[61];
     snprintf(state_topic, sizeof(state_topic), "heating_monitor/rooms/%s", room->mqtt_name);

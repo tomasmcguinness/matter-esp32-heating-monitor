@@ -1945,10 +1945,8 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "targetTemperature", room->target_temperature);
         cJSON_AddNumberToObject(jNode, "currentTemperature", room->current_temperature);
 
-        cJSON_AddNumberToObject(jNode, "predictedHeatLossAtTargetTemperature", room->predicted_heat_loss_at_target_temperature);
-        cJSON_AddNumberToObject(jNode, "predictedHeatLossAtCurrentTemperature", room->predicted_heat_loss_at_current_temperature);
-        cJSON_AddNumberToObject(jNode, "estimatedHeatLossAtTargetTemperature", room->estimated_heat_loss_at_target_temperature);
-        cJSON_AddNumberToObject(jNode, "estimatedHeatLossAtCurrentTemperature", room->estimated_heat_loss_at_current_temperature);
+        cJSON_AddNumberToObject(jNode, "surveyHeatLoss", room->survey_heat_loss_per_degree);
+        cJSON_AddNumberToObject(jNode, "actualHeatLoss", room->actual_heat_loss_per_degree);
 
         uint16_t total_radiator_output = 0;
 
@@ -1962,7 +1960,7 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
             }
         }
 
-        cJSON_AddNumberToObject(jNode, "combinedRadiatorOutput", total_radiator_output);
+        cJSON_AddNumberToObject(jNode, "heatInput", total_radiator_output);
 
         cJSON_AddItemToArray(root, jNode);
 
