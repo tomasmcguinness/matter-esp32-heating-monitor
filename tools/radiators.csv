@@ -1,1 +1,10 @@
-Master Bedroom,master_bedroom,22,1200,0x2717,1,0x2717,2
+Office,office,11,980,0x271F,2,0x271F,1
+Master Bedroom,master_bedroom,21,2421,0x2721,2,0x2721,1
+Front Bedroom,front_bedroom,21,1614,0x2722,2,0x2722,1
+Back Bedroom,back_bedroom,21,1883,0x272B,2,0x272B,1
+Landing,landing,2,1200,0x2730,1,0x2730,2
+Sitting Room,sitting_room,22,2771,0x272C,2,0x272C,1
+Kitchen,kitchen,2,1800,0x2731,2,0x2731,1
+Hallway,hallway,2,1800,0x2732,2,0x2732,1
+Living Room,living_room,22,3464,0x2735,2,0x2735,1
+Bathroom,bathroom,1,852,0x2736,1,0x2736,2

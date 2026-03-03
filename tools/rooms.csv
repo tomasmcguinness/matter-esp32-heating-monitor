@@ -1,6 +1,10 @@
-Office,21,0x2717,1,18,office
-Bathroom,22,0x2717,1,18,bathroom
-Front Bedroom,18,0x2717,1,18,front_bedroom
-Back Bedroom,18,0x2717,1,18,back_bedroom
-Master Bedroom,18,0x2717,1,19,master_bedroom
-Landing,18,0x2717,1,18,landing
+Office,office,21,0x2737,226,11,office
+Master Bedroom,master_bedroom,18,0x2737,100,32,master_bedroom
+Front Bedroom,front_bedroom,18,0x2737,132,23,front_bedroom
+Back Bedroom,back_bedroom,18,0x2737,161,21,back_bedroom
+Sitting Room,sitting_room,21,0x2737,150,33,sitting_room
+Landing,landing,18,0x2737,104,9,landing
+Kitchen,kitchen,21,0x2737,101,61,kitchen
+Hallway,hallway,18,0x2737,103,10,hallway
+Living Room,living_room,21,0x2737,148,24,living_room
+Bathroom,bathroom,22,0x2737,151,15,bathroom
