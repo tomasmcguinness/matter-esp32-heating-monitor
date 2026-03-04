@@ -55,7 +55,7 @@ function Home() {
         </div>
         <div className="card">
           <div className="card-header">
-            Predicted Heat Loss
+            Surveyed Heat Loss
           </div>
           <div className="card-body">
             <p className="card-title"><h3><Power>{totalPredictedHeatLoss}</Power></h3></p>
@@ -63,7 +63,7 @@ function Home() {
         </div>
         <div className="card">
           <div className="card-header">
-            Estimated Heat Loss
+            Actual Heat Loss
           </div>
           <div className="card-body">
             <p className="card-title"><h3><Power>{totalEstimatedHeatLoss}</Power></h3></p>

@@ -28,18 +28,19 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
                 // Calclate the mean water temperature of the radiator
                 // The probes can be in the wrong position for this. It doesn't matter.
                 //
-                double mwt = ((double)radiator->flow_temperature / 100 + (double)radiator->return_temperature / 100) / 2;
+                radiator->mean_water_temperature = ((double)radiator->flow_temperature + (double)radiator->return_temperature) / 2;
 
-                ESP_LOGI(TAG, "Radiator %u has an MWT of %f", radiator->radiator_id, mwt);
+                ESP_LOGI(TAG, "Radiator %u has an MWT of %f", radiator->radiator_id, radiator->mean_water_temperature);
 
                 // Perform calculations if we have data!
                 //
                 if (room->current_temperature > 0)
                 {
-                    double deltaT = abs(mwt - (double)room->current_temperature / 100);
+                    double deltaT = abs((double)radiator->mean_water_temperature / 100 - (double)room->current_temperature / 100);
 
                     ESP_LOGI(TAG, "Radiator %u has a MWT->Room ΔT of %f", radiator->radiator_id, deltaT);
 
+                    // The power is given at dT 50
                     double dt = 50.0 / deltaT;
 
                     ESP_LOGI(TAG, "Radiator %u has a ΔT division of %f", radiator->radiator_id, dt);
@@ -59,6 +60,7 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
 
                 cJSON_AddNumberToObject(root, "flow_temperature", (double)radiator->flow_temperature / 100);
                 cJSON_AddNumberToObject(root, "return_temperature", (double)radiator->return_temperature / 100);
+                cJSON_AddNumberToObject(root, "mean_water_temperature", (double)radiator->mean_water_temperature / 100);
                 cJSON_AddNumberToObject(root, "output", radiator->heat_output);
 
                 char state_topic[61];

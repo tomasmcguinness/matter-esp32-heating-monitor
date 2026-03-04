@@ -63,6 +63,7 @@ function Radiators() {
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
       <td><Temperature>{Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>
+      <td><Temperature>{n.meanWaterTemperature}</Temperature></td>
       <td><Power>{n.currentOutput}</Power></td>
     </tr>);
   });
@@ -81,6 +82,7 @@ function Radiators() {
             <th>Flow</th>
             <th>Return</th>
             <th>ΔT</th>
+            <th>MWT</th>
             <th>Output</th>
           </tr>
         </thead>

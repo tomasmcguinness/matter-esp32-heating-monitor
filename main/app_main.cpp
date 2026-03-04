@@ -1708,6 +1708,7 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "flowTemp", radiator->flow_temperature);
         cJSON_AddNumberToObject(jNode, "returnTemp", radiator->return_temperature);
+        cJSON_AddNumberToObject(jNode, "meanWaterTemperature", radiator->mean_water_temperature);
         cJSON_AddNumberToObject(jNode, "currentOutput", radiator->heat_output);
 
         cJSON_AddItemToArray(root, jNode);
