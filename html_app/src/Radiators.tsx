@@ -59,6 +59,7 @@ function Radiators() {
     return (<tr key={n.radiatorId} onClick={() => navigate(`/radiators/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
       <td><RadiatorType>{n.type}</RadiatorType></td>
+      <td><Power>{n.output}</Power></td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
       <td><Temperature>{Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>
@@ -76,6 +77,7 @@ function Radiators() {
           <tr>
             <th>Name</th>
             <th>Type</th>
+            <th>ΔT 50°</th>
             <th>Flow</th>
             <th>Return</th>
             <th>ΔT</th>
