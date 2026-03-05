@@ -103,10 +103,10 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
     ESP_LOGI(TAG, "Room %u has a target temperature of %d", room->room_id, room->target_temperature);
     ESP_LOGI(TAG, "Room %u has a target temperature -> outdoor temperature ΔT of %f", room->room_id, target_temperature_delta_t);
     ESP_LOGI(TAG, "Room %u has a current temperature -> outdoor temperature ΔT of %f", room->room_id, current_delta_t);
-    ESP_LOGI(TAG, "Room %u has a survey heat loss of %u W/°C", room->room_id, room->survey_heat_loss_per_degree);
+    ESP_LOGI(TAG, "Room %u has a predicated heat loss of %u W/°C", room->room_id, room->predicted_heat_loss_per_degree);
 
-    room->predicted_heat_loss_at_target_temperature = target_temperature_delta_t * room->survey_heat_loss_per_degree;
-    room->predicted_heat_loss_at_current_temperature = current_delta_t * room->survey_heat_loss_per_degree;
+    room->predicted_heat_loss_at_target_temperature = target_temperature_delta_t * room->predicted_heat_loss_per_degree;
+    room->predicted_heat_loss_at_current_temperature = current_delta_t * room->predicted_heat_loss_per_degree;
 
     ESP_LOGI(TAG, "Room %u has a predicted heat loss of %u W at target temperature", room->room_id, room->predicted_heat_loss_at_target_temperature);
 
@@ -128,25 +128,25 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
         ESP_LOGI(TAG, "Room %u has an input of %u W", room->room_id, total_radiator_output);
 
-        room->actual_heat_loss_per_degree = total_radiator_output / current_delta_t;
+        room->measured_heat_loss_per_degree = total_radiator_output / current_delta_t;
 
-        ESP_LOGI(TAG, "Room %u has an actual heat loss of %u W/°C", room->room_id, room->actual_heat_loss_per_degree);
+        ESP_LOGI(TAG, "Room %u has an actual heat loss of %u W/°C", room->room_id, room->measured_heat_loss_per_degree);
     }
     else
     {
-        ESP_LOGI(TAG, "Room %u has no radiators, so estimated heat loss cannot be calculated", room->room_id);
+        ESP_LOGI(TAG, "Room %u has no radiators, heat loss cannot be measured", room->room_id);
     }
 
-    room->estimated_heat_loss_at_target_temperature = target_temperature_delta_t * room->actual_heat_loss_per_degree;
-    room->estimated_heat_loss_at_current_temperature = current_delta_t * room->actual_heat_loss_per_degree;
+    room->measured_heat_loss_at_target_temperature = target_temperature_delta_t * room->measured_heat_loss_per_degree;
+    room->measured_heat_loss_at_current_temperature = current_delta_t * room->measured_heat_loss_per_degree;
 
-    ESP_LOGI(TAG, "Room %u has a estimated heat loss of %u W at target temperature", room->room_id, room->estimated_heat_loss_at_target_temperature);
+    ESP_LOGI(TAG, "Room %u has a measured heat loss of %u W at target temperature", room->room_id, room->measured_heat_loss_at_target_temperature);
 
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "current_temperature", (double)room->current_temperature / 100);
-    cJSON_AddNumberToObject(root, "survey_heat_loss_per_degree", room->survey_heat_loss_per_degree);
-    cJSON_AddNumberToObject(root, "actual_heat_loss_per_degree", room->actual_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "predicted_heat_loss_per_degree", room->predicted_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "measured_heat_loss_per_degree", room->measured_heat_loss_per_degree);
 
     char state_topic[61];
     snprintf(state_topic, sizeof(state_topic), "heating_monitor/rooms/%s", room->mqtt_name);
@@ -194,12 +194,12 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
         home_manager->heat_source_output = output;
     }
 
-    // Compute total predicted & total estimated heat loss across all rooms.
+    // Compute total predicted & total measured heat loss across all rooms.
 
     home_manager->total_predicted_heat_loss_at_target_temperature = 0;
     home_manager->total_predicted_heat_loss_at_current_temperature = 0;
-    home_manager->total_estimated_heat_loss_at_target_temperature = 0;
-    home_manager->total_estimated_heat_loss_at_current_temperature = 0;
+    home_manager->total_measured_heat_loss_at_target_temperature = 0;
+    home_manager->total_measured_heat_loss_at_current_temperature = 0;
 
     room_t *room = room_manager->room_list;
 
@@ -207,8 +207,8 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
     {
         home_manager->total_predicted_heat_loss_at_target_temperature += room->predicted_heat_loss_at_target_temperature;
         home_manager->total_predicted_heat_loss_at_current_temperature += room->predicted_heat_loss_at_current_temperature;
-        home_manager->total_estimated_heat_loss_at_target_temperature += room->estimated_heat_loss_at_target_temperature;
-        home_manager->total_estimated_heat_loss_at_current_temperature += room->estimated_heat_loss_at_current_temperature;
+        home_manager->total_measured_heat_loss_at_target_temperature += room->measured_heat_loss_at_target_temperature;
+        home_manager->total_measured_heat_loss_at_current_temperature += room->measured_heat_loss_at_current_temperature;
 
         room = room->next;
     }

@@ -45,9 +45,9 @@ function Rooms() {
       <td>{n.name}</td>
       <td><Temperature>{n.currentTemperature}</Temperature></td>
       <td><Power>{n.heatInput}</Power></td>
-      <td><Power>{n.surveyHeatLoss}</Power></td>      
-      <td><Power>{n.actualHeatLoss}</Power></td>
-      <td>-</td>
+      <td><Power>{n.predictedHeatLoss}</Power></td>      
+      <td><Power>{n.measuredHeatLoss}</Power></td>
+      <td>{n.measuredHeatLoss === 0 ? '-' : `${Math.abs(((n.predictedHeatLoss / n.measuredHeatLoss) * 100)).toFixed(0)}%` }</td>
     </tr>);
   });
 
@@ -62,11 +62,8 @@ function Rooms() {
             <th>Name</th>
             <th>Current Temp</th>
             <th>Radiator Input</th>
-            <th>Surveyed Heat Loss</th>
-            <th>Actual Heat Loss</th>
-            {/* <th>Predicted Heat Loss</th>
-            <th>Estimated Heat Loss</th>
-             */}
+            <th>Predicated Heat Loss</th>
+            <th>Measured Heat Loss</th>
             <th>Difference</th>
           </tr>
         </thead>

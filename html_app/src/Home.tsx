@@ -12,7 +12,7 @@ function Home() {
   let [heatSourceFlowRate, setHeatSourceFlowRate] = useState<number | undefined>(undefined);
   let [heatSourceOutput, setHeatSourceOutput] = useState<number | undefined>(undefined);
   let [totalPredictedHeatLoss, setTotalPredictedHeatLoss] = useState<number | undefined>(undefined);
-  let [totalEstimatedHeatLoss, setTotalEstimatedHeatLoss] = useState<number | undefined>(undefined);
+  let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
   let [radiatorCount, setRadiatorCount] = useState<number | undefined>(undefined);
   let [totalRadiatorOutput, setTotalRadiatorOutput] = useState<number | undefined>(undefined);
 
@@ -29,7 +29,7 @@ function Home() {
         setHeatSourceOutput(data.heatSourceOutput);
 
         setTotalPredictedHeatLoss(data.predictedHeatLossAtCurrentTemperature);
-        setTotalEstimatedHeatLoss(data.estimatedHeatLossAtCurrentTemperature);
+        setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
         setRadiatorCount(data.radiatorCount);
         setTotalRadiatorOutput(data.totalRadiatorOutput);
       }
@@ -55,7 +55,7 @@ function Home() {
         </div>
         <div className="card">
           <div className="card-header">
-            Surveyed Heat Loss
+            Predicted Heat Loss
           </div>
           <div className="card-body">
             <p className="card-title"><h3><Power>{totalPredictedHeatLoss}</Power></h3></p>
@@ -63,10 +63,10 @@ function Home() {
         </div>
         <div className="card">
           <div className="card-header">
-            Actual Heat Loss
+            Measured Heat Loss
           </div>
           <div className="card-body">
-            <p className="card-title"><h3><Power>{totalEstimatedHeatLoss}</Power></h3></p>
+            <p className="card-title"><h3><Power>{totalMeasuredHeatLoss}</Power></h3></p>
           </div>
         </div>
       </div>
@@ -128,7 +128,7 @@ function Home() {
             UFH Output
           </div>
           <div className="card-body">
-            <p className="card-title">TBD</p>
+            <p className="card-title"><h3>N/A</h3></p>
           </div>
         </div>
       </div>

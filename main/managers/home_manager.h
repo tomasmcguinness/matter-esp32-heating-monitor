@@ -26,8 +26,8 @@ typedef struct {
     // Transient
     uint16_t total_predicted_heat_loss_at_target_temperature = 0;
     uint16_t total_predicted_heat_loss_at_current_temperature = 0;
-    uint16_t total_estimated_heat_loss_at_target_temperature = 0;
-    uint16_t total_estimated_heat_loss_at_current_temperature = 0;
+    uint16_t total_measured_heat_loss_at_target_temperature = 0;
+    uint16_t total_measured_heat_loss_at_current_temperature = 0;
 
     uint8_t radiator_count = 0;
     uint16_t total_radiator_output = 0;

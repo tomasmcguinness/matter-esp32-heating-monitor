@@ -1946,8 +1946,8 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "targetTemperature", room->target_temperature);
         cJSON_AddNumberToObject(jNode, "currentTemperature", room->current_temperature);
 
-        cJSON_AddNumberToObject(jNode, "surveyHeatLoss", room->survey_heat_loss_per_degree);
-        cJSON_AddNumberToObject(jNode, "actualHeatLoss", room->actual_heat_loss_per_degree);
+        cJSON_AddNumberToObject(jNode, "predictedHeatLoss", room->predicted_heat_loss_per_degree);
+        cJSON_AddNumberToObject(jNode, "measuredHeatLoss", room->measured_heat_loss_per_degree);
 
         uint16_t total_radiator_output = 0;
 
@@ -2025,10 +2025,10 @@ static esp_err_t room_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "targetTemperature", room->target_temperature);
     cJSON_AddNumberToObject(root, "temperatureSensorNodeId", room->room_temperature_node_id);
     cJSON_AddNumberToObject(root, "temperatureSensorEndpointId", room->room_temperature_endpoint_id);
-    cJSON_AddNumberToObject(root, "heatLossPerDegree", room->survey_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "heatLossPerDegree", room->predicted_heat_loss_per_degree);
 
     cJSON_AddNumberToObject(root, "predictedHeatLossAtTargetTemperature", room->predicted_heat_loss_at_target_temperature);
-    cJSON_AddNumberToObject(root, "predictedHeatLossAtTargetTemperature", room->estimated_heat_loss_at_target_temperature);
+    cJSON_AddNumberToObject(root, "measuredHeatLossAtTargetTemperature", room->measured_heat_loss_at_target_temperature);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -2266,7 +2266,7 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
 
     cJSON_AddNumberToObject(root, "predictedHeatLossAtCurrentTemperature", g_home_manager.total_predicted_heat_loss_at_current_temperature);
-    cJSON_AddNumberToObject(root, "estimatedHeatLossAtCurrentTemperature", g_home_manager.total_estimated_heat_loss_at_current_temperature);
+    cJSON_AddNumberToObject(root, "measuredHeatLossAtCurrentTemperature", g_home_manager.total_measured_heat_loss_at_current_temperature);
     cJSON_AddNumberToObject(root, "radiatorCount", g_home_manager.radiator_count);
     cJSON_AddNumberToObject(root, "totalRadiatorOutput", g_home_manager.total_radiator_output);
 

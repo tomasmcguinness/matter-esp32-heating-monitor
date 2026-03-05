@@ -108,7 +108,7 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_
     strcpy(room->name, name);
 
     room->target_temperature = target_temperature;
-    room->survey_heat_loss_per_degree = heat_loss_per_degree;
+    room->predicted_heat_loss_per_degree = heat_loss_per_degree;
 
     room->room_temperature_node_id = temperature_node_id;
     room->room_temperature_endpoint_id = temperature_endpoint_id;
@@ -150,7 +150,7 @@ room_t *add_room(room_manager_t *manager, char *name, char *mqtt_name, int16_t t
     new_room->target_temperature = target_temperature;
     new_room->room_temperature_node_id = room_temperature_node_id;
     new_room->room_temperature_endpoint_id = room_temperature_endpoint_id;
-    new_room->survey_heat_loss_per_degree = survey_heat_loss_per_degree;
+    new_room->predicted_heat_loss_per_degree = survey_heat_loss_per_degree;
 
     new_room->radiator_count = 0;
 
@@ -291,11 +291,11 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
         }
 
         room->current_temperature = 0;
-        room->actual_heat_loss_per_degree = 0;
+        room->measured_heat_loss_per_degree = 0;
         room->predicted_heat_loss_at_target_temperature = 0;
         room->predicted_heat_loss_at_current_temperature = 0;
-        room->estimated_heat_loss_at_target_temperature = 0;
-        room->estimated_heat_loss_at_current_temperature = 0;
+        room->measured_heat_loss_at_target_temperature = 0;
+        room->measured_heat_loss_at_current_temperature = 0;
 
         room->room_id = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
@@ -341,7 +341,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             ESP_LOGI(TAG, "Loaded radiator %u from NVS", room->radiators[r]);
         }
 
-        room->survey_heat_loss_per_degree = *((uint8_t *)ptr);
+        room->predicted_heat_loss_per_degree = *((uint8_t *)ptr);
         ptr += sizeof(uint8_t);
 
         ESP_LOGI(TAG, "Loaded room %u from NVS", room->room_id);
@@ -437,7 +437,7 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
             ptr += sizeof(uint8_t);
         }
 
-        *((uint8_t *)ptr) = current->survey_heat_loss_per_degree;
+        *((uint8_t *)ptr) = current->predicted_heat_loss_per_degree;
         ptr += sizeof(uint8_t);
 
         current = current->next;

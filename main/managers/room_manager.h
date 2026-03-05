@@ -19,7 +19,7 @@ typedef struct room
     uint64_t room_temperature_node_id;
     uint16_t room_temperature_endpoint_id;
 
-    uint8_t survey_heat_loss_per_degree;
+    uint8_t predicted_heat_loss_per_degree;
 
     int16_t target_temperature;
 
@@ -27,10 +27,10 @@ typedef struct room
     int16_t current_temperature;
     int16_t total_radiator_output;
 
-    int16_t actual_heat_loss_per_degree;
+    int16_t measured_heat_loss_per_degree;
 
-    int16_t estimated_heat_loss_at_target_temperature;
-    int16_t estimated_heat_loss_at_current_temperature;
+    int16_t measured_heat_loss_at_target_temperature;
+    int16_t measured_heat_loss_at_current_temperature;
 
     int16_t predicted_heat_loss_at_target_temperature;
     int16_t predicted_heat_loss_at_current_temperature;
