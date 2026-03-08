@@ -1,6 +1,6 @@
 # Matter Heating Monitor
 
-
+The Heating Monitor is a Matter based designed to aggregate all information about your home heating system. At present, it supports monitoring room temperatures and radiator temperatures.
 
 ## Building
 
