@@ -113,6 +113,7 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_
     room->room_temperature_node_id = temperature_node_id;
     room->room_temperature_endpoint_id = temperature_endpoint_id;
 
+    free(room->radiators);
     room->radiator_count = radiator_count;
     room->radiators = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
 
@@ -202,6 +203,9 @@ esp_err_t remove_room(room_manager_t *manager, uint8_t room_id)
 
     ESP_LOGI(TAG, "Removing room 0x%016llX", room_id);
 
+    free(current->name);
+    free(current->mqtt_name);
+    free(current->radiators);
     free(current);
     manager->room_count--;
 
@@ -225,6 +229,9 @@ void room_manager_free(room_manager_t *manager)
     {
         room_t *next = current->next;
 
+        free(current->name);
+        free(current->mqtt_name);
+        free(current->radiators);
         free(current);
 
         current = next;

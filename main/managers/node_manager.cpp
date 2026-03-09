@@ -227,10 +227,18 @@ esp_err_t remove_node(node_manager_t *controller, uint64_t node_id)
 
     if (current->endpoints)
     {
-        // TODO Free device_type_ids inside each endpoint
+        for (uint16_t i = 0; i < current->endpoints_count; i++)
+        {
+            free(current->endpoints[i].name);
+            free(current->endpoints[i].device_type_ids);
+        }
         free(current->endpoints);
     }
 
+    free(current->name);
+    free(current->label);
+    free(current->vendor_name);
+    free(current->product_name);
     free(current);
     controller->node_count--;
 
@@ -311,6 +319,7 @@ esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *nam
         return ESP_FAIL;
     }
 
+    free(endpoint->name);
     endpoint->name = (char *)malloc(strlen(name) + 1);
     strcpy(endpoint->name, name);
 
@@ -347,6 +356,7 @@ esp_err_t set_node_name(matter_node_t *node, char *name)
 
 esp_err_t set_node_label(matter_node_t *node, char *label)
 {
+    free(node->label);
     node->label = (char *)malloc(strlen(label) + 1);
     strcpy(node->label, label);
 

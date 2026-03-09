@@ -145,6 +145,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                 if (!attr_paths.Get())
                                                                 {
                                                                     ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                                                                    delete args;
                                                                     return;
                                                                 }
 
@@ -165,6 +166,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                                                                                                             attribute_data_read_done,
                                                                                                                                                             nullptr);
 
+                                                                delete args;
                                                                 read_attr_command->send_command(); },
                                                   reinterpret_cast<intptr_t>(args));
 }
@@ -208,6 +210,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
             if (!attr_paths.Get())
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                delete args;
                 return;
             }
 
@@ -228,8 +231,9 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
                 node_subscription_established_cb,
                 node_subscription_terminated_cb,
                 node_subscribe_failed_cb,
-                false); 
+                false);
 
+            delete args;
             if (!cmd)
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
@@ -343,6 +347,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
             if (!attr_paths.Get())
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                delete args;
                 return;
             }
 
@@ -365,6 +370,7 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                 node_subscribe_failed_cb,
                 false); 
 
+            delete args;
             if (!cmd)
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
@@ -478,6 +484,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 if (data->Get(value) == CHIP_NO_ERROR)
                 {
+                    free(node->vendor_name);
                     node->vendor_name = (char *)calloc(value.size() + 1, sizeof(char));
                     memcpy(node->vendor_name, value.data(), value.size());
 
@@ -493,6 +500,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 if (data->Get(value) == CHIP_NO_ERROR)
                 {
+                    free(node->product_name);
                     node->product_name = (char *)calloc(value.size() + 1, sizeof(char));
                     memcpy(node->product_name, value.data(), value.size());
 
@@ -843,6 +851,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
         if (!attr_paths.Get())
         {
             ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+            delete args;
             return;
         }
 
@@ -862,6 +871,7 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
                                                                                                     attribute_data_read_done,
                                                                                                     nullptr);
 
+        delete args;
         read_attr_command->send_command(); }, reinterpret_cast<intptr_t>(args));
 }
 
@@ -913,6 +923,7 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
             if (!attr_paths.Get())
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                delete args;
                 return;
             }
 
@@ -934,7 +945,8 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
                 node_subscribe_failed_cb,
                 false);
 
-            if (!cmd)  
+            delete args;
+            if (!cmd)
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
             }
@@ -1477,6 +1489,7 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             if (!attr_paths.Get())
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                delete args;
                 return;
             }
 
@@ -1499,7 +1512,8 @@ static esp_err_t node_put_handler(httpd_req_t *req)
                 node_subscribe_failed_cb,
                 false);
 
-            if (!cmd)  
+            delete args;
+            if (!cmd)
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
             }
@@ -2135,6 +2149,7 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 
     update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, updated_room);
 
+    free(radiator_ids);
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "Updated", HTTPD_RESP_USE_STRLEN);
 
@@ -2362,6 +2377,7 @@ static esp_err_t network_post_handler(httpd_req_t *req)
             if (!attr_paths.Get())
             {
                 ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                delete args;
                 return;
             }
 
@@ -2377,6 +2393,7 @@ static esp_err_t network_post_handler(httpd_req_t *req)
                                                                                                         attribute_data_read_done,
                                                                                                         nullptr);
 
+            delete args;
             read_attr_command->send_command(); }, reinterpret_cast<intptr_t>(args));
         }
 

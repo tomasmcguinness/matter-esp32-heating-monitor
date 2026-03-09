@@ -211,6 +211,8 @@ esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id, c
 
     strcpy(mqtt_name, current->mqtt_name);
 
+    free(current->name);
+    free(current->mqtt_name);
     free(current);
 
     controller->radiator_count--;
@@ -235,6 +237,8 @@ void radiator_manager_free(radiator_manager_t *manager)
     {
         radiator_t *next = current->next;
 
+        free(current->name);
+        free(current->mqtt_name);
         free(current);
 
         current = next;
