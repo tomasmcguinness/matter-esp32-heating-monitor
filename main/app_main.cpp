@@ -646,9 +646,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             // All the tags have been process so sent it.
             char *payload = cJSON_PrintUnformatted(root);
 
-            // This will free payload once it's done.
             httpd_queue_work(server, ws_async_send, payload);
 
+            cJSON_free(payload);
             cJSON_Delete(root);
         }
 
@@ -756,6 +756,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 // This will free payload once it's done.
                 httpd_queue_work(server, ws_async_send, payload);
 
+                cJSON_free(payload);
                 cJSON_Delete(root);
 
                 hasMatched = true;
@@ -788,6 +789,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 // This will free payload once it's done.
                 httpd_queue_work(server, ws_async_send, payload);
 
+                cJSON_free(payload);
                 cJSON_Delete(root);
 
                 hasMatched = true;
@@ -1035,7 +1037,6 @@ static void ws_async_send(void *arg)
     ESP_LOGI(TAG, "Send result: %u", err);
 
     free(payload);
-    cJSON_free(arg);
 }
 
 static esp_err_t ws_get_handler(httpd_req_t *req)
