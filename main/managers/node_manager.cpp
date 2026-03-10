@@ -102,54 +102,59 @@ void subscribe_all_temperature_measurements(node_manager_t *manager)
 
     while (node)
     {
-        // TODO Only attempt to subscribe to a non-icd device.
-        //
-        auto *args = new std::tuple<uint64_t>(node->node_id);
+        if (!node->is_icd && node_needs_subscription(manager, node->node_id))
+        {
+            node->is_subscription_pending = true;
 
-        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                      {
-            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
+            auto *args = new std::tuple<uint64_t>(node->node_id);
 
-            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(1);
+            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
+                                                          {
+                auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
 
-            if (!attr_paths.Get())
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                return;
-            }
+                ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
+                attr_paths.Alloc(1);
 
-            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-
-            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-            event_paths.Alloc(0);
-
-            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
-                std::move(attr_paths),
-                std::move(event_paths),
-                0,
-                60,
-                false, // <--- Keep Subscriptions
-                attribute_data_cb,
-                nullptr,
-                node_subscription_established_cb,
-                node_subscription_terminated_cb,
-                node_subscribe_failed_cb,
-                false); 
-
-            if (!cmd)
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-            }
-            else
-            {
-                esp_err_t err = cmd->send_command();
-                if (err != ESP_OK)
+                if (!attr_paths.Get())
                 {
-                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                    ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+                    delete args;
+                    return;
                 }
-            } },
-                                                      reinterpret_cast<intptr_t>(args));
+
+                attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+
+                ScopedMemoryBufferWithSize<EventPathParams> event_paths;
+                event_paths.Alloc(0);
+
+                auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
+                    std::move(attr_paths),
+                    std::move(event_paths),
+                    0,
+                    60,
+                    false,
+                    attribute_data_cb,
+                    nullptr,
+                    node_subscription_established_cb,
+                    node_subscription_terminated_cb,
+                    node_subscribe_failed_cb,
+                    false);
+
+                delete args;
+                if (!cmd)
+                {
+                    ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+                }
+                else
+                {
+                    esp_err_t err = cmd->send_command();
+                    if (err != ESP_OK)
+                    {
+                        ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+                    }
+                } },
+                                                          reinterpret_cast<intptr_t>(args));
+        }
 
         node = node->next;
     }
@@ -439,6 +444,7 @@ esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, 
     if (node)
     {
         node->has_subscription = true;
+        node->is_subscription_pending = false;
         node->subscription_id = subscription_id;
     }
 
@@ -452,12 +458,37 @@ esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_i
     if (node && (node->subscription_id == subscription_id || subscription_id == 0))
     {
         node->has_subscription = false;
+        node->is_subscription_pending = false;
         node->subscription_id = 0;
 
         *create_new_subscription = true;
     }
 
     return ESP_OK;
+}
+
+esp_err_t mark_node_subscription_pending(node_manager_t *manager, uint64_t node_id)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        node->is_subscription_pending = true;
+    }
+
+    return ESP_OK;
+}
+
+bool node_needs_subscription(node_manager_t *manager, uint64_t node_id)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (!node)
+    {
+        return false;
+    }
+
+    return !node->has_subscription && !node->is_subscription_pending;
 }
 
 esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id)

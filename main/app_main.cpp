@@ -196,6 +196,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     {
         ESP_LOGI(TAG, "Re-Subscribing to node 0x%016llX...", remote_node_id);
 
+        mark_node_subscription_pending(&g_node_manager, remote_node_id);
         auto *args = new std::tuple<uint64_t>(remote_node_id);
 
         // We need to re-subscribe!
@@ -331,10 +332,11 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     data->ExitContainer(containerType);
 
-    if (hasTemperatureMeasurements || hasFlowMeasurements)
+    if ((hasTemperatureMeasurements || hasFlowMeasurements) && node_needs_subscription(&g_node_manager, node_id))
     {
         ESP_LOGI(TAG, "The device has temperature measurement clusters. Subscribe to them");
 
+        mark_node_subscription_pending(&g_node_manager, node_id);
         auto *args = new std::tuple<uint64_t>(node_id);
 
         chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
@@ -911,6 +913,7 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
     {
         ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters after ICD CheckIn received...");
 
+        mark_node_subscription_pending(&g_node_manager, clientInfo.peer_node.GetNodeId());
         auto *args = new std::tuple<uint64_t>(clientInfo.peer_node.GetNodeId());
 
         chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
@@ -1032,6 +1035,7 @@ static void ws_async_send(void *arg)
     ESP_LOGI(TAG, "Send result: %u", err);
 
     free(payload);
+    cJSON_free(arg);
 }
 
 static esp_err_t ws_get_handler(httpd_req_t *req)

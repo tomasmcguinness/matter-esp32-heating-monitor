@@ -43,6 +43,7 @@ typedef struct matter_node
     uint64_t ext_address;
 
     bool has_subscription;
+    bool is_subscription_pending;
     uint32_t subscription_id;
 
     endpoint_entry_t *endpoints;
@@ -83,6 +84,8 @@ esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t n
 
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
 esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id, bool *create_new_subscription);
+esp_err_t mark_node_subscription_pending(node_manager_t *manager, uint64_t node_id);
+bool node_needs_subscription(node_manager_t *manager, uint64_t node_id);
 
 esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value);
 
