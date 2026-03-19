@@ -24,6 +24,8 @@ typedef struct {
     uint16_t heat_source_output;
 
     // Transient
+    uint16_t total_predicted_heat_loss_per_degree = 0;
+    uint16_t total_measured_heat_loss_per_degree = 0;
     uint16_t total_predicted_heat_loss_at_target_temperature = 0;
     uint16_t total_predicted_heat_loss_at_current_temperature = 0;
     uint16_t total_measured_heat_loss_at_target_temperature = 0;

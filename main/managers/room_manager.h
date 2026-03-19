@@ -35,6 +35,8 @@ typedef struct room
     int16_t predicted_heat_loss_at_target_temperature;
     int16_t predicted_heat_loss_at_current_temperature;
 
+    double heat_loss_difference;
+
     struct room *next;
 
 } room;

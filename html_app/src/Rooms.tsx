@@ -9,6 +9,7 @@ function Rooms() {
   let navigate = useNavigate();
 
   let [roomList, setRoomList] = useState<any>([]);
+  let [homeData, setHomeData] = useState<any>({});
 
   const { subscribe, unsubscribe } = useContext(WebSocketContext);
 
@@ -27,18 +28,26 @@ function Rooms() {
   }, [subscribe, unsubscribe])
 
   useEffect(() => {
-    const fetchRooms = async () => {
+    const fetchData = async () => {
+      const [roomsResponse, homeResponse] = await Promise.all([
+        fetch("/api/rooms"),
+        fetch("/api/home"),
+      ]);
 
-      var response = await fetch("/api/rooms");
+      if (roomsResponse.ok) {
+        setRoomList(await roomsResponse.json());
+      }
 
-      if (response.ok) {
-        let data = await response.json();
-        setRoomList(data);
+      if (homeResponse.ok) {
+        setHomeData(await homeResponse.json());
       }
     };
 
-    fetchRooms();
+    fetchData();
   }, []);
+
+  let totalPredictedHeatLoss = homeData.totalPredictedHeatLoss ?? 0;
+  let totalMeasuredHeatLoss = homeData.totalMeasuredHeatLoss ?? 0;
 
   let rooms = roomList.sort((a: any, b: any) => a.name.localeCompare(b.name)).map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
@@ -47,7 +56,7 @@ function Rooms() {
       <td><Power>{n.heatInput}</Power></td>
       <td><Power>{n.predictedHeatLoss}</Power></td>      
       <td><Power>{n.measuredHeatLoss}</Power></td>
-      <td>{n.measuredHeatLoss === 0 ? '-' : `${Math.abs(((n.predictedHeatLoss / n.measuredHeatLoss) * 100)).toFixed(0)}%` }</td>
+      <td>{n.heatLossDifference === 0 ? '-' : `${Math.abs(n.heatLossDifference).toFixed(0)}%`}</td>
     </tr>);
   });
 
@@ -62,7 +71,7 @@ function Rooms() {
             <th>Name</th>
             <th>Current Temp</th>
             <th>Radiator Input</th>
-            <th>Predicated Heat Loss</th>
+            <th>Predicted Heat Loss</th>
             <th>Measured Heat Loss</th>
             <th>Difference</th>
           </tr>
@@ -70,6 +79,16 @@ function Rooms() {
         <tbody>
           {rooms}
         </tbody>
+        <tfoot>
+          <tr>
+            <th>Totals</th>
+            <th></th>
+            <th></th>
+            <th><Power>{totalPredictedHeatLoss}</Power></th>
+            <th><Power>{totalMeasuredHeatLoss}</Power></th>
+            <th></th>
+          </tr>
+        </tfoot>
       </table>}
 
     </>

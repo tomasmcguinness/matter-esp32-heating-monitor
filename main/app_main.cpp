@@ -1967,6 +1967,7 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(jNode, "predictedHeatLoss", room->predicted_heat_loss_per_degree);
         cJSON_AddNumberToObject(jNode, "measuredHeatLoss", room->measured_heat_loss_per_degree);
+        cJSON_AddNumberToObject(jNode, "heatLossDifference", room->heat_loss_difference);
 
         uint16_t total_radiator_output = 0;
 
@@ -2285,6 +2286,8 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_source_flow_rate);
     cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
 
+    cJSON_AddNumberToObject(root, "totalPredictedHeatLoss", g_home_manager.total_predicted_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "totalMeasuredHeatLoss", g_home_manager.total_measured_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "predictedHeatLossAtCurrentTemperature", g_home_manager.total_predicted_heat_loss_at_current_temperature);
     cJSON_AddNumberToObject(root, "measuredHeatLossAtCurrentTemperature", g_home_manager.total_measured_heat_loss_at_current_temperature);
     cJSON_AddNumberToObject(root, "radiatorCount", g_home_manager.radiator_count);

@@ -142,11 +142,16 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
     ESP_LOGI(TAG, "Room %u has a measured heat loss of %u W at target temperature", room->room_id, room->measured_heat_loss_at_target_temperature);
 
+    room->heat_loss_difference = (room->predicted_heat_loss_per_degree > 0)
+        ? ((double)room->measured_heat_loss_per_degree / room->predicted_heat_loss_per_degree) * 100.0
+        : 0.0;
+
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "current_temperature", (double)room->current_temperature / 100);
     cJSON_AddNumberToObject(root, "predicted_heat_loss_per_degree", room->predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "measured_heat_loss_per_degree", room->measured_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "heat_loss_difference", room->heat_loss_difference);
 
     char state_topic[61];
     snprintf(state_topic, sizeof(state_topic), "heating_monitor/rooms/%s", room->mqtt_name);
@@ -196,6 +201,8 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     // Compute total predicted & total measured heat loss across all rooms.
 
+    home_manager->total_predicted_heat_loss_per_degree = 0;
+    home_manager->total_measured_heat_loss_per_degree = 0;
     home_manager->total_predicted_heat_loss_at_target_temperature = 0;
     home_manager->total_predicted_heat_loss_at_current_temperature = 0;
     home_manager->total_measured_heat_loss_at_target_temperature = 0;
@@ -205,6 +212,11 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     while (room)
     {
+        home_manager->total_predicted_heat_loss_per_degree += room->predicted_heat_loss_per_degree;
+        if (room->measured_heat_loss_per_degree > 0)
+        {
+            home_manager->total_measured_heat_loss_per_degree += room->measured_heat_loss_per_degree;
+        }
         home_manager->total_predicted_heat_loss_at_target_temperature += room->predicted_heat_loss_at_target_temperature;
         home_manager->total_predicted_heat_loss_at_current_temperature += room->predicted_heat_loss_at_current_temperature;
         home_manager->total_measured_heat_loss_at_target_temperature += room->measured_heat_loss_at_target_temperature;
@@ -226,4 +238,16 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
     }
 
     // TODO UFH.
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(root, "total_predicted_heat_loss_per_degree", home_manager->total_predicted_heat_loss_per_degree);
+    cJSON_AddNumberToObject(root, "total_measured_heat_loss_per_degree", home_manager->total_measured_heat_loss_per_degree);
+
+    char *payload = cJSON_PrintUnformatted(root);
+    ESP_LOGI(TAG, "Publishing to MQTT topic heating_monitor/home");
+    esp_mqtt_client_publish(mqtt_client, "heating_monitor/home", payload, 0, 0, 0);
+
+    cJSON_free(payload);
+    cJSON_Delete(root);
 }
