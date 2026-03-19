@@ -1,8 +1,13 @@
 # Matter Heating Monitor
 
-
+The Heating Monitor is a Matter based designed to aggregate all information about your home heating system. At present, it supports monitoring room temperatures and radiator temperatures.
 
 ## Building
+
+This project uses `esp-idf` and `esp-matter`, so ensure both of these frameworks are installed. 
+
+>[!NOTE]
+>I had to make changes to the `esp-matter` SDK to better support subscriptions - these are pendings as a PR https://github.com/espressif/esp-matter/pull/1690
 
 Start by ensuing the `html_app` is compiled. This will generate several files and place them in the `html_data` directory.
 
@@ -11,7 +16,7 @@ cp html_app
 npm run build -- --emptyOutDir
 ```
 
-Next, you will need to set the Thread Network Dataset. This can be found in the `nodes_post_handler` function. 
+Next, you will need to set the Thread Network Dataset in code. This can be found in the `nodes_post_handler` function. 
 
 ```
 char *dataset = "0e080000000000000000000300001935060004001fffc0..."
@@ -61,13 +66,13 @@ When it's done, the device will appear under the Device tab.
 
 # TODO
 
-* [] Improve subscriptions
-* [] Real-Time UI updates
-* [] Saving data onto SD card
-* [] Sending data via MQTT
-* [] Ability to configure Thread Dataset via UI
-* [] Indicate subscription status in the UI
-* [] mDNS support for easier access
+* [ ] Improve subscriptions
+* [ ] Real-Time UI updates
+* [ ] Saving data onto SD card
+* [ ] Sending data via MQTT
+* [ ] Ability to configure Thread Dataset via UI
+* [ ] Indicate subscription status in the UI
+* [ ] mDNS support for easier access
 
 # Thanks
 
