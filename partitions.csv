@@ -5,6 +5,8 @@ nvs,      data, nvs,     0x10000,   0xC000,
 nvs_keys, data, nvs_keys,,          0x1000, encrypted
 otadata,  data, ota,     ,          0x2000
 phy_init, data, phy,     ,          0x1000,
-ota_0,    app,  ota_0,   0x20000,   0x300000,
-ota_1,    app,  ota_1,   0x320000,  0x300000,
-paa_cert, data, spiffs,  ,          0x20000
+ota_0,    app,  ota_0,   0x20000,   0x2C0000,
+ota_1,    app,  ota_1,   0x2E0000,  0x2C0000,
+paa_cert, data, spiffs,  0x5A0000,  0x20000,
+storage,  data, spiffs,  0x5C0000,  0x1C0000,
+config,   data, spiffs,  0x780000,  0x80000
