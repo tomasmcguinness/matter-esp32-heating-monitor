@@ -1,4 +1,13 @@
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Waveshare ESP32-S3-ETH: 16MB flash, octal PSRAM.
+# (These were previously set by hand through menuconfig and only lived in sdkconfig.)
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
 #enable BT
 CONFIG_BT_ENABLED=y
@@ -47,8 +56,45 @@ CONFIG_CHIP_PROJECT_CONFIG="main/matter_project_config.h"
 # Increase console buffer length
 CONFIG_CHIP_SHELL_CMD_LINE_BUF_MAX_LENGTH=512
 
+# Console over the devkit's USB serial/JTAG port
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# WebSocket support in the HTTP server (used by /ws) and room for the SPA's headers
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=512
+
+# Allocate Matter's buffers from PSRAM
+CONFIG_ESP_MATTER_MEM_ALLOC_MODE_EXTERNAL=y
+
+# Fonts used by the e-ink status display
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
 # Disable WiFi network commissioning driver
 CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER=n
 
-# Use 8M flash
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# Ethernet (W5500 over SPI) is the only host transport on this board
+CONFIG_ETH_USE_SPI_ETHERNET=y
+CONFIG_ETH_SPI_ETHERNET_W5500=y
+CONFIG_ENABLE_ETHERNET_TELEMETRY=y
+
+# We are a controller, not a commissionable device: no Network Commissioning cluster
+CONFIG_ETHERNET_NETWORK_COMMISSIONING_DRIVER=n
+
+# Custom CHIP platform layer (external_platform/ESP32_custom), which replaces the
+# internal-EMAC ESPEthernetDriver::Init() with a W5500 one. The root CMakeLists.txt
+# syncs the in-repo copy to $ESP_MATTER_PATH/../platform/ESP32_custom, which is what
+# these GN-relative paths resolve to.
+CONFIG_CHIP_ENABLE_EXTERNAL_PLATFORM=y
+CONFIG_CHIP_EXTERNAL_PLATFORM_DIR="../../../../../platform/ESP32_custom"
+CONFIG_CHIP_EXTERNAL_PLATFORM_INCLUDE_DIR="../../../../.."
+
+# No WiFi on this board. BLE stays enabled: it is still used to commission the
+# Thread temperature sensors (pairing_ble_thread).
+CONFIG_ENABLE_WIFI_STATION=n
+CONFIG_ENABLE_WIFI_TELEMETRY=n
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
+# Use the ESP-IDF mdns component rather than CHIP's minimal mDNS, so that CHIP and
+# the app share a single mDNS stack and heating-monitor.local can be published.
+CONFIG_USE_MINIMAL_MDNS=n

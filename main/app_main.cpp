@@ -33,6 +33,7 @@
 
 #include <esp_matter.h>
 #include <lib/dnssd/Types.h>
+#include <platform/ESP32/NetworkCommissioningDriver.h>
 
 #include "cJSON.h"
 
@@ -60,6 +61,11 @@
 
 static const char *TAG = "app_main";
 
+// Published over mDNS once Ethernet has an address, so the web UI is reachable at
+// http://heating-monitor.local without having to look up the DHCP lease.
+#define MDNS_HOSTNAME "heating-monitor"
+#define MDNS_HTTP_PORT 80
+
 using chip::NodeId;
 using chip::ScopedNodeId;
 using chip::SessionHandle;
@@ -86,14 +92,16 @@ static int ws_socket;
 
 static void ws_async_send(void *arg);
 
-void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data);
+void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data,
+                       const chip::app::StatusIB &status);
 void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path);
 
 #pragma region Command Callbacks
 
 static void process_parts_list_attribute_response(uint64_t node_id,
                                                   const chip::app::ConcreteDataAttributePath &path,
-                                                  chip::TLV::TLVReader *data)
+                                                  chip::TLV::TLVReader *data,
+                                                  const chip::app::StatusIB &status)
 {
     ESP_LOGI(TAG, "Endpoint %u: Descriptor->PartsList (endpoint's list)", path.mEndpointId);
 
@@ -251,9 +259,9 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     }
 }
 
-void node_subscribe_failed_cb(void *ctx)
+void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP_ERROR error)
 {
-    ESP_LOGE(TAG, "Failed to subscribe (context: %p)", ctx);
+    ESP_LOGE(TAG, "Failed to subscribe to node %016llx: %s", peer_id.GetNodeId(), error.AsString());
 
     // Indicate we do not have a subscription.
     //
@@ -262,7 +270,8 @@ void node_subscribe_failed_cb(void *ctx)
 
 static void process_device_type_list_attribute_response(uint64_t node_id,
                                                         const chip::app::ConcreteDataAttributePath &path,
-                                                        chip::TLV::TLVReader *data)
+                                                        chip::TLV::TLVReader *data,
+                                                        const chip::app::StatusIB &status)
 {
     ESP_LOGI(TAG, "Endpoint %u: Descriptor->DeviceTypeList", path.mEndpointId);
     if (!data)
@@ -397,7 +406,8 @@ void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferW
     save_nodes_to_nvs(&g_node_manager);
 }
 
-void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data)
+void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data,
+                       const chip::app::StatusIB &status)
 {
     // This handles all teh attribute updates.
     // It doesn't commit the changes to nvs. That is done by attribute_data_read_done, which is called once all the attributes in the Read command are done.
@@ -409,12 +419,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
-        process_parts_list_attribute_response(remote_node_id, path, data);
+        process_parts_list_attribute_response(remote_node_id, path, data, status);
     }
     else if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::DeviceTypeList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->DeviceTypeList attribute response...");
-        process_device_type_list_attribute_response(remote_node_id, path, data);
+        process_device_type_list_attribute_response(remote_node_id, path, data, status);
     }
     else if (path.mClusterId == FixedLabel::Id && path.mAttributeId == FixedLabel::Attributes::LabelList::Id)
     {
@@ -2806,22 +2816,66 @@ static void start_mqtt_service(void)
     esp_mqtt_client_start(_mqtt_client);
 }
 
+// CHIP owns the primary mDNS hostname (CONFIG_USE_MINIMAL_MDNS=n means we share the
+// ESP-IDF mdns component with it), so publish ours as a delegated hostname rather than
+// calling mdns_hostname_set, which would fight it.
 void start_mdns_service()
 {
-    // initialize mDNS service
-    esp_err_t err = mdns_init();
+    static bool mdns_registered = false;
 
-    if (err)
+    if (mdns_registered)
     {
-        printf("MDNS Init failed: %d\n", err);
         return;
     }
 
-    // set hostname
-    mdns_hostname_set("heating-monitor");
+    esp_err_t err = mdns_init();
 
-    // set default instance
-    mdns_instance_name_set("Heating Monitor");
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "mDNS init failed: %d", err);
+        return;
+    }
+
+    esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+
+    if (eth_netif == NULL)
+    {
+        ESP_LOGE(TAG, "Ethernet netif not found; skipping mDNS registration");
+        return;
+    }
+
+    esp_netif_ip_info_t ip_info;
+
+    if (esp_netif_get_ip_info(eth_netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0)
+    {
+        ESP_LOGW(TAG, "Ethernet netif has no IPv4 address yet; skipping mDNS registration");
+        return;
+    }
+
+    mdns_ip_addr_t addr = {};
+    addr.addr.type = ESP_IPADDR_TYPE_V4;
+    addr.addr.u_addr.ip4 = ip_info.ip;
+    addr.next = NULL;
+
+    err = mdns_delegate_hostname_add(MDNS_HOSTNAME, &addr);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "mdns_delegate_hostname_add failed: %d", err);
+        return;
+    }
+
+    err = mdns_service_add_for_host(NULL, "_http", "_tcp", MDNS_HOSTNAME, MDNS_HTTP_PORT, NULL, 0);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "mdns_service_add_for_host failed: %d", err);
+        return;
+    }
+
+    mdns_registered = true;
+
+    ESP_LOGI(TAG, "mDNS: %s.local -> " IPSTR " with _http._tcp:%d", MDNS_HOSTNAME, IP2STR(&ip_info.ip), MDNS_HTTP_PORT);
 }
 
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
@@ -2835,13 +2889,15 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
         ESP_LOGI(TAG, "kESPSystemEvent");
 
         if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
-            event->Platform.ESPSystemEvent.Id == IP_EVENT_STA_GOT_IP)
+            event->Platform.ESPSystemEvent.Id == IP_EVENT_ETH_GOT_IP)
         {
             if (server == NULL)
             {
                 server = start_webserver();
                 start_mqtt_service();
             }
+
+            start_mdns_service();
         }
         else if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
                  event->Platform.ESPSystemEvent.Id == IP_EVENT_GOT_IP6)
@@ -2868,6 +2924,8 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
 extern "C" void app_main()
 {
+    ESP_LOGI(TAG, "app_main()");
+
     esp_err_t err = ESP_OK;
 
     /* Initialize the ESP NVS layer */
@@ -2878,39 +2936,36 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(err);
 
-    node_manager_init(&g_node_manager);
-    radiator_manager_init(&g_radiator_manager);
-    room_manager_init(&g_room_manager);
-    home_manager_init(&g_home_manager);
-
-    // err = StatusDisplayMgr().Init();
-    // ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "StatusDisplay::Init() failed, err:%d", err));
-
-#if CONFIG_ENABLE_CHIP_SHELL
-    esp_matter::console::diagnostics_register_commands();
-    esp_matter::console::wifi_register_commands();
-    esp_matter::console::factoryreset_register_commands();
-    esp_matter::console::init();
-#endif // CONFIG_ENABLE_CHIP_SHELL
+    // node_manager_init(&g_node_manager);
+    // radiator_manager_init(&g_radiator_manager);
+    // room_manager_init(&g_room_manager);
+    // home_manager_init(&g_home_manager);
 
     /* Matter start */
+
+    ESP_LOGI(TAG, "Starting Matter...");
+
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
 
+    // Bring up the W5500. This is a controller build (CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n),
+    // so there is no Network Commissioning cluster to instantiate the driver for us. It has to
+    // run after esp_matter::start() so that esp_netif_init() has happened and CHIP's IP_EVENT
+    // handler is registered before DHCP completes.
+    CHIP_ERROR eth_err = chip::DeviceLayer::NetworkCommissioning::ESPEthernetDriver::GetInstance().Init(nullptr);
+    ABORT_APP_ON_FAILURE(eth_err == CHIP_NO_ERROR, ESP_LOGE(TAG, "Failed to start Ethernet"));
+
     ESP_LOGI(TAG, "Setup controller client and commissioner...");
 
-    auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
-    controller_instance.set_icd_client_callback(on_icd_checkin_callback, nullptr);
+    // auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+    // controller_instance.set_icd_client_callback(on_icd_checkin_callback, nullptr);
 
-    chip::DeviceLayer::PlatformMgr().LockChipStack();
-    esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
-    esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
-    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-
-    uint32_t num_active_read_handlers = chip::app::InteractionModelEngine::GetInstance()->GetNumActiveReadHandlers(chip::app::ReadHandler::InteractionType::Subscribe);
-    ESP_LOGI(TAG, "There are %u active read handlers", num_active_read_handlers);
+    // chip::DeviceLayer::PlatformMgr().LockChipStack();
+    // esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
+    // esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
+    // chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
 
-    list_registered_icd();
+    //list_registered_icd();
 }

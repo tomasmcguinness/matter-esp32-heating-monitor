@@ -1,3 +1,4 @@
 dependencies:
   espressif/esp_lvgl_port: ^2.7.0
   lvgl/lvgl: ^9.4
+  espressif/mdns: '*'

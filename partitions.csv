@@ -1,12 +1,14 @@
 # Name,   Type, SubType, Offset,  Size, Flags
 # Note: Firmware partition offset needs to be 64K aligned, initial 36K (9 sectors) are reserved for bootloader and partition table
+# 16MB layout. The offsets of nvs, nvs_keys, otadata and phy_init are unchanged from the
+# previous 8MB table so that the stored rooms/radiators configuration survives a reflash.
 esp_secure_cert,  0x3F, ,0xd000,    0x2000, encrypted
 nvs,      data, nvs,     0x10000,   0xC000,
 nvs_keys, data, nvs_keys,,          0x1000, encrypted
 otadata,  data, ota,     ,          0x2000
 phy_init, data, phy,     ,          0x1000,
-ota_0,    app,  ota_0,   0x20000,   0x2C0000,
-ota_1,    app,  ota_1,   0x2E0000,  0x2C0000,
-paa_cert, data, spiffs,  0x5A0000,  0x20000,
-storage,  data, spiffs,  0x5C0000,  0x1C0000,
-config,   data, spiffs,  0x780000,  0x80000
+ota_0,    app,  ota_0,   0x20000,   0x500000,
+ota_1,    app,  ota_1,   0x520000,  0x500000,
+paa_cert, data, spiffs,  0xA20000,  0x20000,
+storage,  data, spiffs,  0xA40000,  0x4C0000,
+config,   data, spiffs,  0xF00000,  0x100000
