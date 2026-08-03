@@ -20,11 +20,6 @@ W5500 wiring (see `external_platform/ESP32_custom/NetworkCommissioningDriver_Eth
 | INT | 10 |
 | RST | 9 |
 
-> [!NOTE]
-> The SSD1681 e-ink status display in `main/status_display.cpp` is wired to the same SPI2 bus on
-> GPIO 10/11/12/13 and is therefore disabled. Re-enabling it on this board means moving the panel
-> to SPI3_HOST first.
-
 ## Building
 
 This project uses `esp-idf` and `esp-matter`, so ensure both of these frameworks are installed. 
@@ -56,24 +51,20 @@ then re-apply the two local changes (the `chip_enable_ethernet` block in `BUILD.
 without that rewrite the copied sources pull in the original headers alongside the custom ones and
 fail with redefinition errors.
 
-Start by ensuing the `html_app` is compiled. This will generate several files and place them in the `html_data` directory.
-
-```
-cp html_app
-npm run build -- --emptyOutDir
-```
-
-Next, you will need to set the Thread Network Dataset in code. This can be found in the `nodes_post_handler` function. 
+You will need to set the Thread Network Dataset in code. This can be found in the `nodes_post_handler` function. 
 
 ```
 char *dataset = "0e080000000000000000000300001935060004001fffc0..."
 ```
 
-Finally, compile the firmware
+Then compile the firmware
 
 ```
 idf.py build
 ```
+
+This also builds the React app (`npm run build` in `html_app/`) and embeds it in the firmware
+binary — there is no separate web-app build step, and an OTA update carries the UI with it.
 
 ## Running
 

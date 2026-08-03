@@ -57,8 +57,6 @@
 
 #include "mdns.h"
 
-#include "status_display.h"
-
 static const char *TAG = "app_main";
 
 // Published over mDNS once Ethernet has an address, so the web UI is reachable at
@@ -2470,80 +2468,59 @@ static esp_err_t icd_counter_delete_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t write_embedded(httpd_req_t *req, const char *content_type, const uint8_t *start, const uint8_t *end)
+{
+    httpd_resp_set_type(req, content_type);
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
+
+    return httpd_resp_send(req, (const char *)start, end - start);
+}
+
 static esp_err_t write_index_html(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve root");
 
-    httpd_resp_set_type(req, "text/html");
+    extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+    extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
-    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
-
-    extern const uint8_t bootstrap_css_start[] asm("_binary_index_html_start");
-    extern const uint8_t bootstrap_css_end[] asm("_binary_index_html_end");
-    const size_t bootcss_size = ((bootstrap_css_end - 1) - bootstrap_css_start);
-    httpd_resp_send(req, (const char *)bootstrap_css_start, bootcss_size);
-
-    return ESP_OK;
+    return write_embedded(req, "text/html", index_html_start, index_html_end);
 }
 
 static esp_err_t write_app_js(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve js");
 
-    httpd_resp_set_type(req, "application/javascript");
-    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
+    extern const uint8_t app_js_start[] asm("_binary_app_js_start");
+    extern const uint8_t app_js_end[] asm("_binary_app_js_end");
 
-    extern const uint8_t js_file_start[] asm("_binary_app_js_start");
-    extern const uint8_t js_file_end[] asm("_binary_app_js_end");
-    const size_t js_file_size = ((js_file_end - 1) - js_file_start);
-    httpd_resp_send(req, (const char *)js_file_start, js_file_size);
-
-    return ESP_OK;
+    return write_embedded(req, "application/javascript", app_js_start, app_js_end);
 }
 
 static esp_err_t write_app_css(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Serve css");
 
-    httpd_resp_set_type(req, "text/css");
-    httpd_resp_set_hdr(req, "Cache-Control", "max-age=604800");
+    extern const uint8_t app_css_start[] asm("_binary_app_css_start");
+    extern const uint8_t app_css_end[] asm("_binary_app_css_end");
 
-    extern const uint8_t css_file_start[] asm("_binary_app_css_start");
-    extern const uint8_t css_file_end[] asm("_binary_app_css_end");
-    const size_t css_file_size = ((css_file_end - 1) - css_file_start);
-    httpd_resp_send(req, (const char *)css_file_start, css_file_size);
-
-    return ESP_OK;
+    return write_embedded(req, "text/css", app_css_start, app_css_end);
 }
 
 static esp_err_t wildcard_get_handler(httpd_req_t *req)
 {
-    const char *filename = req->uri;
-
-    if (!filename)
-    {
-        ESP_LOGE(TAG, "Filename is too long");
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Filename too long");
-        return ESP_OK;
-    }
-
-    if (strcmp(filename, "/app.js") == 0)
+    if (strcmp(req->uri, "/app.js") == 0)
     {
         return write_app_js(req);
     }
-    else if (strcmp(filename, "/app.css") == 0)
+
+    if (strcmp(req->uri, "/app.css") == 0)
     {
         return write_app_css(req);
     }
-    else
-    {
-        return write_index_html(req);
-    }
 
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
-
-    return ESP_OK;
+    // Anything else is either "/" or one of the SPA's client-side routes
+    // (/rooms, /devices, ...), all of which are served by index.html.
+    return write_index_html(req);
 }
 
 static const httpd_uri_t ws_uri = {

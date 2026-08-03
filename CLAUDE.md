@@ -18,22 +18,16 @@ Two environment variables must be set:
 
 ### Full Build Sequence
 
-**Step 1: Build the web app** (from the `html_app/` directory):
-```sh
-cd html_app
-npm run build -- --emptyOutDir
-```
-This outputs `index.html`, `app.css`, and `app.js` into `html_data/`, which are embedded into the firmware binary.
-
-**Step 2: Set the Thread Network Dataset** in `app_main.cpp` inside `nodes_post_handler`:
+**Step 1: Set the Thread Network Dataset** in `app_main.cpp` inside `nodes_post_handler`:
 ```c
 char *dataset = "0e080000000000000000000300001935060004001fffc0..."
 ```
 
-**Step 3: Build the firmware**:
+**Step 2: Build the firmware**:
 ```sh
 idf.py build
 ```
+A custom command in `main/CMakeLists.txt` runs `npm run build` in `html_app/` as part of this, so there is no separate web-app step. The output lands in `html_compiled_app/` and is embedded into the firmware binary via `target_add_binary_data`, so an OTA update carries the UI with it. npm only re-runs when something under `html_app/` has changed.
 
 ### Flash and Monitor
 ```sh
@@ -56,7 +50,7 @@ npm run lint     # ESLint
 The project has two distinct parts that must both be built:
 
 1. **ESP-IDF Firmware** (`main/`) — C/C++ Matter controller firmware
-2. **Web App** (`html_app/`) — React/TypeScript SPA, compiled and embedded as static files into the firmware via `EMBED_FILES` in `main/CMakeLists.txt`
+2. **Web App** (`html_app/`) — React/TypeScript SPA, compiled to `html_compiled_app/` and embedded into the firmware binary via `target_add_binary_data` in `main/CMakeLists.txt`
 
 ### Firmware (`main/`)
 
@@ -92,7 +86,6 @@ The root `CMakeLists.txt` copies the tree to `$ESP_MATTER_PATH/../platform/ESP32
 Because this build sets `CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n`, there is no Network Commissioning cluster to instantiate the driver, so `app_main()` calls `ESPEthernetDriver::GetInstance().Init(nullptr)` explicitly, after `esp_matter::start()`.
 
 **Other components:**
-- `status_display.cpp` — LVGL-based SSD1681 e-ink display showing outdoor temperature. **Disabled**: it claims SPI2 / GPIO 10-13, which collide with the W5500.
 - `commands/` — Matter pairing and identify command wrappers
 - `utilities/` — URL path token parsing (from the `path_variable_handlers` pattern)
 
@@ -112,7 +105,9 @@ React 19 + TypeScript, built with Vite. Uses:
 
 Routes mirror the REST API structure: `/rooms`, `/rooms/:roomId`, `/radiators`, `/radiators/:radiatorId`, `/devices`, `/devices/:nodeId`, etc.
 
-The built output (`html_data/index.html`, `app.css`, `app.js`) is embedded directly into the firmware binary — no separate file system is used.
+The built output (`html_compiled_app/index.html`, `app.css`, `app.js`) is embedded directly into the firmware binary — no separate file system is used — and served from the `_binary_*_start`/`_binary_*_end` symbols by `wildcard_get_handler` in `app_main.cpp`, which falls back to `index.html` for the SPA's client-side routes.
+
+Because the files are listed explicitly in `main/CMakeLists.txt`, Vite must keep emitting exactly `index.html`, `app.css` and `app.js` (no content hashing — see `rollupOptions.output` in `html_app/vite.config.ts`). Adding a fourth asset means adding it to `WEB_APP_FILES` and giving it a handler.
 
 ### Key Configuration Files
 

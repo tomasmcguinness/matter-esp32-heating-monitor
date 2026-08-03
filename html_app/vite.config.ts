@@ -7,7 +7,7 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        dir: '../html_data',
+        dir: '../html_compiled_app',
         entryFileNames: 'app.js',
         assetFileNames: 'app.css',
         chunkFileNames: "chunk.js",

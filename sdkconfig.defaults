@@ -66,9 +66,6 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=512
 # Allocate Matter's buffers from PSRAM
 CONFIG_ESP_MATTER_MEM_ALLOC_MODE_EXTERNAL=y
 
-# Fonts used by the e-ink status display
-CONFIG_LV_FONT_MONTSERRAT_24=y
-CONFIG_LV_FONT_MONTSERRAT_48=y
 
 # Disable WiFi network commissioning driver
 CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER=n

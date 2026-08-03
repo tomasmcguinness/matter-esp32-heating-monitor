@@ -1,5 +1,5 @@
 /build
 /managed_components
 /.vscode
-/html_data
+/html_compiled_app
 /.cache
