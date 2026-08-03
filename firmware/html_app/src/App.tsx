@@ -20,6 +20,7 @@ import EditRoom from "./EditRoom.tsx";
 
 import { WebSocketProvider } from './WSContext.jsx'
 import ThreadNetwork from "./ThreadNetwork.tsx";
+import Settings from "./Settings.tsx";
 
 function App() {
 
@@ -77,6 +78,8 @@ function App() {
             <Route path="/devices/:nodeId/edit" element={<EditDevice />} />
 
             <Route path="/threadnetwork" element={<ThreadNetwork />} />
+
+            <Route path="/settings" element={<Settings />} />
 
           </Routes>
         </div>

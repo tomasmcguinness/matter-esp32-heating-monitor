@@ -1,0 +1,81 @@
+import Foundation
+import MatterSupport
+import os
+
+/// Handles the commissioning half of the system Matter setup flow.
+///
+/// iOS launches this out of process when the user finishes picking a device in the sheet that
+/// `MatterAddDeviceRequest.perform()` presented. By then the OS has already scanned the QR
+/// code (or taken a manual pairing code) and it hands us the decoded onboarding payload.
+///
+/// We are not the Matter controller -- the Heating Monitor is. All this does is forward the
+/// payload to the hub's `POST /api/nodes`, which pairs the device onto the hub's fabric over
+/// BLE and Thread.
+final class RequestHandler: MatterAddDeviceExtensionRequestHandler {
+
+    private let logger = Logger(subsystem: "com.tomasmcguinness.heating-monitor-companion",
+                                category: "Commissioning")
+
+    override func commissionDevice(in home: MatterAddDeviceRequest.Home?,
+                                   onboardingPayload: String,
+                                   commissioningID: UUID) async throws {
+        logger.info("Commissioning \(commissioningID, privacy: .public)")
+
+        let client = try HeatingMonitorClient.forPairedHub()
+
+        do {
+            let nodeId = try await client.commission(setupCode: onboardingPayload)
+
+            // The app has no other way to learn this: perform() returns nothing, and the
+            // extension can't call back into the app. It reads this out of the App Group to
+            // work out which node to wait for.
+            HubStore.lastCommissionedNodeId = nodeId
+
+            logger.info("Heating Monitor accepted the payload; reserved node \(nodeId, privacy: .public)")
+        } catch {
+            // Let this propagate so the system sheet reports a failure rather than claiming
+            // the device was added.
+            logger.error("Commissioning failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+    }
+
+    /// The Heating Monitor supplies the Thread dataset itself when it pairs, so there is
+    /// nothing for us to choose here.
+    override func selectThreadNetwork(from threadScanResults: [MatterAddDeviceExtensionRequestHandler.ThreadScanResult]) async throws -> MatterAddDeviceExtensionRequestHandler.ThreadNetworkAssociation {
+        .defaultSystemNetwork
+    }
+
+    /// This is an Ethernet and Thread system; Wi-Fi devices aren't expected, but the system
+    /// still asks.
+    override func selectWiFiNetwork(from wifiScanResults: [MatterAddDeviceExtensionRequestHandler.WiFiScanResult]) async throws -> MatterAddDeviceExtensionRequestHandler.WiFiNetworkAssociation {
+        .defaultSystemNetwork
+    }
+
+    /// The hub bypasses device attestation on its side, so there is nothing to check here.
+    override func validateDeviceCredential(_ deviceCredential: MatterAddDeviceExtensionRequestHandler.DeviceCredential) async throws {
+    }
+
+    /// The Heating Monitor organises devices into rooms of its own, configured in the web UI,
+    /// so we don't offer a room picker during setup.
+    override func rooms(in home: MatterAddDeviceRequest.Home?) async -> [MatterAddDeviceRequest.Room] {
+        []
+    }
+
+    /// Called with the name the user typed in the system sheet. Push it to the hub so the
+    /// device shows up with the same name in the app and the web UI.
+    override func configureDevice(named name: String, in room: MatterAddDeviceRequest.Room?) async {
+        guard let nodeId = HubStore.lastCommissionedNodeId else {
+            logger.notice("No node id recorded; skipping the rename to \(name, privacy: .public)")
+            return
+        }
+
+        do {
+            try await HeatingMonitorClient.forPairedHub().rename(nodeId: nodeId, to: name)
+        } catch {
+            // Naming is cosmetic -- the device is already commissioned, so don't fail setup
+            // over it.
+            logger.error("Couldn't rename node \(nodeId): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+}

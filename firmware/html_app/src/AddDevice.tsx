@@ -33,8 +33,9 @@ function AddDevice() {
           </select>
         </div>
         <div className="mb-3">
-          <label htmlFor="setupCode" className="form-label">Manual Setup Code <span style={{ 'color': 'red' }}>*</span></label>
+          <label htmlFor="setupCode" className="form-label">Setup Code <span style={{ 'color': 'red' }}>*</span></label>
           <input type="text" name="setupCode" className="form-control" id="setupCode" placeholder="1111-111-1111" required={true} value={setupCode || ''} onChange={(e) => setSetupCode(e.target.value)} />
+          <div className="form-text">An 11-digit manual pairing code, or the <code>MT:</code> payload from the device's QR code.</div>
         </div>
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Device</button>
         <NavLink className="btn btn-default" to="/devices">Back</NavLink>

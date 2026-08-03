@@ -72,7 +72,7 @@ The project has two distinct parts that must both be built:
 
 All manager state is persisted to **NVS (Non-Volatile Storage)** via `save_*_to_nvs` / `load_*_from_nvs` functions.
 
-**CHIP external platform (`external_platform/ESP32_custom/`):**
+**CHIP external platform (`ESP32_custom/`):**
 
 The ESP32-S3 has no internal Ethernet MAC, but connectedhomeip's `ESPEthernetDriver::Init()` is written for one, so it does not compile for this target (espressif/esp-matter#1785). The repo therefore carries its own copy of the CHIP ESP32 platform layer with two local changes:
 

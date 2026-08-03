@@ -1,0 +1,551 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		59D444DA77E7491465A1125C /* HeatingMonitorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7D576DC25EE2E4D5B6639F3 /* HeatingMonitorApp.swift */; };
+		7BB740D6624AFB0E9A05EFBA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E00AA7FA7B3AAADD4C17B60 /* ContentView.swift */; };
+		6165F5B70D78D03C033E8B24 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E516AB6306B2814D0ADDFF3 /* QRScannerView.swift */; };
+		8E1B9166DCF88B65DF4260DE /* PairHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28FB3CF5BA3AF011FD9C306D /* PairHubView.swift */; };
+		0914B7646780EF80900FEB12 /* DevicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFEE4E0EBE49D970B6CFE093 /* DevicesView.swift */; };
+		FE8A25DEE401EBB00E1A3268 /* DevicesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2384CC4A9C3F85D4D8C51600 /* DevicesModel.swift */; };
+		468B77AD56C5A07FDC387229 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86F020E92F1873C2973C483D /* DeviceDetailView.swift */; };
+		7A0F6E1227E3CC9852558401 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D6D198F8136EEC5C7CD1FF /* SettingsView.swift */; };
+		1626BD74F7D1E5C72BF6C818 /* PairedHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F01E676C22A63325DC7ADE7 /* PairedHub.swift */; };
+		E0CAE9FF6FA27ACBB44CA2F6 /* HubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F320AA8E632BC492D987642 /* HubStore.swift */; };
+		24C64966B721E90487E05CDA /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36735F7058E40F9FE3690AC4 /* Models.swift */; };
+		06A145602F24F052E3743F36 /* HeatingMonitorClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C278B909FD860F7079F9E0A /* HeatingMonitorClient.swift */; };
+		F0F9FC20FD414AE88AD7DE73 /* Assets.xcassets in Sources */ = {isa = PBXBuildFile; fileRef = BD0115EC1FB3ADDF2EDE4C3C /* Assets.xcassets */; };
+		9CA14F2B638726630CCAF50C /* RequestHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B619794075EDA0B1F264B3D /* RequestHandler.swift */; };
+		CE84A8A7A292B61A0CCD66B8 /* PairedHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F01E676C22A63325DC7ADE7 /* PairedHub.swift */; };
+		6DB1EB682C2BF09318197E62 /* HubStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F320AA8E632BC492D987642 /* HubStore.swift */; };
+		8B6C9E846887576A3E2CB96F /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36735F7058E40F9FE3690AC4 /* Models.swift */; };
+		A4F7F1ED96271D0369EEA9DB /* HeatingMonitorClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C278B909FD860F7079F9E0A /* HeatingMonitorClient.swift */; };
+		3623FFB2D0494331C8C0B6F7 /* MatterExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A787D551E8FFE2979D4DA1C8 /* MatterExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4490ECE51E5A4482D0728AC7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6DEB2842FC5C67F4B20B9A6B;
+			remoteInfo = MatterExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		5AA2D1AFB5F701340777381F /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				3623FFB2D0494331C8C0B6F7 /* MatterExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		D7D576DC25EE2E4D5B6639F3 /* HeatingMonitorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HeatingMonitorApp.swift"; sourceTree = "<group>"; };
+		6E00AA7FA7B3AAADD4C17B60 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ContentView.swift"; sourceTree = "<group>"; };
+		1E516AB6306B2814D0ADDFF3 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "QRScannerView.swift"; sourceTree = "<group>"; };
+		28FB3CF5BA3AF011FD9C306D /* PairHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PairHubView.swift"; sourceTree = "<group>"; };
+		CFEE4E0EBE49D970B6CFE093 /* DevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DevicesView.swift"; sourceTree = "<group>"; };
+		2384CC4A9C3F85D4D8C51600 /* DevicesModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DevicesModel.swift"; sourceTree = "<group>"; };
+		86F020E92F1873C2973C483D /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DeviceDetailView.swift"; sourceTree = "<group>"; };
+		60D6D198F8136EEC5C7CD1FF /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SettingsView.swift"; sourceTree = "<group>"; };
+		2F01E676C22A63325DC7ADE7 /* PairedHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PairedHub.swift"; sourceTree = "<group>"; };
+		0F320AA8E632BC492D987642 /* HubStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HubStore.swift"; sourceTree = "<group>"; };
+		36735F7058E40F9FE3690AC4 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Models.swift"; sourceTree = "<group>"; };
+		5C278B909FD860F7079F9E0A /* HeatingMonitorClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HeatingMonitorClient.swift"; sourceTree = "<group>"; };
+		9B619794075EDA0B1F264B3D /* RequestHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RequestHandler.swift"; sourceTree = "<group>"; };
+		BD0115EC1FB3ADDF2EDE4C3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Assets.xcassets"; sourceTree = "<group>"; };
+		BA925F6902B6B2B9B645EC4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info.plist"; sourceTree = "<group>"; };
+		BAA15506F606E5E5AD63B36D /* HeatingMonitor.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "HeatingMonitor.entitlements"; sourceTree = "<group>"; };
+		308CAA5453796F67814032E0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info.plist"; sourceTree = "<group>"; };
+		C78B59E4212A522EDC9051D0 /* MatterExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "MatterExtension.entitlements"; sourceTree = "<group>"; };
+		411BE882D95609E54742B170 /* HeatingMonitor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "HeatingMonitor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A787D551E8FFE2979D4DA1C8 /* MatterExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "MatterExtension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		21B19BC5298B9395DC6F99A7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		02CC5443A8BEB979043F821D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E58BB2EA1C8C3C7AC7E2C019 = {
+			isa = PBXGroup;
+			children = (
+				22F9ADE7CCC5963B8C25F386 /* HeatingMonitor */,
+				5BC8B94E43549F3B444D9C43 /* Shared */,
+				F085A67AE468B5E2305A6186 /* MatterExtension */,
+				31A5E41A9BD04E385DB196E5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		31A5E41A9BD04E385DB196E5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				411BE882D95609E54742B170 /* HeatingMonitor.app */,
+				A787D551E8FFE2979D4DA1C8 /* MatterExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		22F9ADE7CCC5963B8C25F386 /* HeatingMonitor */ = {
+			isa = PBXGroup;
+			children = (
+				BC9AEF5F5D64868925C7BF2F /* Pairing */,
+				EEAA95D65DCCFD732675D3DC /* Devices */,
+				330C37257433D607C988CA10 /* Settings */,
+				D7D576DC25EE2E4D5B6639F3 /* HeatingMonitorApp.swift */,
+				6E00AA7FA7B3AAADD4C17B60 /* ContentView.swift */,
+				BD0115EC1FB3ADDF2EDE4C3C /* Assets.xcassets */,
+				BA925F6902B6B2B9B645EC4F /* Info.plist */,
+				BAA15506F606E5E5AD63B36D /* HeatingMonitor.entitlements */,
+			);
+			path = "HeatingMonitor";
+			sourceTree = "<group>";
+		};
+		5BC8B94E43549F3B444D9C43 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				2F01E676C22A63325DC7ADE7 /* PairedHub.swift */,
+				0F320AA8E632BC492D987642 /* HubStore.swift */,
+				36735F7058E40F9FE3690AC4 /* Models.swift */,
+				5C278B909FD860F7079F9E0A /* HeatingMonitorClient.swift */,
+			);
+			path = "Shared";
+			sourceTree = "<group>";
+		};
+		F085A67AE468B5E2305A6186 /* MatterExtension */ = {
+			isa = PBXGroup;
+			children = (
+				9B619794075EDA0B1F264B3D /* RequestHandler.swift */,
+				308CAA5453796F67814032E0 /* Info.plist */,
+				C78B59E4212A522EDC9051D0 /* MatterExtension.entitlements */,
+			);
+			path = "MatterExtension";
+			sourceTree = "<group>";
+		};
+		BC9AEF5F5D64868925C7BF2F /* Pairing */ = {
+			isa = PBXGroup;
+			children = (
+				1E516AB6306B2814D0ADDFF3 /* QRScannerView.swift */,
+				28FB3CF5BA3AF011FD9C306D /* PairHubView.swift */,
+			);
+			path = "Pairing";
+			sourceTree = "<group>";
+		};
+		EEAA95D65DCCFD732675D3DC /* Devices */ = {
+			isa = PBXGroup;
+			children = (
+				CFEE4E0EBE49D970B6CFE093 /* DevicesView.swift */,
+				2384CC4A9C3F85D4D8C51600 /* DevicesModel.swift */,
+				86F020E92F1873C2973C483D /* DeviceDetailView.swift */,
+			);
+			path = "Devices";
+			sourceTree = "<group>";
+		};
+		330C37257433D607C988CA10 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				60D6D198F8136EEC5C7CD1FF /* SettingsView.swift */,
+			);
+			path = "Settings";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3F01D0CA7F01A32A37312E6E /* HeatingMonitor */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5FD631371568868998A009E1 /* Build configuration list for PBXNativeTarget "HeatingMonitor" */;
+			buildPhases = (
+				8ADC0699999DC22726FA3A86 /* Sources */,
+				21B19BC5298B9395DC6F99A7 /* Frameworks */,
+				D7BFD69C656A43C6B649B833 /* Resources */,
+				5AA2D1AFB5F701340777381F /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A9DA09EE6C8853C79BCB5E83 /* PBXTargetDependency */,
+			);
+			name = HeatingMonitor;
+			productName = HeatingMonitor;
+			productReference = 411BE882D95609E54742B170 /* HeatingMonitor.app */;
+			productType = "com.apple.product-type.application";
+		};
+		6DEB2842FC5C67F4B20B9A6B /* MatterExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9674ACF071618186944217BD /* Build configuration list for PBXNativeTarget "MatterExtension" */;
+			buildPhases = (
+				E376BD6BAF196FA43F211EF7 /* Sources */,
+				02CC5443A8BEB979043F821D /* Frameworks */,
+				27CD618AAB1C5BE3F4A149A3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MatterExtension;
+			productName = MatterExtension;
+			productReference = A787D551E8FFE2979D4DA1C8 /* MatterExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		98F54143AB4E86B28C3AFEE0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					3F01D0CA7F01A32A37312E6E = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					6DEB2842FC5C67F4B20B9A6B = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = FB6044DE09BE292EA687ACFC /* Build configuration list for PBXProject "HeatingMonitor" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E58BB2EA1C8C3C7AC7E2C019;
+			productRefGroup = 31A5E41A9BD04E385DB196E5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				3F01D0CA7F01A32A37312E6E /* HeatingMonitor */,
+				6DEB2842FC5C67F4B20B9A6B /* MatterExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D7BFD69C656A43C6B649B833 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F0F9FC20FD414AE88AD7DE73 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		27CD618AAB1C5BE3F4A149A3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8ADC0699999DC22726FA3A86 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				59D444DA77E7491465A1125C /* HeatingMonitorApp.swift in Sources */,
+				7BB740D6624AFB0E9A05EFBA /* ContentView.swift in Sources */,
+				6165F5B70D78D03C033E8B24 /* QRScannerView.swift in Sources */,
+				8E1B9166DCF88B65DF4260DE /* PairHubView.swift in Sources */,
+				0914B7646780EF80900FEB12 /* DevicesView.swift in Sources */,
+				FE8A25DEE401EBB00E1A3268 /* DevicesModel.swift in Sources */,
+				468B77AD56C5A07FDC387229 /* DeviceDetailView.swift in Sources */,
+				7A0F6E1227E3CC9852558401 /* SettingsView.swift in Sources */,
+				1626BD74F7D1E5C72BF6C818 /* PairedHub.swift in Sources */,
+				E0CAE9FF6FA27ACBB44CA2F6 /* HubStore.swift in Sources */,
+				24C64966B721E90487E05CDA /* Models.swift in Sources */,
+				06A145602F24F052E3743F36 /* HeatingMonitorClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E376BD6BAF196FA43F211EF7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9CA14F2B638726630CCAF50C /* RequestHandler.swift in Sources */,
+				CE84A8A7A292B61A0CCD66B8 /* PairedHub.swift in Sources */,
+				6DB1EB682C2BF09318197E62 /* HubStore.swift in Sources */,
+				8B6C9E846887576A3E2CB96F /* Models.swift in Sources */,
+				A4F7F1ED96271D0369EEA9DB /* HeatingMonitorClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A9DA09EE6C8853C79BCB5E83 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6DEB2842FC5C67F4B20B9A6B /* MatterExtension */;
+			targetProxy = 4490ECE51E5A4482D0728AC7 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		282F8BED7AC8E61EF9F4311F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BAA844323E141A79DF10B0D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		59F0D95C9BA6C018C5166430 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = HeatingMonitor/HeatingMonitor.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R9KK4QW233;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = HeatingMonitor/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Heating Monitor";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomasmcguinness.heating-monitor-companion;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		910FCB37584E2B493F5765ED /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = HeatingMonitor/HeatingMonitor.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R9KK4QW233;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = HeatingMonitor/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Heating Monitor";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomasmcguinness.heating-monitor-companion;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		9CEE407476392C30E8E319DD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = MatterExtension/MatterExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R9KK4QW233;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MatterExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Heating Monitor";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomasmcguinness.heating-monitor-companion.MatterExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		3F17ED537552BD83709B46DA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = MatterExtension/MatterExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = R9KK4QW233;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MatterExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Heating Monitor";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomasmcguinness.heating-monitor-companion.MatterExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FB6044DE09BE292EA687ACFC /* Build configuration list for PBXProject "HeatingMonitor" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				282F8BED7AC8E61EF9F4311F /* Debug */,
+				BAA844323E141A79DF10B0D7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5FD631371568868998A009E1 /* Build configuration list for PBXNativeTarget "HeatingMonitor" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				59F0D95C9BA6C018C5166430 /* Debug */,
+				910FCB37584E2B493F5765ED /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9674ACF071618186944217BD /* Build configuration list for PBXNativeTarget "MatterExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9CEE407476392C30E8E319DD /* Debug */,
+				3F17ED537552BD83709B46DA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+}

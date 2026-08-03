@@ -44,12 +44,14 @@
 #include "managers/radiator_manager.h"
 #include "managers/room_manager.h"
 #include "managers/home_manager.h"
+#include "managers/pairing_manager.h"
 #include "commands/pairing_command.h"
 #include "commands/identify_command.h"
 
 #include "app/InteractionModelEngine.h"
 
 #include <setup_payload/ManualSetupPayloadParser.h>
+#include <setup_payload/QRCodeSetupPayloadParser.h>
 
 #include "utilities/TokenIterator.h"
 #include "utilities/UrlTokenBindings.h"
@@ -81,6 +83,7 @@ node_manager_t g_node_manager = {0};
 radiator_manager_t g_radiator_manager = {0};
 room_manager_t g_room_manager = {0};
 home_manager_t g_home_manager = {0};
+pairing_manager_t g_pairing_manager = {0};
 
 esp_mqtt_client_handle_t _mqtt_client;
 static bool is_mqtt_connected = false;
@@ -90,6 +93,7 @@ static httpd_handle_t server;
 static int ws_socket;
 
 static void ws_async_send(void *arg);
+static void log_client_token(httpd_req_t *req, const char *what);
 
 void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data,
                        const chip::app::StatusIB &status);
@@ -963,9 +967,21 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "Will use %llu as node ID", node_id);
 
+    log_client_token(req, "POST /api/nodes");
+
     /* Read the data from the request into a buffer */
-    char content[req->content_len];
-    esp_err_t err = httpd_req_recv(req, content, req->content_len);
+    char content[req->content_len + 1];
+    int received = httpd_req_recv(req, content, req->content_len);
+
+    if (received <= 0)
+    {
+        ESP_LOGE(TAG, "Failed to read the request body");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Could not read request body", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    content[received] = '\0';
 
     cJSON *root = cJSON_Parse(content);
 
@@ -979,6 +995,15 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     const cJSON *inUseJSON = cJSON_GetObjectItemCaseSensitive(root, "inUse");
     const cJSON *setupCodeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
+
+    if (!cJSON_IsString(setupCodeJSON) || setupCodeJSON->valuestring == NULL)
+    {
+        ESP_LOGE(TAG, "Request is missing a setupCode");
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "setupCode is required", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     ESP_LOGI(TAG, "Setup Code: %s", setupCodeJSON->valuestring);
 
@@ -1001,13 +1026,31 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         ESP_LOGI(TAG, "Using BLE discovery");
 
         SetupPayload payload;
-        ManualSetupPayloadParser(setupCode).populatePayload(payload);
+
+        // The web UI sends an 11-digit manual pairing code; the iOS companion app sends the
+        // "MT:" QR payload it gets back from MatterSupport. They need different parsers.
+        CHIP_ERROR parse_err = strncmp(setupCode, "MT:", 3) == 0
+                                   ? QRCodeSetupPayloadParser(setupCode).populatePayload(payload)
+                                   : ManualSetupPayloadParser(setupCode).populatePayload(payload);
+
+        if (parse_err != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Could not parse the setup code: %" CHIP_ERROR_FORMAT, parse_err.Format());
+            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "Unrecognised setup code", HTTPD_RESP_USE_STRLEN);
+            return ESP_ERR_INVALID_ARG;
+        }
 
         uint32_t pincode = payload.setUpPINCode;
 
-        // TODO Figure out this whole GetLongValue GetShortValue mess.
-        // uint16_t discriminator = payload.discriminator.GetLongValue();
-        uint16_t discriminator = 3840;
+        // A manual pairing code only carries the top 4 bits of the discriminator, so there is
+        // nothing useful to derive from it and we fall back to the default. A QR payload
+        // carries all 12 bits, which is what lets us pair with a device that isn't on 3840.
+        uint16_t discriminator = payload.discriminator.IsShortDiscriminator()
+                                     ? 3840
+                                     : payload.discriminator.GetLongValue();
 
         ESP_LOGI(TAG, "pincode: %lu", pincode);
         ESP_LOGI(TAG, "discriminator: %u", discriminator);
@@ -1024,6 +1067,11 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
         if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
         {
+            ESP_LOGE(TAG, "Could not decode the Thread dataset");
+            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_send(req, "Invalid Thread dataset", HTTPD_RESP_USE_STRLEN);
             return ESP_ERR_INVALID_ARG;
         }
 
@@ -1031,10 +1079,21 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     }
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
-    // This process is asynchronous, so we return 202 Accepted
-    //
+    cJSON_Delete(root);
+
+    // Commissioning runs asynchronously, so all we can hand back is the node id we reserved
+    // for it. The client polls GET /api/nodes to find out whether it actually turned up.
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddNumberToObject(response, "nodeId", node_id);
+
+    httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "202 Accepted");
-    httpd_resp_send(req, "Commissioning Started", 21);
+
+    char *json = cJSON_PrintUnformatted(response);
+    httpd_resp_sendstr(req, json);
+
+    cJSON_free(json);
+    cJSON_Delete(response);
 
     return ESP_OK;
 }
@@ -1200,6 +1259,8 @@ static esp_err_t node_get_handler(httpd_req_t *req)
 static esp_err_t node_delete_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Unpairing node...");
+
+    log_client_token(req, "DELETE /api/nodes");
 
     char templatePath[] = "/api/nodes/:nodeId";
     auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
@@ -2079,6 +2140,88 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// Reads the bearer token off the request and reports whether it matches the one this device
+// issued. Nothing is rejected yet -- the embedded web UI has no token, so enforcing this
+// would lock the browser out. Logging it lets us confirm the companion app is sending the
+// right credential before turning enforcement on in a later change.
+static void log_client_token(httpd_req_t *req, const char *what)
+{
+    size_t header_len = httpd_req_get_hdr_value_len(req, "Authorization");
+
+    if (header_len == 0)
+    {
+        ESP_LOGI(TAG, "%s: no Authorization header", what);
+        return;
+    }
+
+    char header[header_len + 1];
+
+    if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "%s: could not read the Authorization header", what);
+        return;
+    }
+
+    const char *presented = header;
+
+    if (strncasecmp(presented, "Bearer ", 7) == 0)
+    {
+        presented += 7;
+    }
+
+    if (pairing_token_matches(&g_pairing_manager, presented))
+    {
+        ESP_LOGI(TAG, "%s: pairing token accepted", what);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "%s: pairing token did NOT match (allowing anyway)", what);
+    }
+}
+
+// Everything the companion app needs to find and talk to this device. The web UI renders
+// this verbatim as a QR code on the Settings page, and the app scans it to pair.
+static esp_err_t info_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting device info...");
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddNumberToObject(root, "v", 1);
+    cJSON_AddStringToObject(root, "name", "Heating Monitor");
+    cJSON_AddStringToObject(root, "host", MDNS_HOSTNAME ".local");
+    cJSON_AddStringToObject(root, "id", pairing_get_device_id(&g_pairing_manager));
+    cJSON_AddStringToObject(root, "token", pairing_get_token(&g_pairing_manager));
+
+    // mDNS on this board is an IPv4 delegated hostname and resolution is not always quick
+    // off a phone, so hand out the raw address as a fallback the app can fall back to.
+    esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+    esp_netif_ip_info_t ip_info;
+
+    if (eth_netif != NULL && esp_netif_get_ip_info(eth_netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0)
+    {
+        char ip[16];
+        snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ip_info.ip));
+        cJSON_AddStringToObject(root, "ip", ip);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "ip");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_status(req, "200 OK");
+
+    char *json = cJSON_PrintUnformatted(root);
+    httpd_resp_sendstr(req, json);
+
+    cJSON_free(json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
 static esp_err_t home_get_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Getting home...");
@@ -2353,6 +2496,12 @@ httpd_handle_t start_webserver(void)
 
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
+    const httpd_uri_t info_get_uri = {
+        .uri = "/api/info",
+        .method = HTTP_GET,
+        .handler = info_get_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t home_get_uri = {
         .uri = "/api/home",
         .method = HTTP_GET,
@@ -2492,6 +2641,7 @@ httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Registering URI handlers");
 
         httpd_register_uri_handler(server, &ws_uri);
+        httpd_register_uri_handler(server, &info_get_uri);
         httpd_register_uri_handler(server, &home_get_uri);
         httpd_register_uri_handler(server, &home_put_uri);
         httpd_register_uri_handler(server, &nodes_post_uri);
@@ -2722,10 +2872,11 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(err);
 
-    // node_manager_init(&g_node_manager);
-    // radiator_manager_init(&g_radiator_manager);
-    // room_manager_init(&g_room_manager);
-    // home_manager_init(&g_home_manager);
+    node_manager_init(&g_node_manager);
+    radiator_manager_init(&g_radiator_manager);
+    room_manager_init(&g_room_manager);
+    home_manager_init(&g_home_manager);
+    pairing_manager_init(&g_pairing_manager);
 
     /* Matter start */
 
@@ -2743,13 +2894,13 @@ extern "C" void app_main()
 
     ESP_LOGI(TAG, "Setup controller client and commissioner...");
 
-    // auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
-    // controller_instance.set_icd_client_callback(on_icd_checkin_callback, nullptr);
+    auto &controller_instance = esp_matter::controller::matter_controller_client::get_instance();
+    controller_instance.set_icd_client_callback(on_icd_checkin_callback, nullptr);
 
-    // chip::DeviceLayer::PlatformMgr().LockChipStack();
-    // esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
-    // esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
-    // chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
+    esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     // Starts the queue and the worker that drains it. Everything that wants a subscription calls
     // enqueue_subscription(); the worker serialises them and works out the attribute paths from
