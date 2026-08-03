@@ -4,6 +4,10 @@
 
 #pragma once
 
+// Matter device type identifiers we care about when deciding what to subscribe to.
+#define DEVICE_TYPE_TEMPERATURE_SENSOR 770
+#define DEVICE_TYPE_FLOW_SENSOR 774
+
 typedef struct matter_endpoint
 {
     uint16_t endpoint_id;
@@ -62,8 +66,6 @@ typedef struct
 
 void node_manager_init(node_manager_t *manager);
 
-void subscribe_all_temperature_measurements(node_manager_t *manager);
-
 uint64_t get_next_node_id(node_manager_t *manager);
 
 matter_node_t *find_node(node_manager_t *manager, uint64_t node_id);
@@ -77,6 +79,7 @@ esp_err_t set_node_ext_address(matter_node_t *node, uint64_t ext_address);
 
 endpoint_entry_t *add_endpoint(matter_node_t *node, uint16_t endpoint_id);
 esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t device_type_id);
+bool node_has_device_type(const matter_node_t *node, uint32_t device_type_id);
 esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name);
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source);
 esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value);

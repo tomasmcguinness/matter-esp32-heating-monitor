@@ -39,6 +39,7 @@
 
 #include "app_main.h"
 #include "managers/node_manager.h"
+#include "managers/subscription_manager.h"
 #include "managers/calculations_manager.h"
 #include "managers/radiator_manager.h"
 #include "managers/room_manager.h"
@@ -200,70 +201,34 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     //
     if (create_new_subscription)
     {
-        ESP_LOGI(TAG, "Re-Subscribing to node 0x%016llX...", remote_node_id);
-
-        mark_node_subscription_pending(&g_node_manager, remote_node_id);
-        auto *args = new std::tuple<uint64_t>(remote_node_id);
-
-        // We need to re-subscribe!
-        //
-        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                      {
-            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
-
-            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(2);
-
-            if (!attr_paths.Get())
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                delete args;
-                return;
-            }
-
-            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-            attr_paths[1] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
-
-            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-            event_paths.Alloc(0);
-
-            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
-                std::move(attr_paths),
-                std::move(event_paths),
-                0,
-                60,
-                false, // <--- Keep Subscriptions
-                attribute_data_cb,
-                nullptr,
-                node_subscription_established_cb,
-                node_subscription_terminated_cb,
-                node_subscribe_failed_cb,
-                false);
-
-            delete args;
-            if (!cmd)
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-            }
-            else
-            {
-                esp_err_t err = cmd->send_command();
-                if (err != ESP_OK)
-                {
-                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                }
-            } },
-                                                      reinterpret_cast<intptr_t>(args));
+        enqueue_subscription(remote_node_id);
     }
 }
 
 void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP_ERROR error)
 {
-    ESP_LOGE(TAG, "Failed to subscribe to node %016llx: %s", peer_id.GetNodeId(), error.AsString());
-
-    // Indicate we do not have a subscription.
+    // ctx is the subscribe_command, which esp-matter deletes as soon as we return. The node we
+    // failed to reach is identified by peer_id.
     //
-    // mark_node_has_no_subscription(&g_node_manager, remote_node_id);
+    uint64_t node_id = peer_id.GetNodeId();
+
+    ESP_LOGE(TAG, "Failed to subscribe to node 0x%016llX: %s", node_id, error.AsString());
+
+    // Clear both has_subscription and is_subscription_pending, otherwise the node looks like it
+    // still has an attempt in flight and nothing will ever retry it.
+    //
+    bool create_new_subscription = false;
+
+    mark_node_has_no_subscription(&g_node_manager, node_id, 0, &create_new_subscription);
+
+    matter_node_t *node = find_node(&g_node_manager, node_id);
+
+    // A sleepy device is not worth chasing - it will get a subscription when it next checks in.
+    //
+    if (node && !node->is_icd)
+    {
+        enqueue_subscription(node_id);
+    }
 }
 
 static void process_device_type_list_attribute_response(uint64_t node_id,
@@ -288,9 +253,6 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     matter_node_t *node = find_node(&g_node_manager, node_id);
 
-    bool hasTemperatureMeasurements = false;
-    bool hasFlowMeasurements = false;
-
     while (data->Next() == CHIP_NO_ERROR)
     {
         chip::TLV::TLVType listContainerType;
@@ -313,16 +275,6 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
                 {
                     ESP_LOGI(TAG, "DeviceTypeID[%d]: %lu", path.mEndpointId, device_type_id);
 
-                    if (!hasTemperatureMeasurements && device_type_id == 770)
-                    {
-                        hasTemperatureMeasurements = true;
-                    }
-
-                    if (!hasFlowMeasurements && device_type_id == 774)
-                    {
-                        hasFlowMeasurements = true;
-                    }
-
                     // We're only interested in device types that exist on Endpoints other than the root.
                     if (path.mEndpointId != 0) // RootNode
                     {
@@ -339,61 +291,6 @@ static void process_device_type_list_attribute_response(uint64_t node_id,
 
     data->ExitContainer(containerType);
 
-    if ((hasTemperatureMeasurements || hasFlowMeasurements) && node_needs_subscription(&g_node_manager, node_id))
-    {
-        ESP_LOGI(TAG, "The device has temperature measurement clusters. Subscribe to them");
-
-        mark_node_subscription_pending(&g_node_manager, node_id);
-        auto *args = new std::tuple<uint64_t>(node_id);
-
-        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                      {
-            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
-
-            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(2);
-
-            if (!attr_paths.Get())
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                delete args;
-                return;
-            }
-
-            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-            attr_paths[1] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
-
-            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-            event_paths.Alloc(0);
-
-            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
-                std::move(attr_paths),
-                std::move(event_paths),
-                0,
-                60,
-                false, // <--- Keep Subscriptions
-                attribute_data_cb,
-                nullptr,
-                node_subscription_established_cb,
-                node_subscription_terminated_cb,
-                node_subscribe_failed_cb,
-                false); 
-
-            delete args;
-            if (!cmd)
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-            }
-            else
-            {
-                esp_err_t err = cmd->send_command();
-                if (err != ESP_OK)
-                {
-                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                }
-            } },
-                                                      reinterpret_cast<intptr_t>(args));
-    }
 }
 
 void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferWithSize<AttributePathParams> &attr_path, const ScopedMemoryBufferWithSize<EventPathParams> &event_path)
@@ -402,6 +299,14 @@ void attribute_data_read_done(uint64_t remote_node_id, const ScopedMemoryBufferW
              remote_node_id, attr_path[0].mEndpointId, ChipLogValueMEI(attr_path[0].mClusterId), ChipLogValueMEI(attr_path[0].mAttributeId));
 
     save_nodes_to_nvs(&g_node_manager);
+
+    // Every endpoint's device type list is stored by now, so the subscription worker can work out
+    // what this node is worth subscribing to.
+    //
+    if (node_needs_subscription(&g_node_manager, remote_node_id))
+    {
+        enqueue_subscription(remote_node_id);
+    }
 }
 
 void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data,
@@ -921,57 +826,9 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
 
     if (create_new_subscription)
     {
-        ESP_LOGI(TAG, "Subscribing to Temperature Measurement clusters after ICD CheckIn received...");
+        ESP_LOGI(TAG, "Queueing subscription after ICD CheckIn received...");
 
-        mark_node_subscription_pending(&g_node_manager, clientInfo.peer_node.GetNodeId());
-        auto *args = new std::tuple<uint64_t>(clientInfo.peer_node.GetNodeId());
-
-        chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                      {
-            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
-            
-            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(1);
-
-            if (!attr_paths.Get())
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                delete args;
-                return;
-            }
-
-            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-            
-            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-            event_paths.Alloc(0);
-
-            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args), 
-                std::move(attr_paths), 
-                std::move(event_paths), 
-                0, 
-                60, 
-                false, // <--- Keep Subscriptions
-                attribute_data_cb,
-                nullptr,
-                node_subscription_established_cb,
-                node_subscription_terminated_cb,
-                node_subscribe_failed_cb,
-                false);
-
-            delete args;
-            if (!cmd)
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-            }
-            else
-            {
-                esp_err_t err = cmd->send_command();
-                if (err != ESP_OK)
-                {
-                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                }
-            } },
-                                                      reinterpret_cast<intptr_t>(args));
+        enqueue_subscription(clientInfo.peer_node.GetNodeId());
     }
 }
 
@@ -1488,57 +1345,9 @@ static esp_err_t node_put_handler(httpd_req_t *req)
         }
         else if (strcmp("subscribe", bindings.get("action")) == 0)
         {
-            ESP_LOGI(TAG, "Manually subscribing to Temperature Measurement clusters");
+            ESP_LOGI(TAG, "Manually queueing subscription for node 0x%016llX", node_id);
 
-            auto *args = new std::tuple<uint64_t>(node_id);
-
-            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                          {
-            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
-            
-            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(2);
-
-            if (!attr_paths.Get())
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                delete args;
-                return;
-            }
-
-            attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-            attr_paths[1] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
-            
-            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-            event_paths.Alloc(0);
-
-            auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args), 
-                std::move(attr_paths), 
-                std::move(event_paths), 
-                0, 
-                60, 
-                false, // <--- Keep Subscriptions
-                attribute_data_cb,
-                nullptr,
-                node_subscription_established_cb,
-                node_subscription_terminated_cb,
-                node_subscribe_failed_cb,
-                false);
-
-            delete args;
-            if (!cmd)
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-            }
-            else
-            {
-                esp_err_t err = cmd->send_command();
-                if (err != ESP_OK)
-                {
-                    ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                }
-            } },
-                                                          reinterpret_cast<intptr_t>(args));
+            enqueue_subscription(node_id);
         }
 
         if (err != ESP_OK)
@@ -2942,7 +2751,13 @@ extern "C" void app_main()
     // esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
     // chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
-    heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
+    // Starts the queue and the worker that drains it. Everything that wants a subscription calls
+    // enqueue_subscription(); the worker serialises them and works out the attribute paths from
+    // each node's device type list.
+    err = subscription_manager_init(&g_node_manager);
+    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start the subscription manager, err:%d", err));
+
+    //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
 
     //list_registered_icd();
 }

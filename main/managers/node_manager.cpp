@@ -4,10 +4,8 @@
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <nvs.h>
-#include <esp_matter_controller_subscribe_command.h>
 
 #include "node_manager.h"
-#include "app_main.h"
 
 #include <set>
 
@@ -15,7 +13,6 @@
 #define NVS_KEY "node_list"
 
 using namespace chip::app::Clusters;
-using namespace esp_matter::controller;
 
 static const char *TAG = "node_manager";
 
@@ -92,72 +89,6 @@ uint64_t get_next_node_id(node_manager_t *manager)
     ESP_LOGI(TAG, "Next node ID is %llu", next_id);
 
     return next_id;
-}
-
-void subscribe_all_temperature_measurements(node_manager_t *manager)
-{
-    ESP_LOGI(TAG, "Subscribing to all temperature measurements...");
-
-    matter_node_t *node = manager->node_list;
-
-    while (node)
-    {
-        if (!node->is_icd && node_needs_subscription(manager, node->node_id))
-        {
-            node->is_subscription_pending = true;
-
-            auto *args = new std::tuple<uint64_t>(node->node_id);
-
-            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                          {
-                auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
-
-                ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-                attr_paths.Alloc(1);
-
-                if (!attr_paths.Get())
-                {
-                    ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                    delete args;
-                    return;
-                }
-
-                attr_paths[0] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
-
-                ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-                event_paths.Alloc(0);
-
-                auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(std::get<0>(*args),
-                    std::move(attr_paths),
-                    std::move(event_paths),
-                    0,
-                    60,
-                    false,
-                    attribute_data_cb,
-                    nullptr,
-                    node_subscription_established_cb,
-                    node_subscription_terminated_cb,
-                    node_subscribe_failed_cb,
-                    false);
-
-                delete args;
-                if (!cmd)
-                {
-                    ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
-                }
-                else
-                {
-                    esp_err_t err = cmd->send_command();
-                    if (err != ESP_OK)
-                    {
-                        ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
-                    }
-                } },
-                                                          reinterpret_cast<intptr_t>(args));
-        }
-
-        node = node->next;
-    }
 }
 
 matter_node_t *find_node(node_manager_t *manager, uint64_t node_id)
@@ -510,6 +441,29 @@ esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t de
     ESP_LOGI(TAG, "Added Device Type ID %u to Endpoint %u. There are now %u", device_type_id, endpoint_id, endpoint->device_type_count);
 
     return ESP_OK;
+}
+
+bool node_has_device_type(const matter_node_t *node, uint32_t device_type_id)
+{
+    if (!node)
+    {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < node->endpoints_count; i++)
+    {
+        const endpoint_entry_t *endpoint = &node->endpoints[i];
+
+        for (uint8_t j = 0; j < endpoint->device_type_count; j++)
+        {
+            if (endpoint->device_type_ids[j] == device_type_id)
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 esp_err_t clear_node_details(node_manager_t *manager, uint64_t node_id)
