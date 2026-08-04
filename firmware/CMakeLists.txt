@@ -10,19 +10,19 @@ set(ESP_MATTER_PATH $ENV{ESP_MATTER_PATH})
 set(MATTER_SDK_PATH ${ESP_MATTER_PATH}/connectedhomeip/connectedhomeip)
 
 # CHIP external platform. We ship our own copy of the ESP32 platform layer in
-# ESP32_custom (it replaces the internal-EMAC ESPEthernetDriver::Init()
+# external_platform/ESP32_custom (it replaces the internal-EMAC ESPEthernetDriver::Init()
 # with a W5500 one -- the ESP32-S3 has no EMAC). CONFIG_CHIP_EXTERNAL_PLATFORM_DIR is a GN
 # label resolved against ${MATTER_SDK_PATH}/config/esp32, so pointing it straight at this
 # repo would hard-code where esp-matter and this project sit on disk. Instead, sync our copy
 # to the location esp-matter's own CI uses and keep the Kconfig path portable.
 set(EXT_PLATFORM_DEST "${ESP_MATTER_PATH}/../platform/ESP32_custom")
 file(MAKE_DIRECTORY "${EXT_PLATFORM_DEST}")
-file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/ESP32_custom/" DESTINATION "${EXT_PLATFORM_DEST}")
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/external_platform/ESP32_custom/" DESTINATION "${EXT_PLATFORM_DEST}")
 
 # The copy above happens at configure time, so make CMake re-configure whenever one of
 # those files changes -- otherwise an edit to the platform layer would be silently ignored
 # until the next unrelated reconfigure.
-file(GLOB_RECURSE EXT_PLATFORM_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/ESP32_custom/*")
+file(GLOB_RECURSE EXT_PLATFORM_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/external_platform/ESP32_custom/*")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${EXT_PLATFORM_SRCS})
 
 # This should be done before using the IDF_TARGET variable.

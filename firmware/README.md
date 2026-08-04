@@ -8,7 +8,7 @@ This firmware targets the **Waveshare ESP32-S3-ETH** board (16MB flash, octal PS
 carries a W5500 SPI Ethernet controller. Networking is Ethernet only — plug in a cable and the
 board comes up on DHCP. BLE is still used to commission the Thread temperature sensors.
 
-W5500 wiring (see `ESP32_custom/NetworkCommissioningDriver_Ethernet.cpp`):
+W5500 wiring (see `external_platform/ESP32_custom/NetworkCommissioningDriver_Ethernet.cpp`):
 
 | Signal | GPIO |
 |---|---|
@@ -32,7 +32,7 @@ This project uses `esp-idf` and `esp-matter`, so ensure both of these frameworks
 The ESP32-S3 has no internal Ethernet MAC, but connectedhomeip's `ESPEthernetDriver::Init()` is
 hard-coded for it, so it does not compile for this target (see
 [esp-matter#1785](https://github.com/espressif/esp-matter/issues/1785)). This repo therefore ships
-its own copy of the CHIP ESP32 platform layer in `ESP32_custom/`, with a W5500
+its own copy of the CHIP ESP32 platform layer in `external_platform/ESP32_custom/`, with a W5500
 implementation of `Init()` and an added `chip_enable_ethernet` block in `BUILD.gn`.
 
 Nothing extra needs to be done to use it — the root `CMakeLists.txt` copies the tree to
@@ -42,8 +42,8 @@ Nothing extra needs to be done to use it — the root `CMakeLists.txt` copies th
 To refresh the copy against a newer esp-matter, re-run:
 
 ```
-cp -r "$ESP_MATTER_PATH/connectedhomeip/connectedhomeip/src/platform/ESP32/." ESP32_custom
-cp "$ESP_MATTER_PATH/examples/common/external_platform/BUILD.gn" ESP32_custom/BUILD.gn
+cp -r "$ESP_MATTER_PATH/connectedhomeip/connectedhomeip/src/platform/ESP32/." external_platform/ESP32_custom
+cp "$ESP_MATTER_PATH/examples/common/external_platform/BUILD.gn" external_platform/ESP32_custom/BUILD.gn
 ```
 
 then re-apply the two local changes (the `chip_enable_ethernet` block in `BUILD.gn`, the W5500
