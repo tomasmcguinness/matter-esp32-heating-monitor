@@ -11,11 +11,20 @@ struct Node: Codable, Identifiable, Hashable, Sendable {
     let productName: String?
     let nodeName: String?
     let powerSource: Int
+    let batteryPercent: Int?
+    let batteryVoltage: Int?
     let extAddress: UInt64
     let hasSubscription: Bool
     let endpoints: [Endpoint]
 
     var id: UInt64 { nodeId }
+
+    /// The node's battery, if it is on one and has reported since the hub last booted. For a
+    /// bridge this is whichever endpoint reported most recently -- see `endpoints` for the
+    /// per-device readings.
+    var battery: BatteryReading? {
+        BatteryReading(percent: batteryPercent, voltage: batteryVoltage)
+    }
 
     /// What to show in a list. The firmware leaves `nodeName` null until the user sets one,
     /// and `productName` null until the node has answered a Basic Information read.
@@ -47,6 +56,8 @@ struct Node: Codable, Identifiable, Hashable, Sendable {
         productName = try container.decodeIfPresent(String.self, forKey: .productName)
         nodeName = try container.decodeIfPresent(String.self, forKey: .nodeName)
         powerSource = try container.decodeIfPresent(Int.self, forKey: .powerSource) ?? 0
+        batteryPercent = try container.decodeIfPresent(Int.self, forKey: .batteryPercent)
+        batteryVoltage = try container.decodeIfPresent(Int.self, forKey: .batteryVoltage)
         hasSubscription = try container.decodeIfPresent(Bool.self, forKey: .hasSubscription) ?? false
         endpoints = try container.decodeIfPresent([Endpoint].self, forKey: .endpoints) ?? []
     }
@@ -57,10 +68,16 @@ struct Endpoint: Codable, Identifiable, Hashable, Sendable {
     let endpointId: Int
     let endpointName: String?
     let powerSource: Int
+    let batteryPercent: Int?
+    let batteryVoltage: Int?
     let measuredValue: Double?
     let deviceTypes: [UInt32]
 
     var id: Int { endpointId }
+
+    var battery: BatteryReading? {
+        BatteryReading(percent: batteryPercent, voltage: batteryVoltage)
+    }
 
     /// The firmware reports temperatures and flow rates in hundredths, the way the Matter
     /// clusters carry them.
@@ -78,8 +95,82 @@ struct Endpoint: Codable, Identifiable, Hashable, Sendable {
         endpointId = try container.decodeIfPresent(Int.self, forKey: .endpointId) ?? 0
         endpointName = try container.decodeIfPresent(String.self, forKey: .endpointName)
         powerSource = try container.decodeIfPresent(Int.self, forKey: .powerSource) ?? 0
+        batteryPercent = try container.decodeIfPresent(Int.self, forKey: .batteryPercent)
+        batteryVoltage = try container.decodeIfPresent(Int.self, forKey: .batteryVoltage)
         measuredValue = try container.decodeIfPresent(Double.self, forKey: .measuredValue)
         deviceTypes = try container.decodeIfPresent([UInt32].self, forKey: .deviceTypes) ?? []
+    }
+}
+
+/// A battery powered node's PowerSource state.
+///
+/// `BatPercentRemaining` and `BatVoltage` are both optional in Matter, so a device may report
+/// either, both, or neither. The firmware only subscribes to them for battery powered nodes.
+struct BatteryReading: Hashable, Sendable, CustomStringConvertible {
+
+    /// Whole percent, 0-100. The firmware has already halved the raw Matter value.
+    let percent: Int?
+
+    /// Millivolts, as the cluster reports it.
+    let millivolts: Int?
+
+    /// Fails when there is nothing to show. The firmware only fills these in for battery powered
+    /// devices, so a value is enough to go on -- `powerSource` stays 0 on the node itself when the
+    /// PowerSource cluster lives on an endpoint other than 0.
+    init?(percent: Int?, voltage: Int?) {
+        guard percent != nil || voltage != nil else {
+            return nil
+        }
+
+        self.percent = percent.map { min(max($0, 0), 100) }
+        self.millivolts = voltage
+    }
+
+    var description: String {
+        var parts: [String] = []
+
+        if let percent {
+            parts.append("\(percent)%")
+        }
+
+        if let millivolts {
+            parts.append(String(format: "%.2f V", Double(millivolts) / 1000))
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
+    var symbolName: String {
+        // A voltage-only device gets a neutral icon rather than an alarming empty one.
+        guard let percent else {
+            return "battery.100percent"
+        }
+
+        switch percent {
+        case ...15: return "battery.0percent"
+        case ...37: return "battery.25percent"
+        case ...62: return "battery.50percent"
+        case ...87: return "battery.75percent"
+        default: return "battery.100percent"
+        }
+    }
+
+    /// Coarse level behind the icon's tint. It lives here rather than in the view so the
+    /// thresholds stay in one place.
+    enum Level: Sendable {
+        case unknown, low, warning, good
+    }
+
+    var level: Level {
+        guard let percent else {
+            return .unknown
+        }
+
+        switch percent {
+        case ...15: return .low
+        case ...30: return .warning
+        default: return .good
+        }
     }
 }
 

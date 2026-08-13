@@ -92,6 +92,16 @@ CONFIG_ENABLE_WIFI_STATION=n
 CONFIG_ENABLE_WIFI_TELEMETRY=n
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 
-# Use the ESP-IDF mdns component rather than CHIP's minimal mDNS, so that CHIP and
-# the app share a single mDNS stack and heating-monitor.local can be published.
-CONFIG_USE_MINIMAL_MDNS=n
+# CHIP's minimal mDNS, rather than the ESP-IDF mdns component.
+#
+# The IDF component cannot express a subtype query: it splits a service name on the first
+# dot only (mdns_querier.c) and then writes each part as a single DNS label
+# (append_string(), mdns_send.c), so CHIP's "_S<disc>._sub._matterc" goes out as
+# _S3 | _sub._matterc | _udp | local instead of _S3 | _sub | _matterc | _udp | local.
+# Nothing matches the malformed label, so commissionable-node discovery gets no answer and
+# times out after 30s. Operational discovery is unaffected — it passes instance/type/proto
+# separately with no subtype, which is why subscriptions work while commissioning does not.
+#
+# Cost: minimal mDNS owns UDP 5353, so start_mdns_service() in app_main.cpp is disabled and
+# heating-monitor.local / _http._tcp are no longer published. Reach the web UI by IP.
+CONFIG_USE_MINIMAL_MDNS=y

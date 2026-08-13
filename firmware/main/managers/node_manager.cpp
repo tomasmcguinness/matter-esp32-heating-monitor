@@ -311,6 +311,77 @@ esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source)
     return ESP_OK;
 }
 
+bool node_is_battery_powered(const matter_node_t *node)
+{
+    if (!node)
+    {
+        return false;
+    }
+
+    if (node->power_source == POWER_SOURCE_BATTERY)
+    {
+        return true;
+    }
+
+    // The PowerSource cluster does not have to live on the root endpoint, so check the rest too.
+    //
+    for (uint16_t i = 0; i < node->endpoints_count; i++)
+    {
+        if (node->endpoints[i].power_source == POWER_SOURCE_BATTERY)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+esp_err_t set_battery_percent(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, uint8_t percent)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (!node)
+    {
+        return ESP_FAIL;
+    }
+
+    endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
+
+    if (endpoint)
+    {
+        endpoint->has_battery_percent = has_value;
+        endpoint->battery_percent = percent;
+    }
+
+    node->has_battery_percent = has_value;
+    node->battery_percent = percent;
+
+    return ESP_OK;
+}
+
+esp_err_t set_battery_voltage(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, uint32_t voltage_mv)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (!node)
+    {
+        return ESP_FAIL;
+    }
+
+    endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
+
+    if (endpoint)
+    {
+        endpoint->has_battery_voltage = has_value;
+        endpoint->battery_voltage_mv = voltage_mv;
+    }
+
+    node->has_battery_voltage = has_value;
+    node->battery_voltage_mv = voltage_mv;
+
+    return ESP_OK;
+}
+
 esp_err_t set_node_ext_address(matter_node_t *node, uint64_t ext_address)
 {
     node->ext_address = ext_address;

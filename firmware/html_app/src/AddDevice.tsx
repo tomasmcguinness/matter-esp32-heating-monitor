@@ -3,14 +3,12 @@ import { NavLink } from "react-router";
 
 function AddDevice() {
 
-  const [inUse, setInUse] = useState<string | undefined>(undefined);
   const [setupCode, setSetupCode] = useState<string | undefined>(undefined);
 
   function handleSubmit(e: any) {
     e.preventDefault();
 
     var object: any = {
-      inUse: Boolean(inUse),
       setupCode,
     };
 
@@ -24,13 +22,9 @@ function AddDevice() {
       <h1>Add Device</h1>
       <hr />
       <form method="post" onSubmit={handleSubmit}>
-        <div className="mb-3">
-          <label htmlFor="inUse" className="form-label">Device In Use? <span style={{ 'color': 'red' }}>*</span></label>
-          <select name="inUse" className="form-control" id="inUse" required={true} value={inUse ? "true" : "false"} onChange={(e) => setInUse(e.target.value)}>
-            <option></option>
-            <option value="false">No, it's new</option>
-            <option value="true">Yes, it's in use</option>
-          </select>
+        <div className="alert alert-primary" role="alert">
+          <h4 className="alert-heading">On Network Commissioning</h4>
+          <p>Only devices that are already on the network can be commissioned using this method. Use the companion app for new devices.</p>
         </div>
         <div className="mb-3">
           <label htmlFor="setupCode" className="form-label">Setup Code <span style={{ 'color': 'red' }}>*</span></label>

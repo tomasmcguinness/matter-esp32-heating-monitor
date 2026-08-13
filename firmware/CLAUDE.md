@@ -79,6 +79,10 @@ The ESP32-S3 has no internal Ethernet MAC, but connectedhomeip's `ESPEthernetDri
 1. `BUILD.gn` — adds the `if (chip_enable_ethernet)` block that esp-matter's external-platform `BUILD.gn` is missing, so `ConnectivityManagerImpl_Ethernet.cpp` and `NetworkCommissioningDriver_Ethernet.cpp` are compiled.
 2. `NetworkCommissioningDriver_Ethernet.cpp` — W5500 bring-up (SPI2: SCLK 13, MOSI 11, MISO 12, CS 14, INT 10, RST 9), plus `esp_netif_create_ip6_linklocal()` and `esp_route_hook_init()` on link-up. The route hook is essential: it is otherwise only installed by `ConnectivityManagerImpl_WiFi.cpp`, and without it lwIP ignores the border router's RIO options and the controller loses its route to the Thread sensors.
 
+   The same file also carries the IPv6 multicast setup, which esp_netif does not do for Ethernet:
+   - `NETIF_FLAG_MLD6` is set on the lwIP netif at link-up, before any address is configured. lwIP gates `nd6_adjust_mld_membership()` on this flag, so without it the solicited-node group for our own addresses is never joined.
+   - `ff02::1` (all-nodes) is joined via `mld6_joingroup_netif()` on the first `IP_EVENT_GOT_IP6`. lwIP never joins it unprompted, so no MLD report is sent and an MLD-snooping switch prunes it on our port. That loses the border router's RAs, and because MLD general queries are themselves sent to `ff02::1`, it also means no group membership is ever refreshed — the switch eventually ages out mDNS (`ff02::fb`) too and commissionable-node discovery times out having heard nothing.
+
 All `platform/ESP32/` includes in the copy are rewritten to `platform/ESP32_custom/` — without that, the copied sources pull in the original headers alongside the custom ones and fail with redefinition errors.
 
 The root `CMakeLists.txt` copies the tree to `$ESP_MATTER_PATH/../platform/ESP32_custom` at configure time (this is what `CONFIG_CHIP_EXTERNAL_PLATFORM_DIR` resolves to), and registers the files under `CMAKE_CONFIGURE_DEPENDS` so edits trigger a re-copy.

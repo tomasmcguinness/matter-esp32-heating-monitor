@@ -35,6 +35,12 @@ struct DeviceDetailView: View {
 
                 LabeledContent("Sleepy Device", value: node.isIcd ? "Yes" : "No")
                 LabeledContent("Subscribed", value: node.hasSubscription ? "Yes" : "No")
+
+                if let battery = node.battery {
+                    LabeledContent("Battery") {
+                        BatteryLabel(battery: battery)
+                    }
+                }
             }
 
             ForEach(node.endpoints) { endpoint in
@@ -49,6 +55,12 @@ struct DeviceDetailView: View {
 
                     if let value = endpoint.scaledValue {
                         LabeledContent("Measured Value", value: String(format: "%.2f", value))
+                    }
+
+                    if let battery = endpoint.battery {
+                        LabeledContent("Battery") {
+                            BatteryLabel(battery: battery)
+                        }
                     }
                 }
             }

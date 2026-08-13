@@ -31,6 +31,9 @@
 #include "esp_eth_phy.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_netif_net_stack.h"
+#include "lwip/mld6.h"
+#include "lwip/netif.h"
 #include <platform/ESP32_custom/NetworkCommissioningDriver.h>
 #include <platform/ESP32_custom/route_hook/ESP32RouteHook.h>
 
@@ -50,6 +53,43 @@ namespace chip {
 namespace DeviceLayer {
 namespace NetworkCommissioning {
 
+// Tracks whether we hold a membership on ff02::1, so a link bounce re-joins exactly once
+// rather than stacking up lwIP group use counts.
+static bool sJoinedAllNodes = false;
+
+// Join the all-nodes multicast group (ff02::1). lwIP never joins it of its own accord, so
+// no MLD report is ever sent for it and an MLD-snooping switch prunes it on our port. That
+// costs us the border router's RAs directly, and it also breaks everything else: MLD general
+// queries are themselves addressed to ff02::1, so without the membership we are never
+// queried, never refresh any other group, and the switch eventually ages out mDNS (ff02::fb)
+// as well — at which point commissionable-node discovery browses and hears nothing back.
+//
+// mld6_joingroup_netif() touches the group list, so it has to run in the TCPIP context.
+static esp_err_t join_all_nodes_cb(void * ctx)
+{
+    struct netif * lwip_netif = (struct netif *) ctx;
+    ip6_addr_t allnodes;
+    IP6_ADDR(&allnodes, PP_HTONL(0xff020000), PP_HTONL(0x00000000), PP_HTONL(0x00000000), PP_HTONL(0x00000001));
+    ip6_addr_assign_zone(&allnodes, IP6_MULTICAST, lwip_netif);
+    return (mld6_joingroup_netif(lwip_netif, &allnodes) == ERR_OK) ? ESP_OK : ESP_FAIL;
+}
+
+static void on_ip6_event(void * esp_netif, esp_event_base_t event_base, int32_t event_id, void * event_data)
+{
+    ip_event_got_ip6_t * event = (ip_event_got_ip6_t *) event_data;
+    // GOT_IP6 fires once per address (link-local, then any global one), and for every
+    // netif in the system — we only want our own Ethernet interface, once.
+    VerifyOrReturn(event != nullptr && event->esp_netif == (esp_netif_t *) esp_netif);
+    VerifyOrReturn(!sJoinedAllNodes);
+
+    struct netif * lwip_netif = (struct netif *) esp_netif_get_netif_impl(event->esp_netif);
+    VerifyOrReturn(lwip_netif != nullptr);
+
+    esp_err_t err = esp_netif_tcpip_exec(join_all_nodes_cb, lwip_netif);
+    sJoinedAllNodes = (err == ESP_OK);
+    ChipLogProgress(DeviceLayer, "MLD join ff02::1: %s", esp_err_to_name(err));
+}
+
 static void on_eth_event(void * esp_netif, esp_event_base_t event_base, int32_t event_id, void * event_data)
 {
     switch (event_id)
@@ -57,6 +97,15 @@ static void on_eth_event(void * esp_netif, esp_event_base_t event_base, int32_t 
     case ETHERNET_EVENT_CONNECTED: {
         esp_netif_t * eth_netif = (esp_netif_t *) esp_netif;
         ChipLogProgress(DeviceLayer, "Ethernet Connected");
+        // Mark the interface as MLD6-capable before any address is configured. lwIP gates
+        // nd6_adjust_mld_membership() on this flag (netif.c), so without it we never join
+        // the solicited-node group for our own addresses and neighbour solicitations aimed
+        // at us are pruned by an MLD-snooping switch. esp_netif does not set it for Ethernet.
+        struct netif * lwip_netif = (struct netif *) esp_netif_get_netif_impl(eth_netif);
+        if (lwip_netif != nullptr)
+        {
+            netif_set_flags(lwip_netif, NETIF_FLAG_MLD6);
+        }
         ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(eth_netif));
         // Install the lwIP route hook so that route information options in the border
         // router's RAs are honoured. On Wi-Fi builds ConnectivityManagerImpl_WiFi does
@@ -67,6 +116,9 @@ static void on_eth_event(void * esp_netif, esp_event_base_t event_base, int32_t 
     break;
     case ETHERNET_EVENT_DISCONNECTED:
         ChipLogProgress(DeviceLayer, "Ethernet Disconnected");
+        // The netif tears its group memberships down with the link, so re-join on the way
+        // back up rather than assuming the old membership survived.
+        sJoinedAllNodes = false;
         break;
     default:
         break;
@@ -120,6 +172,7 @@ CHIP_ERROR ESPEthernetDriver::Init(NetworkStatusChangeCallback * networkStatusCh
 
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &on_eth_event, eth_netif));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, &on_ip6_event, eth_netif));
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 
     ChipLogProgress(DeviceLayer, "W5500 Ethernet initialized");

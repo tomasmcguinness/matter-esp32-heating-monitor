@@ -52,10 +52,11 @@ static void send_subscription(intptr_t arg)
     // What we subscribe to is decided by what the node says it is.
     bool wants_temperature = node_has_device_type(node, DEVICE_TYPE_TEMPERATURE_SENSOR);
     bool wants_flow = node_has_device_type(node, DEVICE_TYPE_FLOW_SENSOR);
+    bool wants_battery = node_is_battery_powered(node);
 
-    if (!wants_temperature && !wants_flow)
+    if (!wants_temperature && !wants_flow && !wants_battery)
     {
-        ESP_LOGW(TAG, "Node 0x%016llX has no temperature or flow device types; nothing to subscribe to", node_id);
+        ESP_LOGW(TAG, "Node 0x%016llX has no temperature or flow device types and is not on battery; nothing to subscribe to", node_id);
 
         bool create_new_subscription = false;
         mark_node_has_no_subscription(s_node_manager, node_id, 0, &create_new_subscription);
@@ -63,7 +64,7 @@ static void send_subscription(intptr_t arg)
     }
 
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0));
+    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_battery ? 2 : 0));
 
     if (!attr_paths.Get())
     {
@@ -83,11 +84,21 @@ static void send_subscription(intptr_t arg)
         attr_paths[path_index++] = AttributePathParams(FlowMeasurement::Id, FlowMeasurement::Attributes::MeasuredValue::Id);
     }
 
+    if (wants_battery)
+    {
+        // The endpoint is left wildcard because PowerSource does not have to be on the root, and a
+        // bridge can have one instance per bridged device. BatVoltage is optional, but an unsupported
+        // attribute on a wildcard path is skipped rather than reported as an error.
+        //
+        attr_paths[path_index++] = AttributePathParams(PowerSource::Id, PowerSource::Attributes::BatPercentRemaining::Id);
+        attr_paths[path_index++] = AttributePathParams(PowerSource::Id, PowerSource::Attributes::BatVoltage::Id);
+    }
+
     ScopedMemoryBufferWithSize<EventPathParams> event_paths;
     event_paths.Alloc(0);
 
-    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s)", node_id, (unsigned)path_index,
-             wants_temperature ? "temperature " : "", wants_flow ? "flow" : "");
+    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s)", node_id, (unsigned)path_index,
+             wants_temperature ? "temperature " : "", wants_flow ? "flow " : "", wants_battery ? "battery" : "");
 
     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(node_id,
                                                                               std::move(attr_paths),
