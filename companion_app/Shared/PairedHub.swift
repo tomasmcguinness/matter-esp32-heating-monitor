@@ -3,7 +3,7 @@ import Foundation
 /// The Heating Monitor this app is paired with.
 ///
 /// This is decoded straight from the JSON in the QR code the device renders on its Settings
-/// page, so the coding keys have to match `info_get_handler` in the firmware's `app_main.cpp`.
+/// page, so most coding keys have to match `info_get_handler` in the firmware's `app_main.cpp`.
 struct PairedHub: Codable, Equatable, Sendable {
 
     /// Payload schema version. The firmware currently emits 1.
@@ -11,12 +11,9 @@ struct PairedHub: Codable, Equatable, Sendable {
 
     let name: String
 
-    /// mDNS hostname, e.g. `heating-monitor.local`.
-    let host: String
-
-    /// The device's DHCP address, used as a fallback when mDNS doesn't resolve. The firmware
-    /// sends null if Ethernet has no address yet.
-    let ip: String?
+    /// The full http(s) address used to reach the hub. Editable from Settings, unlike the
+    /// rest of this struct, so a changed IP or hostname doesn't require re-pairing.
+    var url: URL
 
     /// Stable identifier derived from the device's MAC.
     let id: String
@@ -27,40 +24,37 @@ struct PairedHub: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version = "v"
         case name
-        case host
-        case ip
+        case url
         case id
         case token
-    }
-
-    /// The addresses to try, in order. mDNS is preferred because the DHCP lease can change,
-    /// but this device publishes an IPv4 delegated hostname that phones don't always resolve
-    /// promptly, so the raw address is worth keeping as a backstop.
-    var baseURLs: [URL] {
-        var urls: [URL] = []
-
-        if let hostURL = URL(string: "http://\(host)") {
-            urls.append(hostURL)
-        }
-
-        if let ip, let ipURL = URL(string: "http://\(ip)") {
-            urls.append(ipURL)
-        }
-
-        return urls
     }
 }
 
 extension PairedHub {
 
-    /// Builds a hub from a hostname typed in by hand, for when the QR code isn't available.
-    init(manualHost: String) {
+    /// Builds a hub from a URL typed in by hand, for when the QR code isn't available.
+    init(url: URL) {
         self.version = 1
         self.name = "Heating Monitor"
-        self.host = manualHost
-        self.ip = nil
+        self.url = url
         self.id = ""
         self.token = nil
+    }
+
+    /// Parses free-form text into a connection URL, requiring an http/https scheme and a
+    /// non-empty host. Returns nil if the text isn't a usable address.
+    static func connectionURL(from text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else {
+            return nil
+        }
+
+        return url
     }
 
     /// Decodes the JSON payload carried in the device's pairing QR code.

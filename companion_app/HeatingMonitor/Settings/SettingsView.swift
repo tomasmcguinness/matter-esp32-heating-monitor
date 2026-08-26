@@ -4,9 +4,20 @@ struct SettingsView: View {
 
     @Binding var hub: PairedHub?
 
-    @State private var isShowingPairing = false
+    private enum PairingIntent: Identifiable {
+        case scan
+        case manual
+
+        var id: Self { self }
+    }
+
+    @State private var pairingIntent: PairingIntent?
     @State private var isConfirmingUnpair = false
     @State private var reachability: Reachability = .unknown
+
+    @State private var addressText: String = ""
+    @State private var isSavingAddress = false
+    @State private var addressError: String?
 
     private enum Reachability {
         case unknown
@@ -21,8 +32,6 @@ struct SettingsView: View {
                 if let hub {
                     Section("Heating Monitor") {
                         LabeledContent("Name", value: hub.name)
-                        LabeledContent("Hostname", value: hub.host)
-                        LabeledContent("IP Address", value: hub.ip ?? "Unknown")
 
                         if !hub.id.isEmpty {
                             LabeledContent("Device ID", value: hub.id)
@@ -30,6 +39,36 @@ struct SettingsView: View {
 
                         LabeledContent("Pairing Token",
                                        value: (hub.token?.isEmpty == false) ? "Stored" : "None")
+                    }
+
+                    Section {
+                        TextField("http://heating-monitor.local", text: $addressText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+
+                        if let addressError {
+                            Label(addressError, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+
+                        Button {
+                            Task { await saveAddress(hub: hub) }
+                        } label: {
+                            if isSavingAddress {
+                                HStack(spacing: 10) {
+                                    ProgressView()
+                                    Text("Saving…")
+                                }
+                            } else {
+                                Text("Save")
+                            }
+                        }
+                        .disabled(isSavingAddress || PairedHub.connectionURL(from: addressText) == nil)
+                    } header: {
+                        Text("Address")
+                    } footer: {
+                        Text("The full http:// or https:// address used to reach the Heating Monitor.")
                     }
 
                     Section {
@@ -63,15 +102,23 @@ struct SettingsView: View {
                     }
                 } else {
                     Section {
-                        Button("Scan Pairing Code") { isShowingPairing = true }
+                        Button("Scan Pairing Code") {
+                            pairingIntent = .scan
+                        }
+
+                        Button("Enter Address Manually") {
+                            pairingIntent = .manual
+                        }
                     } footer: {
                         Text("Open http://heating-monitor.local/settings in a browser to display the code.")
                     }
                 }
             }
             .navigationTitle("Settings")
-            .sheet(isPresented: $isShowingPairing) {
-                PairHubView(hub: $hub)
+            .onAppear { addressText = hub?.url.absoluteString ?? "" }
+            .onChange(of: hub) { addressText = hub?.url.absoluteString ?? "" }
+            .sheet(item: $pairingIntent) { intent in
+                PairHubView(hub: $hub, startInManualEntry: intent == .manual)
             }
             .confirmationDialog("Unpair this Heating Monitor?",
                                 isPresented: $isConfirmingUnpair,
@@ -82,6 +129,34 @@ struct SettingsView: View {
                     reachability = .unknown
                 }
             }
+        }
+    }
+
+    private func saveAddress(hub: PairedHub) async {
+        guard let newURL = PairedHub.connectionURL(from: addressText) else {
+            addressError = "Enter a valid http:// or https:// address."
+            return
+        }
+
+        guard newURL != hub.url else {
+            addressError = nil
+            return
+        }
+
+        isSavingAddress = true
+        addressError = nil
+        defer { isSavingAddress = false }
+
+        var candidate = hub
+        candidate.url = newURL
+
+        do {
+            _ = try await HeatingMonitorClient(hub: candidate).info()
+            try HubStore.save(candidate)
+            self.hub = HubStore.current
+            reachability = .unknown
+        } catch {
+            addressError = error.localizedDescription
         }
     }
 

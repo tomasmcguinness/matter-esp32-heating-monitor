@@ -12,7 +12,7 @@ import Security
 enum HubStore {
 
     static let appGroup = "group.com.tomasmcguinness.heating-monitor-companion"
-    static let keychainAccessGroup = "com.tomasmcguinness.heating-monitor-companion"
+    static let keychainAccessGroup = "A85FLM38WR.com.tomasmcguinness.heating-monitor-companion"
 
     private static let hubKey = "pairedHub"
     private static let lastCommissionedNodeIdKey = "lastCommissionedNodeId"

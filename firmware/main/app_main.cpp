@@ -2297,6 +2297,7 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "v", 1);
     cJSON_AddStringToObject(root, "name", "Heating Monitor");
     cJSON_AddStringToObject(root, "host", MDNS_HOSTNAME ".local");
+    cJSON_AddStringToObject(root, "url", "http://" MDNS_HOSTNAME ".local");
     cJSON_AddStringToObject(root, "id", pairing_get_device_id(&g_pairing_manager));
     cJSON_AddStringToObject(root, "token", pairing_get_token(&g_pairing_manager));
 

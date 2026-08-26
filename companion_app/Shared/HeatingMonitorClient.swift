@@ -79,53 +79,36 @@ struct HeatingMonitorClient: Sendable {
         return request
     }
 
-    /// Sends a request, trying each of the hub's addresses in turn.
-    ///
-    /// Only transport failures fall through to the next address. Once the hub has answered,
-    /// its response stands -- retrying a 500 against the IP would just repeat it, and
-    /// retrying a POST could commission the same device twice.
+    /// Sends a single request to the hub's configured URL.
     private func perform(path: String, method: String, bodyData: Data?, timeout: TimeInterval) async throws -> Data {
-        let baseURLs = hub.baseURLs
-
-        guard !baseURLs.isEmpty else {
-            throw ClientError.unreachable(hub.host, underlying: nil)
+        guard var request = makeRequest(baseURL: hub.url, path: path, method: method, timeout: timeout) else {
+            throw ClientError.unreachable(hub.url.absoluteString, underlying: nil)
         }
 
-        var lastTransportError: (any Error)?
-
-        for baseURL in baseURLs {
-            guard var request = makeRequest(baseURL: baseURL, path: path, method: method, timeout: timeout) else {
-                continue
-            }
-
-            if let bodyData {
-                request.httpBody = bodyData
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            }
-
-            let data: Data
-            let response: URLResponse
-
-            do {
-                (data, response) = try await session.data(for: request)
-            } catch {
-                lastTransportError = error
-                continue
-            }
-
-            guard let http = response as? HTTPURLResponse else {
-                throw ClientError.badResponse
-            }
-
-            guard (200..<300).contains(http.statusCode) else {
-                throw ClientError.httpError(status: http.statusCode,
-                                            message: String(data: data, encoding: .utf8))
-            }
-
-            return data
+        if let bodyData {
+            request.httpBody = bodyData
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        throw ClientError.unreachable(hub.host, underlying: lastTransportError)
+        let data: Data
+        let response: URLResponse
+
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw ClientError.unreachable(hub.url.absoluteString, underlying: error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.badResponse
+        }
+
+        guard (200..<300).contains(http.statusCode) else {
+            throw ClientError.httpError(status: http.statusCode,
+                                        message: String(data: data, encoding: .utf8))
+        }
+
+        return data
     }
 
     private func get<Response: Decodable>(_ path: String) async throws -> Response {
@@ -151,9 +134,9 @@ enum ClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unreachable(let host, let underlying):
+        case .unreachable(let address, let underlying):
             let reason = underlying.map { " (\($0.localizedDescription))" } ?? ""
-            return "Couldn't reach \(host)\(reason). Check that it's powered on and on the same network."
+            return "Couldn't reach \(address)\(reason). Check that it's powered on and on the same network."
         case .badResponse:
             return "The Heating Monitor sent back something unexpected."
         case .httpError(let status, let message):

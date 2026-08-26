@@ -5,6 +5,7 @@ interface DeviceInfo {
   v: number;
   name: string;
   host: string;
+  url: string;
   ip: string | null;
   id: string;
   token: string;

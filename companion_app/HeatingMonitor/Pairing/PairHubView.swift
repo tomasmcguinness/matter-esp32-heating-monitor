@@ -7,14 +7,25 @@ struct PairHubView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var status: Status = .scanning
+    @State private var status: Status
     @State private var errorMessage: String?
-    @State private var manualHost = ""
+    @State private var manualAddress = ""
+
+    /// Where to fall back to if a pairing attempt fails, so a failed manual
+    /// connect returns to the manual form rather than jumping to the scanner.
+    private let startMode: Status
 
     private enum Status {
         case scanning
         case verifying
         case manualEntry
+    }
+
+    init(hub: Binding<PairedHub?>, startInManualEntry: Bool = false) {
+        self._hub = hub
+        let initialStatus: Status = startInManualEntry ? .manualEntry : .scanning
+        self.startMode = initialStatus
+        self._status = State(initialValue: initialStatus)
     }
 
     var body: some View {
@@ -30,7 +41,7 @@ struct PairHubView: View {
                     manualEntryForm
                 }
             }
-            .navigationTitle("Add Heating Monitor")
+            .navigationTitle("Connect Heating Monitor")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -81,21 +92,23 @@ struct PairHubView: View {
     private var manualEntryForm: some View {
         Form {
             Section {
-                TextField("heating-monitor.local", text: $manualHost)
+                TextField("http://heating-monitor.local", text: $manualAddress)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
             } header: {
-                Text("Hostname or IP Address")
+                Text("Heating Monitor Address")
             } footer: {
                 Text("Pairing this way doesn't pick up the device's token, so scanning the QR code is preferred.")
             }
 
             Section {
                 Button("Connect") {
-                    Task { await pair(hub: PairedHub(manualHost: manualHost.trimmingCharacters(in: .whitespaces))) }
+                    if let url = PairedHub.connectionURL(from: manualAddress) {
+                        Task { await pair(hub: PairedHub(url: url)) }
+                    }
                 }
-                .disabled(manualHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(PairedHub.connectionURL(from: manualAddress) == nil)
 
                 Button("Scan a Code Instead") { status = .scanning }
             }
@@ -130,7 +143,7 @@ struct PairHubView: View {
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
-            status = .scanning
+            status = startMode
         }
     }
 }
