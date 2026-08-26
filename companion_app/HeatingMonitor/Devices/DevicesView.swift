@@ -167,9 +167,34 @@ struct DeviceRow: View {
                 } else {
                     StatusBadge(text: "No subscription", tint: .secondary)
                 }
+
+                if let battery = node.battery {
+                    BatteryLabel(battery: battery)
+                }
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+struct BatteryLabel: View {
+
+    let battery: BatteryReading
+
+    var body: some View {
+        Label(battery.description, systemImage: battery.symbolName)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .labelStyle(.titleAndIcon)
+    }
+
+    private var tint: Color {
+        switch battery.level {
+        case .low: return .red
+        case .warning: return .orange
+        case .good: return .green
+        case .unknown: return .secondary
+        }
     }
 }
 

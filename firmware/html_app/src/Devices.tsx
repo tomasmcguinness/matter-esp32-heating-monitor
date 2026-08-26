@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { NavLink, useNavigate } from "react-router"
 import PowerSource from "./PowerSource"
+import Battery from "./Battery"
 import CheckMark from "./CheckMark";
 
 function Devices() {
@@ -88,6 +89,7 @@ function Devices() {
         <td>{deviceTypes}</td>
         <td>{endpoint.measuredValue}</td>
         <td><PowerSource powerSource={endpoint.powerSource} /></td>
+        <td><Battery powerSource={endpoint.powerSource} percent={endpoint.batteryPercent} voltage={endpoint.batteryVoltage} /></td>
       </tr>)
     });
 
@@ -100,12 +102,13 @@ function Devices() {
       <td>{n.productName}</td>
       <td>{n.extAddress}</td>
       <td><PowerSource powerSource={n.powerSource} /></td>
+      <td><Battery powerSource={n.powerSource} percent={n.batteryPercent} voltage={n.batteryVoltage} /></td>
       <td>{n.hasSubscription ? <CheckMark /> : <></>}</td>
     </tr>);
 
     if (showEndpoints) {
       rows.push(<tr>
-        <td colSpan={6}>
+        <td colSpan={8}>
           <table className="table">
             <thead>
               <tr>
@@ -114,6 +117,7 @@ function Devices() {
                 <th>Devices</th>
                 <th>Measured Value</th>
                 <th />
+                <th>Battery</th>
               </tr>
             </thead>
             <tbody>
@@ -149,6 +153,7 @@ function Devices() {
             <th>Product</th>
             <th>ExtAddress</th>
             <th>Power</th>
+            <th>Battery</th>
             <th>Sub</th>
           </tr>
         </thead>

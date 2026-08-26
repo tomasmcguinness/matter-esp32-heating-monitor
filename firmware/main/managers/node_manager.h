@@ -8,6 +8,10 @@
 #define DEVICE_TYPE_TEMPERATURE_SENSOR 770
 #define DEVICE_TYPE_FLOW_SENSOR 774
 
+// How we record the PowerSource cluster's FeatureMap. 0 means we haven't asked yet.
+#define POWER_SOURCE_WIRED 1
+#define POWER_SOURCE_BATTERY 2
+
 typedef struct matter_endpoint
 {
     uint16_t endpoint_id;
@@ -18,6 +22,14 @@ typedef struct matter_endpoint
     uint8_t power_source;
 
     int16_t measured_value;
+
+    // PowerSource battery state. Both attributes are optional and nullable, so the has_* flags
+    // tell us the difference between "not reported yet" and "reported as zero".
+    bool has_battery_percent;
+    uint8_t battery_percent; // Whole percent, 0-100.
+
+    bool has_battery_voltage;
+    uint32_t battery_voltage_mv;
 
     uint32_t *device_type_ids;
     uint8_t device_type_count;
@@ -43,6 +55,15 @@ typedef struct matter_node
     char *label;
 
     uint8_t power_source;
+
+    // The most recent battery reading from any endpoint on this node. For a bridge with several
+    // battery endpoints the per-endpoint values are the authoritative ones; this is a summary so
+    // the device list has something to show on the node row.
+    bool has_battery_percent;
+    uint8_t battery_percent; // Whole percent, 0-100.
+
+    bool has_battery_voltage;
+    uint32_t battery_voltage_mv;
 
     uint64_t ext_address;
 
@@ -82,6 +103,9 @@ esp_err_t add_device_type(matter_node_t *node, uint16_t endpoint_id, uint32_t de
 bool node_has_device_type(const matter_node_t *node, uint32_t device_type_id);
 esp_err_t set_endpoint_name(matter_node_t *node, uint16_t endpoint_id, char *fixed_label_name);
 esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, uint8_t power_source);
+bool node_is_battery_powered(const matter_node_t *node);
+esp_err_t set_battery_percent(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, uint8_t percent);
+esp_err_t set_battery_voltage(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, uint32_t voltage_mv);
 esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value);
 esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t *measured_value);
 

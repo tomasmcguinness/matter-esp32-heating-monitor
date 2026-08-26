@@ -323,6 +323,19 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
 
+    // ReadClient hands us a null reader whenever the report carries a status rather than a
+    // value -- an unsupported attribute, cluster or endpoint, or an access denial. Not every
+    // device implements everything we interrogate, so this is expected traffic, not an error.
+    // Every branch below dereferences `data`, so bail out before any of them run.
+    if (data == nullptr)
+    {
+        ESP_LOGW(TAG, "No data for cluster " ChipLogFormatMEI " attribute " ChipLogFormatMEI
+                      " on node %016llx endpoint %u (status 0x%02x); skipping",
+                 ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId), remote_node_id,
+                 path.mEndpointId, static_cast<unsigned>(status.mStatus));
+        return;
+    }
+
     if (path.mEndpointId == 0x0 && path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id)
     {
         ESP_LOGI(TAG, "Processing Descriptor->PartsList attribute response...");
@@ -381,12 +394,61 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             if (path.mEndpointId == 0x00)
             {
-                set_node_power_source(node, is_wired ? 1 : 2);
+                set_node_power_source(node, is_wired ? POWER_SOURCE_WIRED : POWER_SOURCE_BATTERY);
             }
             else
             {
-                set_endpoint_power_source(node, path.mEndpointId, is_wired ? 1 : 2);
+                set_endpoint_power_source(node, path.mEndpointId, is_wired ? POWER_SOURCE_WIRED : POWER_SOURCE_BATTERY);
             }
+        }
+        else if (path.mAttributeId == PowerSource::Attributes::BatPercentRemaining::Id)
+        {
+            // Nullable, and reported in half percent, so 200 is a full battery.
+            //
+            chip::app::DataModel::Nullable<uint8_t> half_percent;
+
+            if (chip::app::DataModel::Decode(*data, half_percent) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to decode BatPercentRemaining");
+                return;
+            }
+
+            bool has_value = !half_percent.IsNull();
+            uint8_t percent = has_value ? (uint8_t)(half_percent.Value() / 2) : 0;
+
+            if (has_value)
+            {
+                ESP_LOGI(TAG, "Battery: %u%%", percent);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Battery percentage is unknown");
+            }
+
+            set_battery_percent(&g_node_manager, remote_node_id, path.mEndpointId, has_value, percent);
+        }
+        else if (path.mAttributeId == PowerSource::Attributes::BatVoltage::Id)
+        {
+            chip::app::DataModel::Nullable<uint32_t> voltage_mv;
+
+            if (chip::app::DataModel::Decode(*data, voltage_mv) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to decode BatVoltage");
+                return;
+            }
+
+            bool has_value = !voltage_mv.IsNull();
+
+            if (has_value)
+            {
+                ESP_LOGI(TAG, "Battery: %lumV", voltage_mv.Value());
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Battery voltage is unknown");
+            }
+
+            set_battery_voltage(&g_node_manager, remote_node_id, path.mEndpointId, has_value, has_value ? voltage_mv.Value() : 0);
         }
     }
     else if (path.mClusterId == BasicInformation::Id)
@@ -474,12 +536,28 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     {
         ESP_LOGI(TAG, "Processing ThreadNetworkDiagnostics->ExtAddress attribute response...");
 
-        uint64_t extAddress;
-        chip::app::DataModel::Decode(*data, extAddress);
+        uint64_t extAddress = 0;
+        CHIP_ERROR decode_err = chip::app::DataModel::Decode(*data, extAddress);
 
-        matter_node_t *node = find_node(&g_node_manager, remote_node_id);
+        if (decode_err != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Could not decode ExtAddress: %" CHIP_ERROR_FORMAT, decode_err.Format());
+        }
+        else
+        {
+            matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
-        set_node_ext_address(node, extAddress);
+            // set_node_ext_address() dereferences without checking, unlike most of the other
+            // node_manager setters, and a report can arrive for a node we have not recorded.
+            if (node)
+            {
+                set_node_ext_address(node, extAddress);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "ExtAddress for unknown node %016llx; dropping", remote_node_id);
+            }
+        }
     }
     else if (path.mClusterId == ThreadNetworkDiagnostics::Id && path.mAttributeId == ThreadNetworkDiagnostics::Attributes::NeighborTable::Id)
     {
@@ -993,7 +1071,6 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const cJSON *inUseJSON = cJSON_GetObjectItemCaseSensitive(root, "inUse");
     const cJSON *setupCodeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
 
     if (!cJSON_IsString(setupCodeJSON) || setupCodeJSON->valuestring == NULL)
@@ -1015,68 +1092,14 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     heating_monitor::controller::pairing_command::get_instance().set_callbacks(callbacks);
 
+    // Commissioning is always OnNetwork: the companion app drives this through MatterSupport,
+    // so iOS Home has already joined the device to Thread and opened a commissioning window
+    // before we are asked to pair. The device is reachable over the border router by the time
+    // we get here, and we never need BLE or the operational dataset ourselves.
+    ESP_LOGI(TAG, "Using OnNetwork discovery");
+
     chip::DeviceLayer::PlatformMgr().LockChipStack();
-    if (cJSON_IsTrue(inUseJSON))
-    {
-        ESP_LOGI(TAG, "Using OnNetwork discovery");
-        heating_monitor::controller::pairing_code(node_id, setupCode);
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Using BLE discovery");
-
-        SetupPayload payload;
-
-        // The web UI sends an 11-digit manual pairing code; the iOS companion app sends the
-        // "MT:" QR payload it gets back from MatterSupport. They need different parsers.
-        CHIP_ERROR parse_err = strncmp(setupCode, "MT:", 3) == 0
-                                   ? QRCodeSetupPayloadParser(setupCode).populatePayload(payload)
-                                   : ManualSetupPayloadParser(setupCode).populatePayload(payload);
-
-        if (parse_err != CHIP_NO_ERROR)
-        {
-            ESP_LOGE(TAG, "Could not parse the setup code: %" CHIP_ERROR_FORMAT, parse_err.Format());
-            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-            cJSON_Delete(root);
-            httpd_resp_set_status(req, "400 Bad Request");
-            httpd_resp_send(req, "Unrecognised setup code", HTTPD_RESP_USE_STRLEN);
-            return ESP_ERR_INVALID_ARG;
-        }
-
-        uint32_t pincode = payload.setUpPINCode;
-
-        // A manual pairing code only carries the top 4 bits of the discriminator, so there is
-        // nothing useful to derive from it and we fall back to the default. A QR payload
-        // carries all 12 bits, which is what lets us pair with a device that isn't on 3840.
-        uint16_t discriminator = payload.discriminator.IsShortDiscriminator()
-                                     ? 3840
-                                     : payload.discriminator.GetLongValue();
-
-        ESP_LOGI(TAG, "pincode: %lu", pincode);
-        ESP_LOGI(TAG, "discriminator: %u", discriminator);
-
-        uint8_t dataset_tlvs_buf[254];
-        uint8_t dataset_tlvs_len = sizeof(dataset_tlvs_buf);
-
-        // TODO Get this from configuration.
-        // OTBR Dataset
-        char *dataset = "0e08000000000001000000030000194a0300000b35060004001fffe00208eb1915c32ec911830708fd86541fdf34f57e0510305d5e9632aa6d44b5b649d07a924b3b030f4f70656e5468726561642d613662650102a6be0410a915d61a1d5621728008e2f91602f25f0c0402a0f7f8";
-
-        // HomePod Dataset
-        //"0e080000000000010000000300000d4a0300001435060004001fffe00208d58ddc1f3cf637620708fdb9d4afcd2632ac0510ee2cd1f3ddd63150e855bac3de75ab54030f4f70656e5468726561642d3166363201021f620410703f90f849c5a0d001a2738ce8dd771d0c0402a0f7f8";
-
-        if (!convert_hex_str_to_bytes(dataset, dataset_tlvs_buf, dataset_tlvs_len))
-        {
-            ESP_LOGE(TAG, "Could not decode the Thread dataset");
-            chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-            cJSON_Delete(root);
-            httpd_resp_set_status(req, "500 Internal Server Error");
-            httpd_resp_send(req, "Invalid Thread dataset", HTTPD_RESP_USE_STRLEN);
-            return ESP_ERR_INVALID_ARG;
-        }
-
-        heating_monitor::controller::pairing_ble_thread(node_id, pincode, discriminator, dataset_tlvs_buf, dataset_tlvs_len);
-    }
+    heating_monitor::controller::pairing_code(node_id, setupCode);
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     cJSON_Delete(root);
@@ -1143,6 +1166,25 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         }
 
         cJSON_AddNumberToObject(jNode, "powerSource", node->power_source);
+
+        if (node->has_battery_percent)
+        {
+            cJSON_AddNumberToObject(jNode, "batteryPercent", node->battery_percent);
+        }
+        else
+        {
+            cJSON_AddItemToObject(jNode, "batteryPercent", cJSON_CreateNull());
+        }
+
+        if (node->has_battery_voltage)
+        {
+            cJSON_AddNumberToObject(jNode, "batteryVoltage", node->battery_voltage_mv);
+        }
+        else
+        {
+            cJSON_AddItemToObject(jNode, "batteryVoltage", cJSON_CreateNull());
+        }
+
         cJSON_AddNumberToObject(jNode, "extAddress", node->ext_address);
 
         cJSON_AddBoolToObject(jNode, "hasSubscription", node->has_subscription);
@@ -1167,6 +1209,24 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
             }
 
             cJSON_AddNumberToObject(endpointJSON, "powerSource", endpoint.power_source);
+
+            if (endpoint.has_battery_percent)
+            {
+                cJSON_AddNumberToObject(endpointJSON, "batteryPercent", endpoint.battery_percent);
+            }
+            else
+            {
+                cJSON_AddItemToObject(endpointJSON, "batteryPercent", cJSON_CreateNull());
+            }
+
+            if (endpoint.has_battery_voltage)
+            {
+                cJSON_AddNumberToObject(endpointJSON, "batteryVoltage", endpoint.battery_voltage_mv);
+            }
+            else
+            {
+                cJSON_AddItemToObject(endpointJSON, "batteryVoltage", cJSON_CreateNull());
+            }
 
             cJSON_AddNumberToObject(endpointJSON, "measuredValue", endpoint.measured_value);
 
@@ -2834,7 +2894,12 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
                 start_mqtt_service();
             }
 
-            start_mdns_service();
+            // Disabled while testing CONFIG_USE_MINIMAL_MDNS. CHIP's minimal mDNS binds UDP
+            // 5353 itself, and mdns_init() inside here would fight it for the port. Cost of
+            // leaving this off: no heating-monitor.local and no _http._tcp advert for the web
+            // UI — reach the UI by IP instead. Re-enable this and set USE_MINIMAL_MDNS back to
+            // n to return to the IDF mDNS stack.
+            // start_mdns_service();
         }
         else if (event->Platform.ESPSystemEvent.Base == IP_EVENT &&
                  event->Platform.ESPSystemEvent.Id == IP_EVENT_GOT_IP6)
