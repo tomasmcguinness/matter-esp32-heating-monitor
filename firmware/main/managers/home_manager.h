@@ -17,11 +17,25 @@ typedef struct {
     uint64_t heat_source_flow_rate_node_id;
     uint16_t heat_source_flow_rate_endpoint_id;
 
+    uint64_t electrical_meter_node_id;
+    uint16_t electrical_meter_endpoint_id;
+
     int16_t outdoor_temperature;
     int16_t heat_source_flow_temperature;
     int16_t heat_source_return_temperature;
     uint16_t heat_source_flow_rate;
     uint16_t heat_source_output;
+
+    // ElectricalPowerMeasurement readings, in the units the cluster reports them: mV, mA and mW.
+    // All three are nullable, so the has_* flags separate "not reported yet" from "reported as zero".
+    bool has_electrical_voltage;
+    int64_t electrical_voltage_mv;
+
+    bool has_electrical_current;
+    int64_t electrical_current_ma;
+
+    bool has_electrical_power;
+    int64_t electrical_power_mw;
 
     // Transient
     uint16_t total_predicted_heat_loss_per_degree = 0;

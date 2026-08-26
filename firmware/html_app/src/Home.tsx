@@ -42,8 +42,7 @@ function Home() {
     <>
       <h1>Home <NavLink className="btn btn-primary action-button" to={`/edit`}>Edit</NavLink></h1>
       <hr />
-      <p>Welcome to the Heating Monitor web interface.</p>
-
+      <h4 style={{marginTop: '20px'}}>Weather</h4>
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <div className="card">
           <div className="card-header">

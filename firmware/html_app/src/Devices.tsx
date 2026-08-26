@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router"
 import PowerSource from "./PowerSource"
 import Battery from "./Battery"
 import CheckMark from "./CheckMark";
+import CrossMark from "./CrossMark";
 
 function Devices() {
 
@@ -95,7 +96,7 @@ function Devices() {
 
     var rows = [];
 
-    rows.push(<tr key={n.nodeId} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
+    rows.push(<tr key={n.nodeId} className={n.hasSubscription ? "" : "table-danger"} onClick={() => navigate(`/devices/${n.nodeId}`)} style={{ 'cursor': 'pointer' }}>
       <td>0x{n.nodeId.toString(16).toUpperCase()}</td>
       <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
@@ -103,7 +104,7 @@ function Devices() {
       <td>{n.extAddress}</td>
       <td><PowerSource powerSource={n.powerSource} /></td>
       <td><Battery powerSource={n.powerSource} percent={n.batteryPercent} voltage={n.batteryVoltage} /></td>
-      <td>{n.hasSubscription ? <CheckMark /> : <></>}</td>
+      <td>{n.hasSubscription ? <CheckMark /> : <span className="text-danger" title="No active subscription"><CrossMark /></span>}</td>
     </tr>);
 
     if (showEndpoints) {

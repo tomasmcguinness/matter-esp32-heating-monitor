@@ -668,6 +668,53 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
         }
     }
+    else if (path.mClusterId == ElectricalPowerMeasurement::Id)
+    {
+        // Voltage, ActiveCurrent and ActivePower are all nullable int64s, in mV, mA and mW.
+        //
+        chip::app::DataModel::Nullable<int64_t> value;
+
+        if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to decode ElectricalPowerMeasurement attribute 0x%08lX", (unsigned long)path.mAttributeId);
+            return;
+        }
+
+        // Only the endpoint the user picked as the home's electrical meter is of interest.
+        //
+        if (g_home_manager.electrical_meter_node_id != remote_node_id || g_home_manager.electrical_meter_endpoint_id != path.mEndpointId)
+        {
+            return;
+        }
+
+        bool has_value = !value.IsNull();
+        int64_t reading = has_value ? value.Value() : 0;
+
+        switch (path.mAttributeId)
+        {
+        case ElectricalPowerMeasurement::Attributes::Voltage::Id:
+            ESP_LOGI(TAG, "Electrical meter voltage: %lld mV", reading);
+            g_home_manager.has_electrical_voltage = has_value;
+            g_home_manager.electrical_voltage_mv = reading;
+            break;
+
+        case ElectricalPowerMeasurement::Attributes::ActiveCurrent::Id:
+            ESP_LOGI(TAG, "Electrical meter current: %lld mA", reading);
+            g_home_manager.has_electrical_current = has_value;
+            g_home_manager.electrical_current_ma = reading;
+            break;
+
+        case ElectricalPowerMeasurement::Attributes::ActivePower::Id:
+            ESP_LOGI(TAG, "Electrical meter power: %lld mW", reading);
+            g_home_manager.has_electrical_power = has_value;
+            g_home_manager.electrical_power_mw = reading;
+            break;
+
+        default:
+            ESP_LOGI(TAG, "Unhandled ElectricalPowerMeasurement attribute 0x%08lX", (unsigned long)path.mAttributeId);
+            break;
+        }
+    }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
@@ -2300,6 +2347,37 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "heatSourceReturnTempSensorEndpointId", g_home_manager.heat_source_return_temp_endpoint_id);
     cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorNodeId", g_home_manager.heat_source_flow_rate_node_id);
     cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorEndpointId", g_home_manager.heat_source_flow_rate_endpoint_id);
+    cJSON_AddNumberToObject(root, "electricalMeterNodeId", g_home_manager.electrical_meter_node_id);
+    cJSON_AddNumberToObject(root, "electricalMeterEndpointId", g_home_manager.electrical_meter_endpoint_id);
+
+    // Nulls where the meter hasn't reported, so the UI can show a dash rather than a plausible zero.
+    //
+    if (g_home_manager.has_electrical_voltage)
+    {
+        cJSON_AddNumberToObject(root, "electricalVoltage", g_home_manager.electrical_voltage_mv);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "electricalVoltage");
+    }
+
+    if (g_home_manager.has_electrical_current)
+    {
+        cJSON_AddNumberToObject(root, "electricalCurrent", g_home_manager.electrical_current_ma);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "electricalCurrent");
+    }
+
+    if (g_home_manager.has_electrical_power)
+    {
+        cJSON_AddNumberToObject(root, "electricalPower", g_home_manager.electrical_power_mw);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "electricalPower");
+    }
 
     cJSON_AddNumberToObject(root, "heatSourceFlowTemperature", g_home_manager.heat_source_flow_temperature);
     cJSON_AddNumberToObject(root, "heatSourceReturnTemperature", g_home_manager.heat_source_return_temperature);
@@ -2350,6 +2428,8 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     const cJSON *returnTemperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnTemperatureSensorEndpointId");
     const cJSON *flowRateSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowRateSensorNodeId");
     const cJSON *flowRateSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowRateSensorEndpointId");
+    const cJSON *electricalMeterNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "electricalMeterNodeId");
+    const cJSON *electricalMeterEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "electricalMeterEndpointId");
 
     g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
     g_home_manager.outdoor_temp_endpoint_id = (uint16_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
@@ -2359,6 +2439,25 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     g_home_manager.heat_source_return_temp_endpoint_id = (uint16_t)returnTemperatureSensorEndpointIdJSON->valueint;
     g_home_manager.heat_source_flow_rate_node_id = (uint64_t)flowRateSensorNodeIdJSON->valueint;
     g_home_manager.heat_source_flow_rate_endpoint_id = (uint16_t)flowRateSensorEndpointIdJSON->valueint;
+
+    uint64_t electrical_meter_node_id = (uint64_t)electricalMeterNodeIdJSON->valueint;
+    uint16_t electrical_meter_endpoint_id = (uint16_t)electricalMeterEndpointIdJSON->valueint;
+
+    // Readings are only kept for the selected meter, so anything we are holding belongs to the old
+    // one. There is nothing to copy across in its place; the subscription will report again shortly.
+    //
+    if (electrical_meter_node_id != g_home_manager.electrical_meter_node_id || electrical_meter_endpoint_id != g_home_manager.electrical_meter_endpoint_id)
+    {
+        g_home_manager.has_electrical_voltage = false;
+        g_home_manager.electrical_voltage_mv = 0;
+        g_home_manager.has_electrical_current = false;
+        g_home_manager.electrical_current_ma = 0;
+        g_home_manager.has_electrical_power = false;
+        g_home_manager.electrical_power_mw = 0;
+    }
+
+    g_home_manager.electrical_meter_node_id = electrical_meter_node_id;
+    g_home_manager.electrical_meter_endpoint_id = electrical_meter_endpoint_id;
 
     save_home_to_nvs(&g_home_manager);
 
