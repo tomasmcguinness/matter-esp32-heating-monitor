@@ -203,8 +203,8 @@ matter_node_t *add_node(node_manager_t *controller, uint64_t node_id, bool is_ic
 
     new_node->node_id = node_id;
     new_node->is_icd = is_icd;
-    new_node->vendor_name = "not-specified";
-    new_node->product_name = "not-specified";
+    new_node->vendor_name = NULL;
+    new_node->product_name = NULL;
     new_node->name = NULL;
     new_node->label = NULL;
     new_node->ext_address = 0; // If 0, assume device isn't thread.

@@ -20,6 +20,9 @@ typedef struct {
     uint64_t electrical_meter_node_id;
     uint16_t electrical_meter_endpoint_id;
 
+    uint64_t heat_meter_node_id;
+    uint16_t heat_meter_endpoint_id;
+
     int16_t outdoor_temperature;
     int16_t heat_source_flow_temperature;
     int16_t heat_source_return_temperature;
@@ -36,6 +39,21 @@ typedef struct {
 
     bool has_electrical_power;
     int64_t electrical_power_mw;
+
+    // Heat Meter cluster readings, in the units the cluster reports them: m^3/h, 0.01 degC and mW.
+    // All four are nullable, so the has_* flags separate "not reported yet" from "reported as zero".
+    // When a meter is selected these replace the discrete heat source sensors below, in update_home.
+    bool has_heat_meter_flow;
+    float heat_meter_flow_m3h;
+
+    bool has_heat_meter_flow_temp;
+    int32_t heat_meter_flow_temp;
+
+    bool has_heat_meter_return_temp;
+    int32_t heat_meter_return_temp;
+
+    bool has_heat_meter_power;
+    int64_t heat_meter_power_mw;
 
     // Transient
     uint16_t total_predicted_heat_loss_per_degree = 0;

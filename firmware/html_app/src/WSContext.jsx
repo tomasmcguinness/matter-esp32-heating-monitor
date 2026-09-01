@@ -1,4 +1,4 @@
-import { useEffect, createContext, useRef } from "react"
+import { useEffect, createContext, useRef, useCallback, useMemo } from "react"
 
 const WebSocketContext = createContext()
 
@@ -13,45 +13,79 @@ function WebSocketProvider({ children }) {
     const ws = useRef(null);
     const channels = useRef({});
 
-    const subscribe = (channel, callback) => {
+    // Stable identities: consumers list these in their useEffect deps, so re-creating them on every
+    // render would make every page resubscribe on every render.
+    //
+    const subscribe = useCallback((channel, callback) => {
         console.log('Subscription received for channel ' + channel);
         channels.current[channel] = callback
-    }
+    }, []);
 
-    const unsubscribe = (channel) => {
-         console.log('Subscription removed for channel ' + channel);
+    const unsubscribe = useCallback((channel) => {
+        console.log('Subscription removed for channel ' + channel);
         delete channels.current[channel]
-    }
+    }, []);
 
     useEffect(() => {
-        ws.current = new WebSocket(socketUrl)
-        ws.current.onopen = () => {
-            console.log('WS open');
-            ws.current.send('anything');
-        }
-        
-        ws.onclose = () => {
-            setTimeout(() => {
-                const reconnectWs = new WebSocket(socketUrl);
-                
-            }, 2000); 
-        };
+        let socket = null;
+        let retryTimer = null;
+        let disposed = false;
 
-        ws.current.onmessage = (message) => {
-            console.log('WS message data received')
-            const { type, ...data } = JSON.parse(message.data)
-            const channel = `${data.channel}`
+        const connect = () => {
+            socket = new WebSocket(socketUrl);
+            ws.current = socket;
 
-            console.log('Locating subscriber for channel ' + channel);
-            if (channels.current[channel]) {
-                console.log('Sending data to channel...')
-                channels.current[channel](data)
+            socket.onopen = () => {
+                console.log('WS open');
+            }
+
+            socket.onmessage = (message) => {
+                const data = JSON.parse(message.data)
+
+                const callback = channels.current[data.channel];
+
+                if (callback) {
+                    callback(data)
+                } else {
+                    console.log('No subscriber for channel ' + data.channel);
+                }
+            }
+
+            // The device reboots on an OTA update and the cable gets unplugged, so a closed socket has
+            // to come back on its own -- otherwise every page just quietly stops updating until the
+            // user reloads. `disposed` keeps the retry from outliving the provider.
+            //
+            socket.onclose = () => {
+                console.log('WS closed');
+
+                if (disposed) {
+                    return;
+                }
+
+                retryTimer = setTimeout(connect, 2000);
+            }
+
+            socket.onerror = () => {
+                socket.close();
             }
         }
-        return () => { ws.current.close() }
-    }, [])
 
-    return (<WebSocketContext.Provider value={{ subscribe, unsubscribe }}>
+        connect();
+
+        return () => {
+            disposed = true;
+            clearTimeout(retryTimer);
+
+            if (socket) {
+                socket.onclose = null;
+                socket.close();
+            }
+        }
+    }, [socketUrl])
+
+    const value = useMemo(() => ({ subscribe, unsubscribe }), [subscribe, unsubscribe]);
+
+    return (<WebSocketContext.Provider value={value}>
         {children}
     </WebSocketContext.Provider>
     )

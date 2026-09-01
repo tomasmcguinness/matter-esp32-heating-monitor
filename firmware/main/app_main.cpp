@@ -29,6 +29,10 @@
 
 #include <esp_http_server.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
+#include <atomic>
 #include <string>
 
 #include <esp_matter.h>
@@ -45,6 +49,8 @@
 #include "managers/room_manager.h"
 #include "managers/home_manager.h"
 #include "managers/pairing_manager.h"
+
+#include "heat_meter_cluster.h"
 #include "commands/pairing_command.h"
 #include "commands/identify_command.h"
 
@@ -90,10 +96,42 @@ static bool is_mqtt_connected = false;
 
 static bool has_subscribed_on_startup = false;
 static httpd_handle_t server;
-static int ws_socket;
 
 static void ws_async_send(void *arg);
+static void ws_broadcast_json(cJSON *root);
+static void broadcast_home_state(void);
 static void log_client_token(httpd_req_t *req, const char *what);
+
+// Commissioning runs on the Matter task, but POST /api/nodes holds its connection open until
+// the outcome is known: the companion app's Matter extension has no other way to learn whether
+// pairing worked, and a 202 that quietly turns into nothing leaves iOS claiming the device was
+// added when it wasn't. The handler arms the wait, kicks off the pairing command, and parks on
+// s_commissioning_done until one of the pairing callbacks signals it.
+//
+// The companion app gives the request 90 seconds, so time out comfortably inside that.
+#define COMMISSIONING_TIMEOUT_MS (75 * 1000)
+
+static SemaphoreHandle_t s_commissioning_lock = NULL; // serialises POST /api/nodes
+static SemaphoreHandle_t s_commissioning_done = NULL; // given by the pairing callbacks
+static std::atomic<bool> s_commissioning_waiting{false};
+static bool s_commissioning_succeeded = false;
+static CHIP_ERROR s_commissioning_error = CHIP_NO_ERROR;
+
+// Called from the Matter task. The first result wins -- a PASE failure unregisters the pairing
+// delegate, so the commissioning callbacks don't necessarily follow it, and a late result from
+// an attempt the handler already gave up on must not wake the next one.
+static void signal_commissioning_complete(bool succeeded, CHIP_ERROR error)
+{
+    if (!s_commissioning_waiting.exchange(false))
+    {
+        return;
+    }
+
+    s_commissioning_succeeded = succeeded;
+    s_commissioning_error = error;
+
+    xSemaphoreGive(s_commissioning_done);
+}
 
 void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAttributePath &path, chip::TLV::TLVReader *data,
                        const chip::app::StatusIB &status);
@@ -457,6 +495,13 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
+        if (node == NULL)
+        {
+            // The read outlived the node -- it was removed while the report was in flight.
+            ESP_LOGE(TAG, "No node %llu to store Basic Information against", remote_node_id);
+            return;
+        }
+
         if (path.mAttributeId == BasicInformation::Attributes::VendorName::Id)
         {
             if (data->GetType() == chip::TLV::kTLVType_UTF8String)
@@ -499,8 +544,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 {
                     char *node_label = (char *)calloc(value.size() + 1, sizeof(char));
                     memcpy(node_label, value.data(), value.size());
-
-                    matter_node_t *node = find_node(&g_node_manager, remote_node_id);
 
                     set_node_label(node, node_label);
 
@@ -639,11 +682,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             data->ExitContainer(containerType);
 
             // All the tags have been process so sent it.
-            char *payload = cJSON_PrintUnformatted(root);
+            ws_broadcast_json(root);
 
-            httpd_queue_work(server, ws_async_send, payload);
-
-            cJSON_free(payload);
             cJSON_Delete(root);
         }
 
@@ -665,7 +705,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         if (g_home_manager.heat_source_flow_rate_node_id == remote_node_id && g_home_manager.heat_source_flow_rate_endpoint_id == path.mEndpointId)
         {
             g_home_manager.heat_source_flow_rate = flow;
-            update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+            broadcast_home_state();
         }
     }
     else if (path.mClusterId == ElectricalPowerMeasurement::Id)
@@ -712,8 +752,102 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         default:
             ESP_LOGI(TAG, "Unhandled ElectricalPowerMeasurement attribute 0x%08lX", (unsigned long)path.mAttributeId);
+            return;
+        }
+
+        // The meter feeds the home's electricity figures, so push them rather than waiting for the
+        // next GET /api/home.
+        //
+        broadcast_home_state();
+    }
+    else if (path.mClusterId == HEAT_METER_CLUSTER_ID)
+    {
+        // The M-Bus adapter's manufacturer-specific Heat Meter cluster. Only the endpoint the user
+        // picked as the home's heat meter is of interest.
+        //
+        if (g_home_manager.heat_meter_node_id != remote_node_id || g_home_manager.heat_meter_endpoint_id != path.mEndpointId)
+        {
+            return;
+        }
+
+        // Unlike ElectricalPowerMeasurement the four attributes are different types, so each one is
+        // decoded into the type the cluster declares for it rather than a shared int64.
+        //
+        switch (path.mAttributeId)
+        {
+        case HM_ATTR_FLOW_ID:
+        {
+            chip::app::DataModel::Nullable<float> value;
+
+            if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to decode Heat Meter flow");
+                return;
+            }
+
+            g_home_manager.has_heat_meter_flow = !value.IsNull();
+            g_home_manager.heat_meter_flow_m3h = value.IsNull() ? 0.0f : value.Value();
+
+            ESP_LOGI(TAG, "Heat meter flow: %.3f m3/h", g_home_manager.heat_meter_flow_m3h);
             break;
         }
+
+        case HM_ATTR_FLOW_TEMP_ID:
+        case HM_ATTR_RETURN_TEMP_ID:
+        {
+            chip::app::DataModel::Nullable<int32_t> value;
+
+            if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to decode Heat Meter temperature 0x%08lX", (unsigned long)path.mAttributeId);
+                return;
+            }
+
+            bool has_value = !value.IsNull();
+            int32_t reading = has_value ? value.Value() : 0;
+
+            if (path.mAttributeId == HM_ATTR_FLOW_TEMP_ID)
+            {
+                ESP_LOGI(TAG, "Heat meter flow temperature: %ld (0.01 degC)", (long)reading);
+                g_home_manager.has_heat_meter_flow_temp = has_value;
+                g_home_manager.heat_meter_flow_temp = reading;
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Heat meter return temperature: %ld (0.01 degC)", (long)reading);
+                g_home_manager.has_heat_meter_return_temp = has_value;
+                g_home_manager.heat_meter_return_temp = reading;
+            }
+
+            break;
+        }
+
+        case HM_ATTR_POWER_ID:
+        {
+            chip::app::DataModel::Nullable<int64_t> value;
+
+            if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to decode Heat Meter power");
+                return;
+            }
+
+            g_home_manager.has_heat_meter_power = !value.IsNull();
+            g_home_manager.heat_meter_power_mw = value.IsNull() ? 0 : value.Value();
+
+            ESP_LOGI(TAG, "Heat meter power: %lld mW", g_home_manager.heat_meter_power_mw);
+            break;
+        }
+
+        default:
+            ESP_LOGI(TAG, "Unhandled Heat Meter attribute 0x%08lX", (unsigned long)path.mAttributeId);
+            return;
+        }
+
+        // The meter feeds the home's heat source figures, so recalculate and push rather than waiting
+        // for the next GET /api/home.
+        //
+        broadcast_home_state();
     }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
@@ -761,6 +895,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         if (hasMatched)
         {
+            broadcast_home_state();
             return;
         }
 
@@ -793,13 +928,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
                 update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
 
-                char *payload = cJSON_PrintUnformatted(root);
+                ws_broadcast_json(root);
 
-                // This will free payload once it's done.
-                httpd_queue_work(server, ws_async_send, payload);
-
-                cJSON_free(payload);
                 cJSON_Delete(root);
+
+                // The radiator's output feeds totalRadiatorOutput and the measured heat loss totals.
+                broadcast_home_state();
 
                 hasMatched = true;
 
@@ -826,13 +960,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 cJSON_AddNumberToObject(root, "roomId", room->room_id);
                 cJSON_AddNumberToObject(root, "temperature", room->current_temperature);
 
-                char *payload = cJSON_PrintUnformatted(root);
+                ws_broadcast_json(root);
 
-                // This will free payload once it's done.
-                httpd_queue_work(server, ws_async_send, payload);
-
-                cJSON_free(payload);
                 cJSON_Delete(root);
+
+                // The room's heat loss feeds the home totals.
+                broadcast_home_state();
 
                 hasMatched = true;
 
@@ -845,6 +978,17 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     else
     {
         ESP_LOGI(TAG, "Unhandled attribute_data_cb update");
+    }
+}
+
+// A PASE failure aborts commissioning on its own and unregisters the pairing delegate, so the
+// commissioning failure callback never runs. Report it here instead.
+static void on_pase_complete_callback(CHIP_ERROR error)
+{
+    if (error != CHIP_NO_ERROR)
+    {
+        ESP_LOGE(TAG, "PASE session establishment failed: %s", ErrorStr(error));
+        signal_commissioning_complete(false, error);
     }
 }
 
@@ -878,6 +1022,11 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
     add_node(&g_node_manager, nodeId, is_icd_device);
 
     save_nodes_to_nvs(&g_node_manager);
+
+    // Answer the waiting POST /api/nodes now the node is in the list. Reading its Basic
+    // Information below only fills in the name and endpoints, which the client doesn't
+    // have to wait for.
+    signal_commissioning_complete(true, CHIP_NO_ERROR);
 
     // Query some of the node properties.
     //
@@ -926,7 +1075,9 @@ static void on_commissioning_failure_callback(ScopedNodeId peer_id,
                                               chip::Controller::CommissioningStage stage,
                                               std::optional<chip::Credentials::AttestationVerificationResult> addtional_err_info)
 {
-    ESP_LOGI(TAG, "on_commissioning_failure_callback invoked!");
+    ESP_LOGE(TAG, "Commissioning failed at stage %d: %s", static_cast<int>(stage), ErrorStr(error));
+
+    signal_commissioning_complete(false, error);
 }
 
 static void on_unpair_complete_callback(NodeId removed_node, CHIP_ERROR error)
@@ -1011,12 +1162,9 @@ static bool convert_hex_str_to_bytes(const char *hex_str, uint8_t *bytes, uint8_
 
 static void ws_async_send(void *arg)
 {
-    ESP_LOGI(TAG, "Sending message over websocket...");
-
-    // Grab a copy of the payload.
-    //
-    char *payload = (char *)calloc(1, strlen((char *)arg) + 1);
-    memcpy(payload, arg, strlen((char *)arg));
+    // We own the payload: httpd_queue_work runs this on the server task some time after it was
+    // queued, so the caller can't free it. It came from cJSON_PrintUnformatted.
+    char *payload = (char *)arg;
 
     httpd_ws_frame_t ws_pkt;
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
@@ -1026,11 +1174,57 @@ static void ws_async_send(void *arg)
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     ws_pkt.final = true;
 
-    esp_err_t err = httpd_ws_send_frame_async(server, ws_socket, &ws_pkt);
+    // Every open tab gets the frame, rather than only whichever one connected last. The client list
+    // carries the plain HTTP sockets too, and httpd_ws_get_fd_info reports a fd as a websocket only
+    // once its handshake has completed, so it is both the filter and the readiness check.
+    //
+    size_t fds = CONFIG_LWIP_MAX_SOCKETS;
+    int client_fds[CONFIG_LWIP_MAX_SOCKETS];
 
-    ESP_LOGI(TAG, "Send result: %u", err);
+    if (httpd_get_client_list(server, &fds, client_fds) == ESP_OK)
+    {
+        for (size_t i = 0; i < fds; i++)
+        {
+            if (httpd_ws_get_fd_info(server, client_fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET)
+            {
+                continue;
+            }
 
-    free(payload);
+            esp_err_t err = httpd_ws_send_frame_async(server, client_fds[i], &ws_pkt);
+
+            if (err != ESP_OK)
+            {
+                ESP_LOGW(TAG, "Failed to send websocket frame to fd %d: %s", client_fds[i], esp_err_to_name(err));
+            }
+        }
+    }
+
+    cJSON_free(payload);
+}
+
+// Queues a JSON object for broadcast to every websocket client. The caller keeps ownership of root.
+//
+static void ws_broadcast_json(cJSON *root)
+{
+    // Matter attribute reports can arrive before Ethernet is up and start_webserver() has run.
+    //
+    if (server == NULL)
+    {
+        return;
+    }
+
+    char *payload = cJSON_PrintUnformatted(root);
+
+    if (payload == NULL)
+    {
+        return;
+    }
+
+    // ws_async_send frees the payload, unless it never gets queued.
+    if (httpd_queue_work(server, ws_async_send, payload) != ESP_OK)
+    {
+        cJSON_free(payload);
+    }
 }
 
 static esp_err_t ws_get_handler(httpd_req_t *req)
@@ -1041,8 +1235,6 @@ static esp_err_t ws_get_handler(httpd_req_t *req)
         ESP_LOGI(TAG, "Handshake done, the new connection was opened");
         return ESP_OK;
     }
-
-    ws_socket = httpd_req_to_sockfd(req);
 
     httpd_ws_frame_t ws_pkt;
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
@@ -1065,10 +1257,13 @@ static esp_err_t ws_get_handler(httpd_req_t *req)
         /* Set max_len = ws_pkt.len to get the frame payload */
         ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
 
+        // Nothing the client sends is acted on -- the browser only ever opens the socket to listen --
+        // so the frame is read to drain it and then dropped.
+        free(buf);
+
         if (ret != ESP_OK)
         {
             ESP_LOGE(TAG, "httpd_ws_recv_frame failed with %d", ret);
-            free(buf);
             return ret;
         }
     }
@@ -1133,7 +1328,28 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
     char *setupCode = setupCodeJSON->valuestring;
 
+    if (s_commissioning_lock == NULL || s_commissioning_done == NULL)
+    {
+        ESP_LOGE(TAG, "Commissioning synchronisation was never set up");
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Commissioning is unavailable", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    // The commissioner only runs one pairing process at a time, and there is a single slot for
+    // its result, so turn a second request away rather than letting it wait behind the first.
+    if (xSemaphoreTake(s_commissioning_lock, 0) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "A commissioning request is already in progress");
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, "A commissioning request is already in progress", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
     heating_monitor::controller::pairing_command_callbacks_t callbacks = {
+        .pase_callback = on_pase_complete_callback,
         .commissioning_success_callback = on_commissioning_success_callback,
         .commissioning_failure_callback = on_commissioning_failure_callback};
 
@@ -1145,19 +1361,90 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     // we get here, and we never need BLE or the operational dataset ourselves.
     ESP_LOGI(TAG, "Using OnNetwork discovery");
 
+    // Arm the wait before starting so a callback can't land before we're listening -- PairDevice
+    // can fail synchronously. Drain the semaphore first in case a previous attempt was signalled
+    // after its handler had already given up on it.
+    xSemaphoreTake(s_commissioning_done, 0);
+    s_commissioning_waiting = true;
+
     chip::DeviceLayer::PlatformMgr().LockChipStack();
-    heating_monitor::controller::pairing_code(node_id, setupCode);
+    esp_err_t pairing_err = heating_monitor::controller::pairing_code(node_id, setupCode);
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     cJSON_Delete(root);
 
-    // Commissioning runs asynchronously, so all we can hand back is the node id we reserved
-    // for it. The client polls GET /api/nodes to find out whether it actually turned up.
+    if (pairing_err != ESP_OK)
+    {
+        s_commissioning_waiting = false;
+        xSemaphoreGive(s_commissioning_lock);
+
+        ESP_LOGE(TAG, "Failed to start commissioning: %s", esp_err_to_name(pairing_err));
+
+        // ESP_ERR_INVALID_STATE means the commissioner still has a pairing delegate registered
+        // from an attempt that never finished.
+        httpd_resp_set_status(req, pairing_err == ESP_ERR_INVALID_STATE ? "409 Conflict"
+                                                                       : "500 Internal Server Error");
+        httpd_resp_send(req, "Failed to start commissioning", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    // Block until commissioning finishes. This parks the HTTP server's only task, so nothing
+    // else is served -- web UI included -- until we answer.
+    ESP_LOGI(TAG, "Waiting up to %d seconds for commissioning to complete...", COMMISSIONING_TIMEOUT_MS / 1000);
+
+    bool signalled = xSemaphoreTake(s_commissioning_done, pdMS_TO_TICKS(COMMISSIONING_TIMEOUT_MS)) == pdTRUE;
+    bool succeeded = signalled && s_commissioning_succeeded;
+    CHIP_ERROR commissioning_error = signalled ? s_commissioning_error : CHIP_NO_ERROR;
+
+    if (!signalled)
+    {
+        // Give up on this attempt and cancel it, so the pairing delegate is released. Without
+        // this, an attempt that never calls back leaves every later request rejected with
+        // "There is already a pairing process" until the device reboots.
+        s_commissioning_waiting = false;
+
+        auto *commissioner = matter_controller_client::get_instance().get_commissioner();
+
+        chip::DeviceLayer::PlatformMgr().LockChipStack();
+        CHIP_ERROR stop_err = commissioner->StopPairing(node_id);
+
+        if (stop_err != CHIP_NO_ERROR)
+        {
+            // Nothing is going to clear the delegate for us now, so do it by hand.
+            ESP_LOGE(TAG, "StopPairing failed: %s", ErrorStr(stop_err));
+            commissioner->RegisterPairingDelegate(nullptr);
+        }
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+    }
+
+    xSemaphoreGive(s_commissioning_lock);
+
+    if (!signalled)
+    {
+        ESP_LOGE(TAG, "Commissioning of node %llu timed out", node_id);
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        httpd_resp_send(req, "The device didn't finish commissioning in time", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    if (!succeeded)
+    {
+        char message[128];
+        snprintf(message, sizeof(message), "Commissioning failed: %s", ErrorStr(commissioning_error));
+
+        ESP_LOGE(TAG, "Commissioning of node %llu failed: %s", node_id, ErrorStr(commissioning_error));
+        httpd_resp_set_status(req, "502 Bad Gateway");
+        httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Commissioning of node %llu completed", node_id);
+
     cJSON *response = cJSON_CreateObject();
     cJSON_AddNumberToObject(response, "nodeId", node_id);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_status(req, "201 Created");
 
     char *json = cJSON_PrintUnformatted(response);
     httpd_resp_sendstr(req, json);
@@ -1586,7 +1873,7 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
     get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
     get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
 
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+    broadcast_home_state();
 
     ESP_LOGI(TAG, "Radiator saved");
 
@@ -1873,6 +2160,8 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
             ESP_LOGI(TAG, "Announced radiator removal via MQTT");
         }
 
+        broadcast_home_state();
+
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "200 OK");
         httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
@@ -1921,6 +2210,8 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     save_rooms_to_nvs(&g_room_manager);
 
     update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, new_room);
+
+    broadcast_home_state();
 
     // TODO Return the ID in JSON!
     //
@@ -2169,6 +2460,8 @@ static esp_err_t rooms_delete_handler(httpd_req_t *req)
 
     remove_room(&g_room_manager, room_id);
 
+    broadcast_home_state();
+
     httpd_resp_set_status(req, "200 OK");
     httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
 
@@ -2330,12 +2623,12 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t home_get_handler(httpd_req_t *req)
+// The home snapshot the UI renders. Shared by GET /api/home and the "home" websocket broadcast so
+// the two can never drift. The caller owns the returned object, and is responsible for having called
+// update_home() first.
+//
+static cJSON *build_home_json(void)
 {
-    ESP_LOGI(TAG, "Getting home...");
-
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
-
     cJSON *root = cJSON_CreateObject();
 
     cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
@@ -2350,6 +2643,8 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorEndpointId", g_home_manager.heat_source_flow_rate_endpoint_id);
     cJSON_AddNumberToObject(root, "electricalMeterNodeId", g_home_manager.electrical_meter_node_id);
     cJSON_AddNumberToObject(root, "electricalMeterEndpointId", g_home_manager.electrical_meter_endpoint_id);
+    cJSON_AddNumberToObject(root, "heatMeterNodeId", g_home_manager.heat_meter_node_id);
+    cJSON_AddNumberToObject(root, "heatMeterEndpointId", g_home_manager.heat_meter_endpoint_id);
 
     // Nulls where the meter hasn't reported, so the UI can show a dash rather than a plausible zero.
     //
@@ -2382,7 +2677,20 @@ static esp_err_t home_get_handler(httpd_req_t *req)
 
     cJSON_AddNumberToObject(root, "heatSourceFlowTemperature", g_home_manager.heat_source_flow_temperature);
     cJSON_AddNumberToObject(root, "heatSourceReturnTemperature", g_home_manager.heat_source_return_temperature);
-    cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_source_flow_rate);
+
+    // Flow rate is the one heat meter reading that loses real precision in heat_source_flow_rate's
+    // uint16 of 0.1 m^3/h, so send the meter's own float when there is one. Same unit either way;
+    // only the fractional part is new.
+    //
+    if (g_home_manager.heat_meter_node_id != 0 && g_home_manager.has_heat_meter_flow)
+    {
+        cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_meter_flow_m3h * 10.0);
+    }
+    else
+    {
+        cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_source_flow_rate);
+    }
+
     cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
 
     cJSON_AddNumberToObject(root, "totalPredictedHeatLoss", g_home_manager.total_predicted_heat_loss_per_degree);
@@ -2391,6 +2699,37 @@ static esp_err_t home_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "measuredHeatLossAtCurrentTemperature", g_home_manager.total_measured_heat_loss_at_current_temperature);
     cJSON_AddNumberToObject(root, "radiatorCount", g_home_manager.radiator_count);
     cJSON_AddNumberToObject(root, "totalRadiatorOutput", g_home_manager.total_radiator_output);
+
+    return root;
+}
+
+// Recalculates the home totals and pushes the same snapshot GET /api/home returns, so an open Home
+// tab tracks the readings instead of showing whatever was true when it was loaded.
+//
+static void broadcast_home_state(void)
+{
+    if (server == NULL)
+    {
+        return;
+    }
+
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+
+    cJSON *root = build_home_json();
+    cJSON_AddStringToObject(root, "channel", "home");
+
+    ws_broadcast_json(root);
+
+    cJSON_Delete(root);
+}
+
+static esp_err_t home_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting home...");
+
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+
+    cJSON *root = build_home_json();
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 OK");
@@ -2431,6 +2770,39 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     const cJSON *flowRateSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "flowRateSensorEndpointId");
     const cJSON *electricalMeterNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "electricalMeterNodeId");
     const cJSON *electricalMeterEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "electricalMeterEndpointId");
+    const cJSON *heatMeterNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "heatMeterNodeId");
+    const cJSON *heatMeterEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "heatMeterEndpointId");
+
+    // Every field is read straight into the manager below, so a missing or non-numeric one would be
+    // dereferenced as a null cJSON. The web app always sends the full object; anything else is a bug
+    // on the client and is worth reporting rather than crashing on.
+    //
+    const cJSON *requiredFields[] = {
+        outdoorTemperatureSensorNodeIdJSON,
+        outdoorTemperatureSensorEndpointIdJSON,
+        flowTemperatureSensorNodeIdJSON,
+        flowTemperatureSensorEndpointIdJSON,
+        returnTemperatureSensorNodeIdJSON,
+        returnTemperatureSensorEndpointIdJSON,
+        flowRateSensorNodeIdJSON,
+        flowRateSensorEndpointIdJSON,
+        electricalMeterNodeIdJSON,
+        electricalMeterEndpointIdJSON,
+        heatMeterNodeIdJSON,
+        heatMeterEndpointIdJSON,
+    };
+
+    for (size_t i = 0; i < sizeof(requiredFields) / sizeof(requiredFields[0]); i++)
+    {
+        if (!cJSON_IsNumber(requiredFields[i]))
+        {
+            ESP_LOGE(TAG, "Home update is missing a required numeric field (index %u)", (unsigned)i);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, "Missing or invalid field", HTTPD_RESP_USE_STRLEN);
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
 
     g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
     g_home_manager.outdoor_temp_endpoint_id = (uint16_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
@@ -2460,6 +2832,26 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     g_home_manager.electrical_meter_node_id = electrical_meter_node_id;
     g_home_manager.electrical_meter_endpoint_id = electrical_meter_endpoint_id;
 
+    uint64_t heat_meter_node_id = (uint64_t)heatMeterNodeIdJSON->valueint;
+    uint16_t heat_meter_endpoint_id = (uint16_t)heatMeterEndpointIdJSON->valueint;
+
+    // Same as above: the readings we are holding belong to the meter that was selected before.
+    //
+    if (heat_meter_node_id != g_home_manager.heat_meter_node_id || heat_meter_endpoint_id != g_home_manager.heat_meter_endpoint_id)
+    {
+        g_home_manager.has_heat_meter_flow = false;
+        g_home_manager.heat_meter_flow_m3h = 0.0f;
+        g_home_manager.has_heat_meter_flow_temp = false;
+        g_home_manager.heat_meter_flow_temp = 0;
+        g_home_manager.has_heat_meter_return_temp = false;
+        g_home_manager.heat_meter_return_temp = 0;
+        g_home_manager.has_heat_meter_power = false;
+        g_home_manager.heat_meter_power_mw = 0;
+    }
+
+    g_home_manager.heat_meter_node_id = heat_meter_node_id;
+    g_home_manager.heat_meter_endpoint_id = heat_meter_endpoint_id;
+
     save_home_to_nvs(&g_home_manager);
 
     // Copy the outdoor temperature from the sensor to the home manager so that it's available immediately.
@@ -2469,7 +2861,7 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     get_endpoint_measured_value(&g_node_manager, g_home_manager.heat_source_return_temp_node_id, g_home_manager.heat_source_return_temp_endpoint_id, &g_home_manager.heat_source_return_temperature);
     get_endpoint_measured_value_uint16(&g_node_manager, g_home_manager.heat_source_flow_rate_node_id, g_home_manager.heat_source_flow_rate_endpoint_id, &g_home_manager.heat_source_flow_rate);
 
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+    broadcast_home_state();
 
     httpd_resp_set_status(req, "201 Ok");
     httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
@@ -2648,6 +3040,15 @@ httpd_handle_t start_webserver(void)
 
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    // POST /api/nodes blocks on these until commissioning finishes.
+    s_commissioning_lock = xSemaphoreCreateMutex();
+    s_commissioning_done = xSemaphoreCreateBinary();
+
+    if (s_commissioning_lock == NULL || s_commissioning_done == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
+    }
 
     config.max_uri_handlers = 30;
     config.lru_purge_enable = true;

@@ -183,9 +183,55 @@ void update_all_rooms_heat_loss(node_manager_t *node_manager, home_manager_t *ho
 
 void update_home(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager, esp_mqtt_client_handle_t mqtt_client)
 {
-    // Compute heat source output.
+    // A heat meter measures the flow, both temperatures and the power itself, so when one is selected
+    // it is authoritative: its readings replace whatever the discrete sensors put in place, including
+    // the output, which the meter reports directly rather than leaving us to infer it from flow and
+    // delta-T. A quantity the meter has not reported stays at zero, which is how the UI shows a dash.
     //
-    if (home_manager->heat_source_flow_rate == 0 || home_manager->heat_source_flow_temperature == 0 || home_manager->heat_source_return_temperature == 0)
+    if (home_manager->heat_meter_node_id != 0)
+    {
+        // The cluster reports temperatures in 0.01 degC, the same unit these fields use, so the only
+        // thing to do is clamp to int16. A heat meter will never get near either end of that range.
+        //
+        home_manager->heat_source_flow_temperature = 0;
+
+        if (home_manager->has_heat_meter_flow_temp)
+        {
+            int32_t flow_temp = home_manager->heat_meter_flow_temp;
+            home_manager->heat_source_flow_temperature = (int16_t)(flow_temp > INT16_MAX ? INT16_MAX : (flow_temp < INT16_MIN ? INT16_MIN : flow_temp));
+        }
+
+        home_manager->heat_source_return_temperature = 0;
+
+        if (home_manager->has_heat_meter_return_temp)
+        {
+            int32_t return_temp = home_manager->heat_meter_return_temp;
+            home_manager->heat_source_return_temperature = (int16_t)(return_temp > INT16_MAX ? INT16_MAX : (return_temp < INT16_MIN ? INT16_MIN : return_temp));
+        }
+
+        // heat_source_flow_rate is a uint16 in 0.1 m^3/h, matching Flow Measurement. The meter's own
+        // float is sent to the UI separately, so this rounding only affects anything reading the
+        // manager directly.
+        //
+        home_manager->heat_source_flow_rate = 0;
+
+        if (home_manager->has_heat_meter_flow && home_manager->heat_meter_flow_m3h > 0.0f)
+        {
+            long flow = lroundf(home_manager->heat_meter_flow_m3h * 10.0f);
+            home_manager->heat_source_flow_rate = (uint16_t)(flow > UINT16_MAX ? UINT16_MAX : flow);
+        }
+
+        home_manager->heat_source_output = 0;
+
+        if (home_manager->has_heat_meter_power && home_manager->heat_meter_power_mw > 0)
+        {
+            int64_t watts = home_manager->heat_meter_power_mw / 1000;
+            home_manager->heat_source_output = (uint16_t)(watts > UINT16_MAX ? UINT16_MAX : watts);
+        }
+    }
+    // Compute heat source output from the discrete sensors.
+    //
+    else if (home_manager->heat_source_flow_rate == 0 || home_manager->heat_source_flow_temperature == 0 || home_manager->heat_source_return_temperature == 0)
     {
         // ESP_LOGI(TAG, "Can't calculate heat source output as we don't have all the required data yet");
         home_manager->heat_source_output = 0;

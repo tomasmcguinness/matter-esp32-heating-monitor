@@ -195,6 +195,8 @@ enum MatterDeviceType {
         case 777: return "Heat Pump"
         case 1293: return "Device Energy Manager"
         case 1296: return "Electrical Sensor"
+        // The M-Bus adapter's manufacturer-specific heat meter, on the Matter test vendor id 0xFFF1.
+        case 0xFFF1_0001: return "Heat Meter"
         default: return "Type \(id)"
         }
     }

@@ -9,6 +9,7 @@
 
 #include "subscription_manager.h"
 #include "node_manager.h"
+#include "heat_meter_cluster.h"
 #include "app_main.h"
 
 using namespace chip::app::Clusters;
@@ -53,11 +54,12 @@ static void send_subscription(intptr_t arg)
     bool wants_temperature = node_has_device_type(node, DEVICE_TYPE_TEMPERATURE_SENSOR);
     bool wants_flow = node_has_device_type(node, DEVICE_TYPE_FLOW_SENSOR);
     bool wants_electrical = node_has_device_type(node, DEVICE_TYPE_ELECTRICAL_SENSOR);
+    bool wants_heat_meter = node_has_device_type(node, HEAT_METER_DEVICE_TYPE_ID);
     bool wants_battery = node_is_battery_powered(node);
 
-    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_battery)
+    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_battery)
     {
-        ESP_LOGW(TAG, "Node 0x%016llX has no temperature, flow or electrical device types and is not on battery; nothing to subscribe to", node_id);
+        ESP_LOGW(TAG, "Node 0x%016llX has no temperature, flow, electrical or heat meter device types and is not on battery; nothing to subscribe to", node_id);
 
         bool create_new_subscription = false;
         mark_node_has_no_subscription(s_node_manager, node_id, 0, &create_new_subscription);
@@ -65,7 +67,7 @@ static void send_subscription(intptr_t arg)
     }
 
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_battery ? 2 : 0));
+    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_battery ? 2 : 0));
 
     if (!attr_paths.Get())
     {
@@ -95,6 +97,25 @@ static void send_subscription(intptr_t arg)
         attr_paths[path_index++] = AttributePathParams(ElectricalPowerMeasurement::Id, ElectricalPowerMeasurement::Attributes::ActivePower::Id);
     }
 
+    if (wants_heat_meter)
+    {
+        // The manufacturer-specific Heat Meter cluster, which the M-Bus adapter uses to report the
+        // meter dataset at a higher precision than Flow/Temperature Measurement can carry. The ids
+        // are plain uint32s as far as AttributePathParams is concerned. Endpoint left wildcard, as
+        // above -- the meter is never on the root endpoint.
+        //
+        // The ids have to be cast: as bare unsigned ints they match both the (EndpointId, ClusterId)
+        // and the (ClusterId, AttributeId) overload. The generated Clusters::X::Id constants that the
+        // calls above use are already typed, which is why they need no cast.
+        //
+        constexpr chip::ClusterId kHeatMeterCluster = HEAT_METER_CLUSTER_ID;
+
+        attr_paths[path_index++] = AttributePathParams(kHeatMeterCluster, (chip::AttributeId)HM_ATTR_FLOW_ID);
+        attr_paths[path_index++] = AttributePathParams(kHeatMeterCluster, (chip::AttributeId)HM_ATTR_FLOW_TEMP_ID);
+        attr_paths[path_index++] = AttributePathParams(kHeatMeterCluster, (chip::AttributeId)HM_ATTR_RETURN_TEMP_ID);
+        attr_paths[path_index++] = AttributePathParams(kHeatMeterCluster, (chip::AttributeId)HM_ATTR_POWER_ID);
+    }
+
     if (wants_battery)
     {
         // The endpoint is left wildcard because PowerSource does not have to be on the root, and a
@@ -108,9 +129,10 @@ static void send_subscription(intptr_t arg)
     ScopedMemoryBufferWithSize<EventPathParams> event_paths;
     event_paths.Alloc(0);
 
-    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s)", node_id, (unsigned)path_index,
+    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s)", node_id, (unsigned)path_index,
              wants_temperature ? "temperature " : "", wants_flow ? "flow " : "",
-             wants_electrical ? "electrical " : "", wants_battery ? "battery" : "");
+             wants_electrical ? "electrical " : "", wants_heat_meter ? "heat_meter " : "",
+             wants_battery ? "battery" : "");
 
     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(node_id,
                                                                               std::move(attr_paths),

@@ -56,9 +56,10 @@ final class DevicesModel {
 
     /// Waits for a freshly commissioned node to show up.
     ///
-    /// The hub answers `POST /api/nodes` with 202 as soon as it starts pairing, and there is
-    /// no completion callback on the API, so polling is the only way to know it worked. The
-    /// extension leaves the node id it was given in the App Group for us to look for.
+    /// The hub doesn't answer `POST /api/nodes` until commissioning has finished, so the node
+    /// is normally there on the first refresh; the retries only cover the case where the
+    /// extension's own view of the outcome and the node list disagree. The extension leaves the
+    /// node id it was given in the App Group for us to look for.
     func awaitCommissionedNode(hub: PairedHub?) async {
         guard let hub else { return }
 
@@ -70,8 +71,6 @@ final class DevicesModel {
             HubStore.lastCommissionedNodeId = nil
         }
 
-        // BLE + Thread commissioning takes a while, and the device only lands in the node
-        // list once the hub has read its Basic Information cluster.
         for attempt in 0..<20 {
             if attempt > 0 {
                 try? await Task.sleep(for: .seconds(3))

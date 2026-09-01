@@ -10,6 +10,8 @@ function EditHome() {
   const [flowTemperatureSensor, setFlowTemperatureSensor] = useState<string | undefined>(undefined);
   const [returnTemperatureSensor, setReturnTemperatureSensor] = useState<string | undefined>(undefined);
   const [flowRateSensor, setFlowRateSensor] = useState<string | undefined>(undefined);
+  const [electricalMeter, setElectricalMeter] = useState<string | undefined>(undefined);
+  const [heatMeter, setHeatMeter] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     fetch('/api/home').then(response => response.json()).then(data => {
@@ -17,23 +19,38 @@ function EditHome() {
       setFlowTemperatureSensor(`${data.heatSourceFlowTemperatureSensorNodeId}|${data.heatSourceFlowTemperatureSensorEndpointId}`);
       setReturnTemperatureSensor(`${data.heatSourceReturnTemperatureSensorNodeId}|${data.heatSourceReturnTemperatureSensorEndpointId}`);
       setFlowRateSensor(`${data.heatSourceFlowRateSensorNodeId}|${data.heatSourceFlowRateSensorEndpointId}`);
+      setElectricalMeter(`${data.electricalMeterNodeId}|${data.electricalMeterEndpointId}`);
+      setHeatMeter(`${data.heatMeterNodeId}|${data.heatMeterEndpointId}`);
     });
   }, []);
 
   const save = (e: any) => {
     e.preventDefault();
 
-    var outdoorTemperatureSensorNodeId = parseInt(outdoorTemperatureSensor!.split('|')[0]);
-    var outdoorTemperatureSensorEndpointId = parseInt(outdoorTemperatureSensor!.split('|')[1]);
+    // Every selection is optional, so a cleared select gives NaN on both halves -- which serialises
+    // as null and is rejected by the firmware. The firmware treats node 0 as "nothing selected",
+    // which is what an unset sensor loads back as, so fall back to that.
+    //
+    const nodeId = (sensor: string | undefined) => parseInt(sensor?.split('|')[0] ?? '') || 0;
+    const endpointId = (sensor: string | undefined) => parseInt(sensor?.split('|')[1] ?? '') || 0;
 
-    var flowTemperatureSensorNodeId = parseInt(flowTemperatureSensor!.split('|')[0]);
-    var flowTemperatureSensorEndpointId = parseInt(flowTemperatureSensor!.split('|')[1]);
+    var outdoorTemperatureSensorNodeId = nodeId(outdoorTemperatureSensor);
+    var outdoorTemperatureSensorEndpointId = endpointId(outdoorTemperatureSensor);
 
-    var returnTemperatureSensorNodeId = parseInt(returnTemperatureSensor!.split('|')[0]);
-    var returnTemperatureSensorEndpointId = parseInt(returnTemperatureSensor!.split('|')[1]);
+    var flowTemperatureSensorNodeId = nodeId(flowTemperatureSensor);
+    var flowTemperatureSensorEndpointId = endpointId(flowTemperatureSensor);
 
-    var flowRateSensorNodeId = parseInt(flowRateSensor!.split('|')[0]);
-    var flowRateSensorEndpointId = parseInt(flowRateSensor!.split('|')[1]);
+    var returnTemperatureSensorNodeId = nodeId(returnTemperatureSensor);
+    var returnTemperatureSensorEndpointId = endpointId(returnTemperatureSensor);
+
+    var flowRateSensorNodeId = nodeId(flowRateSensor);
+    var flowRateSensorEndpointId = endpointId(flowRateSensor);
+
+    var electricalMeterNodeId = nodeId(electricalMeter);
+    var electricalMeterEndpointId = endpointId(electricalMeter);
+
+    var heatMeterNodeId = nodeId(heatMeter);
+    var heatMeterEndpointId = endpointId(heatMeter);
 
     var object: any = {
       outdoorTemperatureSensorNodeId,
@@ -43,7 +60,11 @@ function EditHome() {
       returnTemperatureSensorNodeId,
       returnTemperatureSensorEndpointId,
       flowRateSensorNodeId,
-      flowRateSensorEndpointId
+      flowRateSensorEndpointId,
+      electricalMeterNodeId,
+      electricalMeterEndpointId,
+      heatMeterNodeId,
+      heatMeterEndpointId
     };
     var json = JSON.stringify(object);
 
@@ -71,6 +92,14 @@ function EditHome() {
       </div>
       <div className="mb-3">
         <SensorSelect deviceType={774} title="Flow Rate Sensor" required={false} selectedSensor={flowRateSensor} onSelectedSensorChange={(e: string) => setFlowRateSensor(e)} />
+      </div>
+      <div className="mb-3">
+        {/* The M-Bus adapter's manufacturer-specific heat meter device type. Selecting one makes it
+            the source for the whole Heat Meter section, in place of the three sensors above. */}
+        <SensorSelect deviceType={0xFFF10001} title="Heat Meter" required={false} selectedSensor={heatMeter} onSelectedSensorChange={(e: string) => setHeatMeter(e)} />
+      </div>
+      <div className="mb-3">
+        <SensorSelect deviceType={1296} title="Electricity Meter" required={false} selectedSensor={electricalMeter} onSelectedSensorChange={(e: string) => setElectricalMeter(e)} />
       </div>
       <button className="btn btn-primary" onClick={save} style={{ 'marginRight': '5px' }}>Save</button>
       <NavLink className="btn btn-danger" to={`/`}>Cancel</NavLink>

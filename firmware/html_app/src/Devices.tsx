@@ -40,6 +40,9 @@ function Devices() {
           case 1296:
             name = "Electrical Sensor";
             break;
+          case 0xFFF10001:
+            name = "Heat Meter";
+            break;
           case 17:
             name = "Power Source";
             break;

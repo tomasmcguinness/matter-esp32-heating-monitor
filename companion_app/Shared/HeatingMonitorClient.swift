@@ -38,8 +38,9 @@ struct HeatingMonitorClient: Sendable {
 
     /// Hands a Matter onboarding payload to the hub, which does the actual commissioning.
     ///
-    /// Returns the node id the hub reserved. Commissioning itself is asynchronous -- a 202
-    /// means the hub started, not that the device joined.
+    /// The hub holds the request open until commissioning finishes, so this takes as long as
+    /// pairing does and a success means the device really did join the fabric. Anything else
+    /// throws, including the hub's own 504 when it gave up waiting.
     @discardableResult
     func commission(setupCode: String) async throws -> UInt64 {
         let body = try JSONEncoder().encode(CommissionRequest(inUse: false, setupCode: setupCode))

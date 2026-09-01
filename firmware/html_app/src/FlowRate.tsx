@@ -8,9 +8,9 @@ function FlowRate({ children }: { children: any }) {
         return <span>-</span>;
     }
 
-    var temp = parseInt(firstChild.toString());
+    var temp = parseFloat(firstChild.toString());
 
-    if (temp === null || temp === undefined) {
+    if (isNaN(temp)) {
         return <span>-</span>;
     }
 

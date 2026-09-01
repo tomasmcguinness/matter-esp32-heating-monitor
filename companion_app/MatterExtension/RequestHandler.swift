@@ -9,8 +9,8 @@ import os
 /// code (or taken a manual pairing code) and it hands us the decoded onboarding payload.
 ///
 /// We are not the Matter controller -- the Heating Monitor is. All this does is forward the
-/// payload to the hub's `POST /api/nodes`, which pairs the device onto the hub's fabric over
-/// BLE and Thread.
+/// payload to the hub's `POST /api/nodes`, which pairs the device onto the hub's fabric. That
+/// call blocks until commissioning finishes, so what it answers with is the real outcome.
 final class RequestHandler: MatterAddDeviceExtensionRequestHandler {
 
     private let logger = Logger(subsystem: "com.tomasmcguinness.heating-monitor-companion",
@@ -24,6 +24,7 @@ final class RequestHandler: MatterAddDeviceExtensionRequestHandler {
         let client = try HeatingMonitorClient.forPairedHub()
 
         do {
+            // Blocks for as long as commissioning takes -- up to about 75 seconds.
             let nodeId = try await client.commission(setupCode: onboardingPayload)
 
             // The app has no other way to learn this: perform() returns nothing, and the
@@ -31,7 +32,7 @@ final class RequestHandler: MatterAddDeviceExtensionRequestHandler {
             // work out which node to wait for.
             HubStore.lastCommissionedNodeId = nodeId
 
-            logger.info("Heating Monitor accepted the payload; reserved node \(nodeId, privacy: .public)")
+            logger.info("Heating Monitor commissioned node \(nodeId, privacy: .public)")
         } catch {
             // Let this propagate so the system sheet reports a failure rather than claiming
             // the device was added.
