@@ -2179,8 +2179,19 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Adding a room...");
 
-    char content[req->content_len];
-    esp_err_t err = httpd_req_recv(req, content, req->content_len);
+    char content[req->content_len + 1];
+
+    int received = httpd_req_recv(req, content, req->content_len);
+
+    if (received <= 0)
+    {
+        ESP_LOGE(TAG, "Failed to receive data %d", received);
+        httpd_resp_set_status(req, "500");
+        httpd_resp_send(req, "INTERNAL SERVER ERROR", HTTPD_RESP_USE_STRLEN);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    content[received] = '\0';
 
     cJSON *root = cJSON_Parse(content);
 
@@ -2198,14 +2209,65 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     const cJSON *heatLossPerDegreeJSON = cJSON_GetObjectItemCaseSensitive(root, "heatLossPerDegree");
     const cJSON *temperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorNodeId");
     const cJSON *temperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorEndpointId");
+    const cJSON *radiatorIdsJSON = cJSON_GetObjectItemCaseSensitive(root, "radiatorIds");
+
+    if (!cJSON_IsString(nameJSON) ||
+        !cJSON_IsNumber(targetTemperatureJSON) ||
+        !cJSON_IsNumber(temperatureSensorNodeIdJSON) ||
+        !cJSON_IsNumber(temperatureSensorEndpointIdJSON))
+    {
+        ESP_LOGE(TAG, "Room JSON is missing a required field");
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Missing required field", HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Both of these are optional. The MQTT name is only used to build the room's
+    // state topic and the heat loss is normally filled in later, via a room update.
+    //
+    char *mqtt_name = cJSON_IsString(mqttNameJSON) ? mqttNameJSON->valuestring : (char *)"";
+    uint8_t heat_loss_per_degree = cJSON_IsNumber(heatLossPerDegreeJSON) ? (uint8_t)heatLossPerDegreeJSON->valueint : 0;
 
     room_t *new_room = add_room(&g_room_manager,
                                 nameJSON->valuestring,
-                                mqttNameJSON->valuestring,
+                                mqtt_name,
                                 (uint16_t)targetTemperatureJSON->valueint,
-                                (uint8_t)heatLossPerDegreeJSON->valueint, 
+                                heat_loss_per_degree,
                                 (uint64_t)temperatureSensorNodeIdJSON->valueint,
                                 (uint16_t)temperatureSensorEndpointIdJSON->valueint);
+
+    if (new_room == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to add the room");
+        httpd_resp_set_status(req, "500");
+        httpd_resp_send(req, "INTERNAL SERVER ERROR", HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+
+    // The radiators are created before the room, so the caller can hand us the
+    // IDs it got back from /api/radiators and have them attached right away.
+    //
+    if (cJSON_IsArray(radiatorIdsJSON))
+    {
+        uint8_t radiator_count = cJSON_GetArraySize(radiatorIdsJSON);
+        uint8_t *radiator_ids = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
+
+        cJSON *iterator = NULL;
+
+        uint8_t i = 0;
+
+        cJSON_ArrayForEach(iterator, radiatorIdsJSON)
+        {
+            ESP_LOGI(TAG, "Add radiatorId: %u to room %u", (uint8_t)iterator->valueint, new_room->room_id);
+            radiator_ids[i++] = (uint8_t)iterator->valueint;
+        }
+
+        set_room_radiators(new_room, radiator_count, radiator_ids);
+
+        free(radiator_ids);
+    }
 
     save_rooms_to_nvs(&g_room_manager);
 
@@ -2213,10 +2275,16 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 
     broadcast_home_state();
 
-    // TODO Return the ID in JSON!
-    //
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddNumberToObject(response, "roomId", new_room->room_id);
+    char *response_payload = cJSON_PrintUnformatted(response);
+
+    httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 Ok");
-    httpd_resp_send(req, "ADDED", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, response_payload, HTTPD_RESP_USE_STRLEN);
+
+    cJSON_free(response_payload);
+    cJSON_Delete(response);
 
     cJSON_Delete(root);
 
