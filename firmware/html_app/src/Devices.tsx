@@ -41,7 +41,7 @@ function Devices() {
             name = "Electrical Sensor";
             break;
           case 0xFFF10001:
-            name = "Heat Meter";
+            name = "Heat Meter (Custom)";
             break;
           case 17:
             name = "Power Source";
@@ -91,9 +91,9 @@ function Devices() {
         <td>{endpoint.endpointId}</td>
         <td>{endpoint.endpointName}</td>
         <td>{deviceTypes}</td>
-        <td>{endpoint.measuredValue}</td>
+        {/* <td>{endpoint.measuredValue}</td>
         <td><PowerSource powerSource={endpoint.powerSource} /></td>
-        <td><Battery powerSource={endpoint.powerSource} percent={endpoint.batteryPercent} voltage={endpoint.batteryVoltage} /></td>
+        <td><Battery powerSource={endpoint.powerSource} percent={endpoint.batteryPercent} voltage={endpoint.batteryVoltage} /></td> */}
       </tr>)
     });
 
@@ -119,9 +119,9 @@ function Devices() {
                 <th>Endpoint</th>
                 <th>Name</th>
                 <th>Devices</th>
-                <th>Measured Value</th>
+                {/* <th>Measured Value</th>
                 <th />
-                <th>Battery</th>
+                <th>Battery</th> */}
               </tr>
             </thead>
             <tbody>

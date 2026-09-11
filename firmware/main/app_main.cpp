@@ -32,6 +32,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <cmath>
 #include <atomic>
 #include <string>
 
@@ -61,6 +62,12 @@
 
 #include "utilities/TokenIterator.h"
 #include "utilities/UrlTokenBindings.h"
+
+#include "storage/history_api.h"
+#include "storage/history_logger.h"
+#include "storage/sd_card.h"
+#include "storage/time_sync.h"
+#include "storage/value_cache.h"
 
 #include "mqtt_client.h"
 
@@ -689,25 +696,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         data->ExitContainer(containerType);
     }
-    else if (path.mClusterId == FlowMeasurement::Id && path.mAttributeId == FlowMeasurement::Attributes::MeasuredValue::Id)
-    {
-        ESP_LOGI(TAG, "Processing FlowMeasurement->MeasuredValue attribute response...");
-
-        uint16_t flow;
-        chip::app::DataModel::Decode(*data, flow);
-
-        ESP_LOGI(TAG, "Flow Value: %d", flow);
-
-        set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, flow);
-
-        // If this FlowMeasurement is set in the home, update it's value.
-        //
-        if (g_home_manager.heat_source_flow_rate_node_id == remote_node_id && g_home_manager.heat_source_flow_rate_endpoint_id == path.mEndpointId)
-        {
-            g_home_manager.heat_source_flow_rate = flow;
-            broadcast_home_state();
-        }
-    }
     else if (path.mClusterId == ElectricalPowerMeasurement::Id)
     {
         // Voltage, ActiveCurrent and ActivePower are all nullable int64s, in mV, mA and mW.
@@ -720,7 +708,16 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             return;
         }
 
-        // Only the endpoint the user picked as the home's electrical meter is of interest.
+        // Every electrical endpoint is worth recording, whether or not it is the one bound to
+        // the home, so the cache is fed before the filter below.
+        //
+        if (!value.IsNull())
+        {
+            ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, value.Value());
+        }
+
+        // Only the endpoint the user picked as the home's electrical meter is of interest for
+        // the live figures.
         //
         if (g_home_manager.electrical_meter_node_id != remote_node_id || g_home_manager.electrical_meter_endpoint_id != path.mEndpointId)
         {
@@ -762,13 +759,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     }
     else if (path.mClusterId == HEAT_METER_CLUSTER_ID)
     {
-        // The M-Bus adapter's manufacturer-specific Heat Meter cluster. Only the endpoint the user
-        // picked as the home's heat meter is of interest.
+        // The M-Bus adapter's manufacturer-specific Heat Meter cluster. Every heat meter endpoint
+        // is cached for the history logger; only the endpoint the user picked as the home's meter
+        // feeds the live home figures.
         //
-        if (g_home_manager.heat_meter_node_id != remote_node_id || g_home_manager.heat_meter_endpoint_id != path.mEndpointId)
-        {
-            return;
-        }
+        bool is_home_meter = (g_home_manager.heat_meter_node_id == remote_node_id &&
+                              g_home_manager.heat_meter_endpoint_id == path.mEndpointId);
 
         // Unlike ElectricalPowerMeasurement the four attributes are different types, so each one is
         // decoded into the type the cluster declares for it rather than a shared int64.
@@ -785,10 +781,23 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 return;
             }
 
-            g_home_manager.has_heat_meter_flow = !value.IsNull();
-            g_home_manager.heat_meter_flow_m3h = value.IsNull() ? 0.0f : value.Value();
+            // The cluster reports a float and the cache holds int64, so the flow is cached as
+            // milli-m3/h. That is also litres per hour, which is the unit the history record uses.
+            if (!value.IsNull())
+            {
+                ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId,
+                                           (int64_t)lroundf(value.Value() * 1000.0f));
+            }
 
-            ESP_LOGI(TAG, "Heat meter flow: %.3f m3/h", g_home_manager.heat_meter_flow_m3h);
+            if (!is_home_meter)
+            {
+                break;
+            }
+
+            g_home_manager.has_heat_meter_flow = !value.IsNull();
+            g_home_manager.heat_meter_flow = value.IsNull() ? 0.0f : value.Value();
+
+            ESP_LOGI(TAG, "Heat meter flow: %.3f m3/h", g_home_manager.heat_meter_flow);
             break;
         }
 
@@ -806,17 +815,27 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             bool has_value = !value.IsNull();
             int32_t reading = has_value ? value.Value() : 0;
 
+            if (has_value)
+            {
+                ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, reading);
+            }
+
+            if (!is_home_meter)
+            {
+                break;
+            }
+
             if (path.mAttributeId == HM_ATTR_FLOW_TEMP_ID)
             {
                 ESP_LOGI(TAG, "Heat meter flow temperature: %ld (0.01 degC)", (long)reading);
-                g_home_manager.has_heat_meter_flow_temp = has_value;
-                g_home_manager.heat_meter_flow_temp = reading;
+                g_home_manager.has_heat_meter_flow_temperature = has_value;
+                g_home_manager.heat_meter_flow_temperature = reading;
             }
             else
             {
                 ESP_LOGI(TAG, "Heat meter return temperature: %ld (0.01 degC)", (long)reading);
-                g_home_manager.has_heat_meter_return_temp = has_value;
-                g_home_manager.heat_meter_return_temp = reading;
+                g_home_manager.has_heat_meter_return_temperature = has_value;
+                g_home_manager.heat_meter_return_temperature = reading;
             }
 
             break;
@@ -830,6 +849,16 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGE(TAG, "Failed to decode Heat Meter power");
                 return;
+            }
+
+            if (!value.IsNull())
+            {
+                ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, value.Value());
+            }
+
+            if (!is_home_meter)
+            {
+                break;
             }
 
             g_home_manager.has_heat_meter_power = !value.IsNull();
@@ -847,7 +876,10 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         // The meter feeds the home's heat source figures, so recalculate and push rather than waiting
         // for the next GET /api/home.
         //
-        broadcast_home_state();
+        if (is_home_meter)
+        {
+            broadcast_home_state();
+        }
     }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
@@ -857,6 +889,8 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         chip::app::DataModel::Decode(*data, temperature);
 
         ESP_LOGI(TAG, "Temperature Value: %d", temperature);
+
+        ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, temperature);
 
         set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, temperature);
 
@@ -873,22 +907,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             // A change in outside temperature impacts all the rooms.
             //
             update_all_rooms_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
-
-            hasMatched = true;
-        }
-        else if (g_home_manager.heat_source_flow_temp_node_id == remote_node_id && g_home_manager.heat_source_flow_temp_endpoint_id == path.mEndpointId)
-        {
-            ESP_LOGI(TAG, "Device is assigned to the heat source flow temperature sensor");
-
-            g_home_manager.heat_source_flow_temperature = temperature;
-
-            hasMatched = true;
-        }
-        else if (g_home_manager.heat_source_return_temp_node_id == remote_node_id && g_home_manager.heat_source_return_temp_endpoint_id == path.mEndpointId)
-        {
-            ESP_LOGI(TAG, "Device is assigned to the heat source return temperature sensor");
-
-            g_home_manager.heat_source_return_temperature = temperature;
 
             hasMatched = true;
         }
@@ -1007,6 +1025,12 @@ static void on_commissioning_success_callback(ScopedNodeId peer_id)
 
     if (iter != nullptr)
     {
+        // The iterator comes out of a pool that only has one slot
+        // (CHIP_CONFIG_MAX_ICD_CLIENTS_INFO_STORAGE_CONCURRENT_ITERATORS), so it has to be
+        // released on every path -- including the early break below. Leaking it wedges the pool
+        // and every later ProcessCheckInPayload fails with CHIP_ERROR_NO_MEMORY, silently
+        // dropping ICD check-ins.
+        app::DefaultICDClientStorage::ICDClientInfoIteratorWrapper wrapper(iter);
         app::ICDClientInfo info;
         while (iter->Next(info))
         {
@@ -1684,6 +1708,7 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     else
     {
         remove_node(&g_node_manager, node_id);
+        history_logger_forget_node(node_id);
 
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "202 Accepted");
@@ -2635,16 +2660,14 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorNodeId", g_home_manager.outdoor_temp_node_id);
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorEndpointId", g_home_manager.outdoor_temp_endpoint_id);
 
-    cJSON_AddNumberToObject(root, "heatSourceFlowTempSensorNodeId", g_home_manager.heat_source_flow_temp_node_id);
-    cJSON_AddNumberToObject(root, "heatSourceFlowTempSensorEndpointId", g_home_manager.heat_source_flow_temp_endpoint_id);
-    cJSON_AddNumberToObject(root, "heatSourceReturnTempSensorNodeId", g_home_manager.heat_source_return_temp_node_id);
-    cJSON_AddNumberToObject(root, "heatSourceReturnTempSensorEndpointId", g_home_manager.heat_source_return_temp_endpoint_id);
-    cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorNodeId", g_home_manager.heat_source_flow_rate_node_id);
-    cJSON_AddNumberToObject(root, "heatSourceFlowRateSensorEndpointId", g_home_manager.heat_source_flow_rate_endpoint_id);
     cJSON_AddNumberToObject(root, "electricalMeterNodeId", g_home_manager.electrical_meter_node_id);
     cJSON_AddNumberToObject(root, "electricalMeterEndpointId", g_home_manager.electrical_meter_endpoint_id);
+
     cJSON_AddNumberToObject(root, "heatMeterNodeId", g_home_manager.heat_meter_node_id);
     cJSON_AddNumberToObject(root, "heatMeterEndpointId", g_home_manager.heat_meter_endpoint_id);
+    
+    cJSON_AddNumberToObject(root, "loggingIntervalSeconds", history_logger_interval());
+    cJSON_AddNumberToObject(root, "loggingIntervalActiveSeconds", history_logger_active_interval());
 
     // Nulls where the meter hasn't reported, so the UI can show a dash rather than a plausible zero.
     //
@@ -2675,23 +2698,23 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "electricalPower");
     }
 
-    cJSON_AddNumberToObject(root, "heatSourceFlowTemperature", g_home_manager.heat_source_flow_temperature);
-    cJSON_AddNumberToObject(root, "heatSourceReturnTemperature", g_home_manager.heat_source_return_temperature);
+    //cJSON_AddNumberToObject(root, "heatMeterFlowTemperature", g_home_manager.heat_meter_flow_temperature);
+    //cJSON_AddNumberToObject(root, "heatMeterReturnTemperature", g_home_manager.heat_meter_return_temperature);
 
     // Flow rate is the one heat meter reading that loses real precision in heat_source_flow_rate's
     // uint16 of 0.1 m^3/h, so send the meter's own float when there is one. Same unit either way;
     // only the fractional part is new.
     //
-    if (g_home_manager.heat_meter_node_id != 0 && g_home_manager.has_heat_meter_flow)
+    if (g_home_manager.has_heat_meter_flow)
     {
-        cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_meter_flow_m3h * 10.0);
+        cJSON_AddNumberToObject(root, "heatMeterFlowRate", g_home_manager.heat_meter_flow * 100.0);
     }
     else
     {
-        cJSON_AddNumberToObject(root, "heatSourceFlowRate", g_home_manager.heat_source_flow_rate);
+        cJSON_AddNullToObject(root, "heatMeterFlowRate");
     }
 
-    cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
+    //cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
 
     cJSON_AddNumberToObject(root, "totalPredictedHeatLoss", g_home_manager.total_predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "totalMeasuredHeatLoss", g_home_manager.total_measured_heat_loss_per_degree);
@@ -2806,60 +2829,29 @@ static esp_err_t home_put_handler(httpd_req_t *req)
 
     g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
     g_home_manager.outdoor_temp_endpoint_id = (uint16_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
-    g_home_manager.heat_source_flow_temp_node_id = (uint64_t)flowTemperatureSensorNodeIdJSON->valueint;
-    g_home_manager.heat_source_flow_temp_endpoint_id = (uint16_t)flowTemperatureSensorEndpointIdJSON->valueint;
-    g_home_manager.heat_source_return_temp_node_id = (uint64_t)returnTemperatureSensorNodeIdJSON->valueint;
-    g_home_manager.heat_source_return_temp_endpoint_id = (uint16_t)returnTemperatureSensorEndpointIdJSON->valueint;
-    g_home_manager.heat_source_flow_rate_node_id = (uint64_t)flowRateSensorNodeIdJSON->valueint;
-    g_home_manager.heat_source_flow_rate_endpoint_id = (uint16_t)flowRateSensorEndpointIdJSON->valueint;
 
-    uint64_t electrical_meter_node_id = (uint64_t)electricalMeterNodeIdJSON->valueint;
-    uint16_t electrical_meter_endpoint_id = (uint16_t)electricalMeterEndpointIdJSON->valueint;
+    g_home_manager.electrical_meter_node_id = (uint64_t)electricalMeterNodeIdJSON->valueint;
+    g_home_manager.electrical_meter_endpoint_id = (uint16_t)electricalMeterEndpointIdJSON->valueint;
 
-    // Readings are only kept for the selected meter, so anything we are holding belongs to the old
-    // one. There is nothing to copy across in its place; the subscription will report again shortly.
+    g_home_manager.heat_meter_node_id = (uint64_t)heatMeterNodeIdJSON->valueint;
+    g_home_manager.heat_meter_endpoint_id = (uint16_t)heatMeterEndpointIdJSON->valueint;
+
+    // Optional: a client that omits it leaves the logger alone rather than resetting it.
     //
-    if (electrical_meter_node_id != g_home_manager.electrical_meter_node_id || electrical_meter_endpoint_id != g_home_manager.electrical_meter_endpoint_id)
+    const cJSON *loggingIntervalJSON = cJSON_GetObjectItemCaseSensitive(root, "loggingIntervalSeconds");
+
+    if (cJSON_IsNumber(loggingIntervalJSON))
     {
-        g_home_manager.has_electrical_voltage = false;
-        g_home_manager.electrical_voltage_mv = 0;
-        g_home_manager.has_electrical_current = false;
-        g_home_manager.electrical_current_ma = 0;
-        g_home_manager.has_electrical_power = false;
-        g_home_manager.electrical_power_mw = 0;
+        history_logger_set_interval((uint16_t)loggingIntervalJSON->valueint);
     }
 
-    g_home_manager.electrical_meter_node_id = electrical_meter_node_id;
-    g_home_manager.electrical_meter_endpoint_id = electrical_meter_endpoint_id;
-
-    uint64_t heat_meter_node_id = (uint64_t)heatMeterNodeIdJSON->valueint;
-    uint16_t heat_meter_endpoint_id = (uint16_t)heatMeterEndpointIdJSON->valueint;
-
-    // Same as above: the readings we are holding belong to the meter that was selected before.
-    //
-    if (heat_meter_node_id != g_home_manager.heat_meter_node_id || heat_meter_endpoint_id != g_home_manager.heat_meter_endpoint_id)
-    {
-        g_home_manager.has_heat_meter_flow = false;
-        g_home_manager.heat_meter_flow_m3h = 0.0f;
-        g_home_manager.has_heat_meter_flow_temp = false;
-        g_home_manager.heat_meter_flow_temp = 0;
-        g_home_manager.has_heat_meter_return_temp = false;
-        g_home_manager.heat_meter_return_temp = 0;
-        g_home_manager.has_heat_meter_power = false;
-        g_home_manager.heat_meter_power_mw = 0;
-    }
-
-    g_home_manager.heat_meter_node_id = heat_meter_node_id;
-    g_home_manager.heat_meter_endpoint_id = heat_meter_endpoint_id;
+    g_home_manager.logging_interval_s = history_logger_interval();
 
     save_home_to_nvs(&g_home_manager);
 
     // Copy the outdoor temperature from the sensor to the home manager so that it's available immediately.
     //
     get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
-    get_endpoint_measured_value(&g_node_manager, g_home_manager.heat_source_flow_temp_node_id, g_home_manager.heat_source_flow_temp_endpoint_id, &g_home_manager.heat_source_flow_temperature);
-    get_endpoint_measured_value(&g_node_manager, g_home_manager.heat_source_return_temp_node_id, g_home_manager.heat_source_return_temp_endpoint_id, &g_home_manager.heat_source_return_temperature);
-    get_endpoint_measured_value_uint16(&g_node_manager, g_home_manager.heat_source_flow_rate_node_id, g_home_manager.heat_source_flow_rate_endpoint_id, &g_home_manager.heat_source_flow_rate);
 
     broadcast_home_state();
 
@@ -3225,6 +3217,9 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &network_post_uri);
         httpd_register_uri_handler(server, &icd_counter_delete_uri);
 
+        // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
+        history_api_register(server);
+
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
         ESP_LOGI(TAG, "WebService is up and running!");
@@ -3394,6 +3389,11 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
                 start_mqtt_service();
             }
 
+            // The history logger needs a real wall clock: its filenames and its slot
+            // arithmetic are both dated. Until this syncs, time(NULL) is in 1970 and the
+            // sampler skips every tick.
+            time_sync_start();
+
             // Disabled while testing CONFIG_USE_MINIMAL_MDNS. CHIP's minimal mDNS binds UDP
             // 5353 itself, and mdns_init() inside here would fight it for the port. Cost of
             // leaving this off: no heating-monitor.local and no _http._tcp advert for the web
@@ -3473,6 +3473,17 @@ extern "C" void app_main()
     // each node's device type list.
     err = subscription_manager_init(&g_node_manager);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start the subscription manager, err:%d", err));
+
+    // History logging to the SD card. Neither call is fatal: with no card fitted the mount
+    // fails, the logger's timers still run but every tick is a no-op, and the live dashboard
+    // is unaffected.
+    sd_card_init();
+
+    err = history_logger_init(&g_node_manager, &g_home_manager);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start the history logger, err:%d", err);
+    }
 
     //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);
 

@@ -89,6 +89,53 @@ The root `CMakeLists.txt` copies the tree to `$ESP_MATTER_PATH/../platform/ESP32
 
 Because this build sets `CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n`, there is no Network Commissioning cluster to instantiate the driver, so `app_main()` calls `ESPEthernetDriver::GetInstance().Init(nullptr)` explicitly, after `esp_matter::start()`.
 
+**Storage (`main/storage/`) — SD card history:**
+
+Readings are sampled on a fixed cadence (5 s by default, configurable) and appended to a
+MicroSD card, so the UI can show history rather than only "now".
+
+- `sd_card.c` — mounts the card over **SPI3** (`CS 4, MISO 5, MOSI 6, CLK 7`). SPI2 is the
+  W5500's and must not be shared. Failing to mount is not fatal: `sd_card_available()`
+  stays false, the logger no-ops and the history endpoints report
+  `{"storage":"unavailable"}`. Cards must be **FAT32** — ESP-IDF does not mount exFAT
+  unless `CONFIG_FATFS_USE_EXFAT` is set, and cards over 32 GB usually ship exFAT.
+- `time_sync.c` — SNTP plus `TZ=GMT0BST,M3.5.0/1,M10.5.0`. Nothing is logged until the
+  first sync, because before it `time(NULL)` is in 1970 and every dated filename would be
+  wrong. `CONFIG_ENABLE_SNTP_TIME_SYNC=y` is set as well, but only to unlock the
+  `gettimeofday` branch of `ClockImpl::GetClock_RealTime` in the custom platform layer —
+  it does not start an SNTP client.
+- `value_cache.cpp` — latest value per (node, endpoint, cluster, attribute), ported from
+  `matter-esp32-home-energy-manager`. `attribute_data_cb` writes into it; the logger polls
+  it. Polling rather than logging on receipt keeps a stalled or bursty subscription from
+  leaving gaps, and keeps SD I/O off the CHIP event loop.
+- `history_format.h` — the on-disk layout. **Records carry no timestamp**: a 16-byte header
+  holds `base_ts`, `interval_s` and `record_size`, so slot `i` is `base_ts + i*interval_s`
+  and `offset = 16 + slot*record_size`. Lookup is O(1) arithmetic, with no index and no
+  scan. Records are per sensor kind with 16-bit fields (2 bytes for a temperature sensor,
+  6 for electrical, 8 for a heat meter, 12 for the home view). `INT16_MIN`/`UINT16_MAX`
+  mean "no reading" — zero cannot, because 0 W is a real reading.
+- `history_logger.cpp` — an `esp_timer` samples into a RAM buffer; a separate task flushes
+  once a minute (its own task because the esp_timer stack is 3584 bytes, too small for
+  FATFS). Missed slots are padded with sentinels so the offset arithmetic stays true.
+- `history_api.c` — `GET /api/history`, `/api/history/sensors`, `/api/history/sensor`.
+  Downsamples by striding slots and integrates energy over every slot, so kWh and COP do
+  not change with the requested resolution.
+
+Files are per local day: `/sdcard/sensor-<nodeId>-<endpointId>-YYYY-MM-DD` and
+`/sdcard/home-YYYY-MM-DD`. This needs `CONFIG_FATFS_LFN_HEAP=y` — the default 8.3 names
+cannot hold them. **`sdkconfig` is checked in and overrides `sdkconfig.defaults`**, so a
+Kconfig change has to be made in both.
+
+The `home-*` file duplicates data that is also in the per-sensor files, deliberately: which
+sensors feed the home depends on configuration (a heat meter overrides the discrete sensors
+in `calculations_manager.cpp`), so resolving it at read time would apply today's config to
+yesterday's data. It also lets the dashboard read one file per day instead of joining
+several.
+
+The sampling interval is stored in the `home_manager` NVS blob and changed through
+`PUT /api/home`. A change takes effect at the next local midnight, because a file's records
+must stay spaced at the interval its header records.
+
 **Other components:**
 - `commands/` — Matter pairing and identify command wrappers
 - `utilities/` — URL path token parsing (from the `path_variable_handlers` pattern)
@@ -98,11 +145,15 @@ Because this build sets `CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n`, there is no 
 2. `set_endpoint_measured_value` updates the node manager
 3. `calculations_manager` recalculates heat loss for affected rooms and home totals
 4. Results are published to **MQTT** and broadcast over the **WebSocket** to the web UI
+5. In parallel, every decoded reading is put into the **ValueCache**, which the history
+   logger samples on its own cadence and writes to the SD card
 
 ### Web App (`html_app/`)
 
 React 19 + TypeScript, built with Vite. Uses:
-- **React Router v7** for client-side routing (Home, Rooms, Radiators, Devices, Thread Network)
+- **React Router v7** for client-side routing (Home, Rooms, Radiators, Devices, History, Thread Network)
+- **uPlot** for the History page's charts — chosen over heavier chart libraries because the
+  whole bundle is embedded in the firmware image and ships in every OTA
 - **`react-use-websocket`** via `WSContext.jsx` for real-time data updates from the device
 - **Bootstrap** (icons) for styling
 - **vis-network** for Thread Network topology visualisation

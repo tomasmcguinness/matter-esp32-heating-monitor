@@ -12,15 +12,19 @@ function EditHome() {
   const [flowRateSensor, setFlowRateSensor] = useState<string | undefined>(undefined);
   const [electricalMeter, setElectricalMeter] = useState<string | undefined>(undefined);
   const [heatMeter, setHeatMeter] = useState<string | undefined>(undefined);
+  const [loggingInterval, setLoggingInterval] = useState<number>(5);
+  const [activeInterval, setActiveInterval] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     fetch('/api/home').then(response => response.json()).then(data => {
       setOutdoorTemperatureSensor(`${data.outdoorTemperatureSensorNodeId}|${data.outdoorTemperatureSensorEndpointId}`);
-      setFlowTemperatureSensor(`${data.heatSourceFlowTemperatureSensorNodeId}|${data.heatSourceFlowTemperatureSensorEndpointId}`);
-      setReturnTemperatureSensor(`${data.heatSourceReturnTemperatureSensorNodeId}|${data.heatSourceReturnTemperatureSensorEndpointId}`);
+      setFlowTemperatureSensor(`${data.heatSourceFlowTempSensorNodeId}|${data.heatSourceFlowTempSensorEndpointId}`);
+      setReturnTemperatureSensor(`${data.heatSourceReturnTempSensorNodeId}|${data.heatSourceReturnTempSensorEndpointId}`);
       setFlowRateSensor(`${data.heatSourceFlowRateSensorNodeId}|${data.heatSourceFlowRateSensorEndpointId}`);
       setElectricalMeter(`${data.electricalMeterNodeId}|${data.electricalMeterEndpointId}`);
       setHeatMeter(`${data.heatMeterNodeId}|${data.heatMeterEndpointId}`);
+      setLoggingInterval(data.loggingIntervalSeconds ?? 5);
+      setActiveInterval(data.loggingIntervalActiveSeconds);
     });
   }, []);
 
@@ -64,7 +68,8 @@ function EditHome() {
       electricalMeterNodeId,
       electricalMeterEndpointId,
       heatMeterNodeId,
-      heatMeterEndpointId
+      heatMeterEndpointId,
+      loggingIntervalSeconds: loggingInterval
     };
     var json = JSON.stringify(object);
 
@@ -84,7 +89,7 @@ function EditHome() {
       <div className="mb-3">
         <SensorSelect deviceType={770} title="Outdoor Temperature Sensor" required={false} selectedSensor={outdoorTemperatureSensor} onSelectedSensorChange={(e: string) => setOutdoorTemperatureSensor(e)} />
       </div>
-      <div className="mb-3">
+      {/* <div className="mb-3">
         <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={false} selectedSensor={flowTemperatureSensor} onSelectedSensorChange={(e: string) => setFlowTemperatureSensor(e)} />
       </div>
       <div className="mb-3">
@@ -92,7 +97,7 @@ function EditHome() {
       </div>
       <div className="mb-3">
         <SensorSelect deviceType={774} title="Flow Rate Sensor" required={false} selectedSensor={flowRateSensor} onSelectedSensorChange={(e: string) => setFlowRateSensor(e)} />
-      </div>
+      </div> */}
       <div className="mb-3">
         {/* The M-Bus adapter's manufacturer-specific heat meter device type. Selecting one makes it
             the source for the whole Heat Meter section, in place of the three sensors above. */}
@@ -100,6 +105,26 @@ function EditHome() {
       </div>
       <div className="mb-3">
         <SensorSelect deviceType={1296} title="Electricity Meter" required={false} selectedSensor={electricalMeter} onSelectedSensorChange={(e: string) => setElectricalMeter(e)} />
+      </div>
+      <div className="mb-3">
+        <label className="form-label" htmlFor="loggingInterval">History sampling interval (seconds)</label>
+        <input
+          id="loggingInterval"
+          type="number"
+          min={1}
+          max={3600}
+          className="form-control"
+          value={loggingInterval}
+          onChange={(e) => setLoggingInterval(parseInt(e.target.value) || 5)}
+        />
+        <div className="form-text">
+          How often every sensor is recorded to the SD card. A change takes effect at
+          midnight: a day's file has one interval baked into its header, which is what lets
+          the device seek straight to a time instead of scanning.
+          {activeInterval !== undefined && activeInterval !== loggingInterval && (
+            <> Today is still being recorded every {activeInterval}s.</>
+          )}
+        </div>
       </div>
       <button className="btn btn-primary" onClick={save} style={{ 'marginRight': '5px' }}>Save</button>
       <NavLink className="btn btn-danger" to={`/`}>Cancel</NavLink>

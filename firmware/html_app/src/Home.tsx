@@ -2,7 +2,7 @@ import { NavLink } from "react-router"
 import Temperature from "./Temperature"
 import { useCallback, useContext, useEffect, useState } from "react";
 import FlowRate from "./FlowRate";
-import Power from "./Power";
+// import Power from "./Power";
 import Voltage from "./Voltage";
 import Current from "./Current";
 import ElectricalPower from "./ElectricalPower";
@@ -15,11 +15,11 @@ function Home() {
   let [heatSourceReturnTemperature, setHeatSourceReturnTemperature] = useState<number | undefined>(undefined);
   let [heatSourceFlowRate, setHeatSourceFlowRate] = useState<number | undefined>(undefined);
   let [heatSourceOutput, setHeatSourceOutput] = useState<number | undefined>(undefined);
-  let [totalPredictedHeatLoss, setTotalPredictedHeatLoss] = useState<number | undefined>(undefined);
-  let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
+  // let [totalPredictedHeatLoss, setTotalPredictedHeatLoss] = useState<number | undefined>(undefined);
+  // let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
   let [radiatorCount, setRadiatorCount] = useState<number | undefined>(undefined);
   let [totalRadiatorOutput, setTotalRadiatorOutput] = useState<number | undefined>(undefined);
-  let [heatMeterNodeId, setHeatMeterNodeId] = useState<number | undefined>(undefined);
+  // let [heatMeterNodeId, setHeatMeterNodeId] = useState<number | undefined>(undefined);
   let [electricalMeterNodeId, setElectricalMeterNodeId] = useState<number | undefined>(undefined);
   let [electricalVoltage, setElectricalVoltage] = useState<number | null | undefined>(undefined);
   let [electricalCurrent, setElectricalCurrent] = useState<number | null | undefined>(undefined);
@@ -32,17 +32,18 @@ function Home() {
   //
   const applyHome = useCallback((data: any) => {
     setOutdoorTemperature(data.outdoorTemperature);
+    
     setHeatSourceFlowTemperature(data.heatSourceFlowTemperature);
     setHeatSourceReturnTemperature(data.heatSourceReturnTemperature);
     setHeatSourceFlowRate(data.heatSourceFlowRate);
     setHeatSourceOutput(data.heatSourceOutput);
 
-    setTotalPredictedHeatLoss(data.predictedHeatLossAtCurrentTemperature);
-    setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
+    // setTotalPredictedHeatLoss(data.predictedHeatLossAtCurrentTemperature);
+    // setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
     setRadiatorCount(data.radiatorCount);
     setTotalRadiatorOutput(data.totalRadiatorOutput);
 
-    setHeatMeterNodeId(data.heatMeterNodeId);
+    // setHeatMeterNodeId(data.heatMeterNodeId);
 
     setElectricalMeterNodeId(data.electricalMeterNodeId);
     setElectricalVoltage(data.electricalVoltage);
@@ -87,27 +88,24 @@ function Home() {
             <p className="card-title"><h3><Temperature>{outdoorTemperature}</Temperature></h3></p>
           </div>
         </div>
-        <div className="card">
+        {/* <div className="card">
           <div className="card-header">
             Predicted Heat Loss
           </div>
           <div className="card-body">
             <p className="card-title"><h3><Power>{totalPredictedHeatLoss}</Power></h3></p>
           </div>
-        </div>
-        <div className="card">
+        </div> */}
+        {/* <div className="card">
           <div className="card-header">
             Measured Heat Loss
           </div>
           <div className="card-body">
             <p className="card-title"><h3><Power>{totalMeasuredHeatLoss}</Power></h3></p>
           </div>
-        </div>
+        </div> */}
       </div>
-      {/* Node 0 is the firmware's "no meter selected". With one picked, every figure below is read
-          straight off it -- including Output, which is the meter's own power reading rather than the
-          figure derived from the three individual sensors. */}
-      <h4 style={{marginTop: '20px'}}>Heat Meter {!!heatMeterNodeId && <small className="text-muted" style={{ fontSize: '0.6em' }}>direct from meter</small>}</h4>
+      <h4 style={{marginTop: '20px'}}>Heat Meter</h4>
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <div className="card">
           <div className="card-header">

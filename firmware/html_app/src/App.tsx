@@ -20,6 +20,7 @@ import EditRoom from "./EditRoom.tsx";
 
 import { WebSocketProvider } from './WSContext.jsx'
 import ThreadNetwork from "./ThreadNetwork.tsx";
+import History from "./History.tsx";
 import Settings from "./Settings.tsx";
 
 function App() {
@@ -45,6 +46,9 @@ function App() {
               </li>
               <li className="nav-item">
                 <NavLink className="nav-link" to="/devices">Devices</NavLink>
+              </li>
+              <li className="nav-item">
+                <NavLink className="nav-link" to="/history">History</NavLink>
               </li>
               <li className="nav-item">
                 <NavLink className="nav-link" to="/threadnetwork">Thread Network</NavLink>
@@ -76,6 +80,8 @@ function App() {
             <Route path="/devices/add" element={<AddDevice />} />
             <Route path="/devices/:nodeId" element={<Device />} />
             <Route path="/devices/:nodeId/edit" element={<EditDevice />} />
+
+            <Route path="/history" element={<History />} />
 
             <Route path="/threadnetwork" element={<ThreadNetwork />} />
 

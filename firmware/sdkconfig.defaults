@@ -105,3 +105,16 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 # Cost: minimal mDNS owns UDP 5353, so start_mdns_service() in app_main.cpp is disabled and
 # heating-monitor.local / _http._tcp are no longer published. Reach the web UI by IP.
 CONFIG_USE_MINIMAL_MDNS=y
+
+# --- SD card history logging ---------------------------------------------------
+# Long filenames. History files are named sensor-<node>-<endpoint>-YYYY-MM-DD, which
+# does not fit 8.3. Matches matter-esp32-home-energy-manager's sdkconfig.defaults.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
+# Unlocks the gettimeofday() branch of ClockImpl::GetClock_RealTime in the custom
+# platform layer (external_platform/ESP32_custom/SystemTimeSupport.cpp). It does NOT
+# start an SNTP client -- that is done by main/storage/time_sync.c, the same way the
+# esp-matter examples do it. No Time Synchronisation cluster is created either, since
+# this build has CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n.
+CONFIG_ENABLE_SNTP_TIME_SYNC=y
