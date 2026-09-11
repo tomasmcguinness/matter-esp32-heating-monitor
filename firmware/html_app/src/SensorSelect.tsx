@@ -28,7 +28,7 @@ const fetchSensors = () => {
     return sensorsRequest;
 };
 
-const SensorSelect = ({ title, required, deviceType, selectedSensor, onSelectedSensorChange }: { title: string, required: boolean, deviceType: number, selectedSensor: string | undefined, onSelectedSensorChange: (id:string) => void }) => {
+const SensorSelect = ({ title, required, deviceType, selectedSensor, onSelectedSensorChange, id = "temperatureSensor"  }: { title: string, required: boolean, deviceType: number, selectedSensor: string | undefined, onSelectedSensorChange: (id:string) => void }) => {
 
     const [sensors, setSensors] = useState<Sensor[]>([]);
 
@@ -50,12 +50,15 @@ const SensorSelect = ({ title, required, deviceType, selectedSensor, onSelectedS
         return <option key={key} value={key}>{s.nodeName} - {s.endpointName} (0x{s.nodeId.toString(16).toUpperCase()} - 0x{s.endpointId})</option>;
     });
 
-    return ([
-        <label htmlFor="sensor" className="form-label">{title} {required && <span style={{ 'color': 'red' }}>*</span>}</label>,
-        <select name="sensor" className="form-control" id="temperatureSensor" value={selectedSensor || ''} onChange={(e) => onSelectedSensorChange(e.target.value)} required={required}>
-            <option value=''></option>
-            {sensorOptions}
-        </select>]);
+    return (
+        <>
+            <label htmlFor={id} className="form-label">{title} {required && <span style={{ 'color': 'red' }}>*</span>}</label>
+            <select name="sensor" className="form-control" id={id} value={selectedSensor || ''} onChange={(e) => onSelectedSensorChange(e.target.value)} required={required}>
+                <option value=''></option>
+                {sensorOptions}
+            </select>
+        </>
+    );
 }
 
 export default SensorSelect;

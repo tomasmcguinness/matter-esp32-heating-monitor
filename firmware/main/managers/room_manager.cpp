@@ -113,13 +113,40 @@ room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_
     room->room_temperature_node_id = temperature_node_id;
     room->room_temperature_endpoint_id = temperature_endpoint_id;
 
+    set_room_radiators(room, radiator_count, radiator_ids);
+
+    return room;
+}
+
+esp_err_t set_room_radiators(room_t *room, uint8_t radiator_count, uint8_t *radiator_ids)
+{
+    if (!room)
+    {
+        ESP_LOGE(TAG, "Invalid room pointer");
+        return ESP_ERR_INVALID_ARG;
+    }
+
     free(room->radiators);
+
     room->radiator_count = radiator_count;
+    room->radiators = NULL;
+
+    if (radiator_count == 0)
+    {
+        return ESP_OK;
+    }
+
     room->radiators = (uint8_t *)calloc(radiator_count, sizeof(uint8_t));
+
+    if (!room->radiators)
+    {
+        room->radiator_count = 0;
+        return ESP_ERR_NO_MEM;
+    }
 
     memcpy(room->radiators, radiator_ids, radiator_count);
 
-    return room;
+    return ESP_OK;
 }
 
 room_t *add_room(room_manager_t *manager, char *name, char *mqtt_name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
