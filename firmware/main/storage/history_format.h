@@ -86,7 +86,7 @@ typedef struct __attribute__((packed)) {
     int16_t  power_w;           // Heat Meter power,  mW -> W
     int16_t  flow_temp_c100;    // 0.01 degC
     int16_t  return_temp_c100;  // 0.01 degC
-    uint16_t flow_lph;          // m3/h -> litres/hour
+    uint16_t flow_lph;          // Heat Meter flow, l/h
 } rec_heat_meter_t;
 
 typedef struct __attribute__((packed)) {

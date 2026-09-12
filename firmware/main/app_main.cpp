@@ -781,7 +781,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         {
         case HM_ATTR_FLOW_ID:
         {
-            chip::app::DataModel::Nullable<float> value;
+            chip::app::DataModel::Nullable<int32_t> value;
 
             if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
             {
@@ -789,12 +789,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 return;
             }
 
-            // The cluster reports a float and the cache holds int64, so the flow is cached as
-            // milli-m3/h. That is also litres per hour, which is the unit the history record uses.
+            // The cluster reports litres per hour, which is also the unit the history record
+            // uses, so the reading is cached exactly as it arrives.
             if (!value.IsNull())
             {
                 ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId,
-                                           (int64_t)lroundf(value.Value() * 1000.0f));
+                                           (int64_t)value.Value());
             }
 
             if (!is_home_meter)
@@ -803,16 +803,15 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
 
             g_home_manager.has_heat_meter_flow = !value.IsNull();
-            g_home_manager.heat_meter_flow = value.IsNull() ? 0.0f : value.Value();
+            g_home_manager.heat_meter_flow = value.IsNull() ? 0 : (uint16_t)value.Value();
 
-            // Logged from the decoded float: heat_meter_flow is a uint16, which %f can't print.
             if (value.IsNull())
             {
                 ESP_LOGI(TAG, "Heat meter flow: null");
             }
             else
             {
-                ESP_LOGI(TAG, "Heat meter flow: %.3f m3/h", value.Value());
+                ESP_LOGI(TAG, "Heat meter flow: %ld l/h", (long)value.Value());
             }
             break;
         }
@@ -2843,13 +2842,13 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "electricalPower");
     }
 
-    // Flow rate is the one heat meter reading that loses real precision in heat_source_flow_rate's
-    // uint16 of 0.1 m^3/h, so send the meter's own float when there is one. Same unit either way;
-    // only the fractional part is new.
+    // Sent in l/h, the unit the Heat Meter cluster reports. The standard FlowMeasurement view of
+    // the same reading (heat_source_flow_rate) is a uint16 of 0.1 m^3/h -- 100 l/h per count -- so
+    // the meter's own figure is the more precise of the two.
     //
     if (g_home_manager.has_heat_meter_flow)
     {
-        cJSON_AddNumberToObject(root, "heatMeterFlowRate", g_home_manager.heat_meter_flow * 100.0);
+        cJSON_AddNumberToObject(root, "heatMeterFlowRate", g_home_manager.heat_meter_flow);
     }
     else
     {

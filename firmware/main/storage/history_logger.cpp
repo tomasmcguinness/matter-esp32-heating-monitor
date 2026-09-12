@@ -155,8 +155,8 @@ static size_t build_record(const series_t &s, uint8_t *out)
         r.power_w          = cached_i16(s, CLUSTER_HEAT_METER, ATTR_HM_POWER, 1000); // mW -> W
         r.flow_temp_c100   = cached_i16(s, CLUSTER_HEAT_METER, ATTR_HM_FLOW_TEMP,   1);
         r.return_temp_c100 = cached_i16(s, CLUSTER_HEAT_METER, ATTR_HM_RETURN_TEMP, 1);
-        // app_main.cpp caches the flow as milli-m3/h, because the cluster reports a float
-        // and the cache holds int64. 1 m3/h = 1000 litres/hour, so the two cancel.
+        // app_main.cpp caches the flow in l/h, the unit the cluster reports and the unit this
+        // record stores, so it crosses unscaled.
         r.flow_lph         = cached_u16(s, CLUSTER_HEAT_METER, ATTR_HM_FLOW, 1);
         memcpy(out, &r, sizeof(r));
         return sizeof(r);

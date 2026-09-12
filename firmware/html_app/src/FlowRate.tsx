@@ -14,7 +14,7 @@ function FlowRate({ children }: { children: any }) {
         return <span>-</span>;
     }
 
-    var formattedTemp = (temp / 36.0).toFixed(2);
+    var formattedTemp = (temp / 3600.0).toFixed(2);
 
     return <span>{formattedTemp}L/s</span>;
 }
