@@ -87,24 +87,24 @@ function EditHome() {
       <h1>Edit Home</h1>
       <hr />
       <div className="mb-3">
-        <SensorSelect deviceType={770} title="Outdoor Temperature Sensor" required={false} selectedSensor={outdoorTemperatureSensor} onSelectedSensorChange={(e: string) => setOutdoorTemperatureSensor(e)} />
+        <SensorSelect deviceType={770} title="Outdoor Temperature Sensor" required={false} id="outdoorTemperatureSensor" selectedSensor={outdoorTemperatureSensor} onSelectedSensorChange={(e: string) => setOutdoorTemperatureSensor(e)} />
       </div>
       {/* <div className="mb-3">
-        <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={false} selectedSensor={flowTemperatureSensor} onSelectedSensorChange={(e: string) => setFlowTemperatureSensor(e)} />
+        <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={false} id="flowTemperatureSensor" selectedSensor={flowTemperatureSensor} onSelectedSensorChange={(e: string) => setFlowTemperatureSensor(e)} />
       </div>
       <div className="mb-3">
-        <SensorSelect deviceType={770} title="Return Temperature Sensor" required={false} selectedSensor={returnTemperatureSensor} onSelectedSensorChange={(e: string) => setReturnTemperatureSensor(e)} />
+        <SensorSelect deviceType={770} title="Return Temperature Sensor" required={false} id="returnTemperatureSensor" selectedSensor={returnTemperatureSensor} onSelectedSensorChange={(e: string) => setReturnTemperatureSensor(e)} />
       </div>
       <div className="mb-3">
-        <SensorSelect deviceType={774} title="Flow Rate Sensor" required={false} selectedSensor={flowRateSensor} onSelectedSensorChange={(e: string) => setFlowRateSensor(e)} />
+        <SensorSelect deviceType={774} title="Flow Rate Sensor" required={false} id="flowRateSensor" selectedSensor={flowRateSensor} onSelectedSensorChange={(e: string) => setFlowRateSensor(e)} />
       </div> */}
       <div className="mb-3">
         {/* The M-Bus adapter's manufacturer-specific heat meter device type. Selecting one makes it
             the source for the whole Heat Meter section, in place of the three sensors above. */}
-        <SensorSelect deviceType={0xFFF10001} title="Heat Meter" required={false} selectedSensor={heatMeter} onSelectedSensorChange={(e: string) => setHeatMeter(e)} />
+        <SensorSelect deviceType={0xFFF10001} title="Heat Meter" required={false} id="heatMeter" selectedSensor={heatMeter} onSelectedSensorChange={(e: string) => setHeatMeter(e)} />
       </div>
       <div className="mb-3">
-        <SensorSelect deviceType={1296} title="Electricity Meter" required={false} selectedSensor={electricalMeter} onSelectedSensorChange={(e: string) => setElectricalMeter(e)} />
+        <SensorSelect deviceType={1296} title="Electricity Meter" required={false} id="electricalMeter" selectedSensor={electricalMeter} onSelectedSensorChange={(e: string) => setElectricalMeter(e)} />
       </div>
       <div className="mb-3">
         <label className="form-label" htmlFor="loggingInterval">History sampling interval (seconds)</label>

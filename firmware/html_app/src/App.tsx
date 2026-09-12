@@ -22,6 +22,7 @@ import { WebSocketProvider } from './WSContext.jsx'
 import ThreadNetwork from "./ThreadNetwork.tsx";
 import History from "./History.tsx";
 import Settings from "./Settings.tsx";
+import Status from "./Status.tsx";
 
 function App() {
 
@@ -56,6 +57,9 @@ function App() {
               <li className="nav-item">
                 <NavLink className="nav-link" to="/settings">Settings</NavLink>
               </li>
+              <li className="nav-item">
+                <NavLink className="nav-link" to="/status">Status</NavLink>
+              </li>
             </ul>
           </div>
         </div>
@@ -86,6 +90,8 @@ function App() {
             <Route path="/threadnetwork" element={<ThreadNetwork />} />
 
             <Route path="/settings" element={<Settings />} />
+
+            <Route path="/status" element={<Status />} />
 
           </Routes>
         </div>

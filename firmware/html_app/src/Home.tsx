@@ -6,21 +6,26 @@ import FlowRate from "./FlowRate";
 import Voltage from "./Voltage";
 import Current from "./Current";
 import ElectricalPower from "./ElectricalPower";
+import SubscriptionPill from "./SubscriptionPill";
 import { WebSocketContext } from "./WSContext.jsx";
 
 function Home() {
 
   let [outdoorTemperature, setOutdoorTemperature] = useState<number | undefined>(undefined);
-  let [heatSourceFlowTemperature, setHeatSourceFlowTemperature] = useState<number | undefined>(undefined);
-  let [heatSourceReturnTemperature, setHeatSourceReturnTemperature] = useState<number | undefined>(undefined);
-  let [heatSourceFlowRate, setHeatSourceFlowRate] = useState<number | undefined>(undefined);
-  let [heatSourceOutput, setHeatSourceOutput] = useState<number | undefined>(undefined);
+  let [outdoorTemperatureSensorNodeId, setOutdoorTemperatureSensorNodeId] = useState<number | undefined>(undefined);
+  let [outdoorTemperatureSensorSubscription, setOutdoorTemperatureSensorSubscription] = useState<string | undefined>(undefined);
+  let [heatMeterNodeId, setHeatMeterNodeId] = useState<number | undefined>(undefined);
+  let [heatMeterSubscription, setHeatMeterSubscription] = useState<string | undefined>(undefined);
+  let [heatMeterFlowTemperature, setHeatMeterFlowTemperature] = useState<number | null | undefined>(undefined);
+  let [heatMeterReturnTemperature, setHeatMeterReturnTemperature] = useState<number | null | undefined>(undefined);
+  let [heatMeterFlowRate, setHeatMeterFlowRate] = useState<number | null | undefined>(undefined);
+  let [heatMeterPower, setHeatMeterPower] = useState<number | null | undefined>(undefined);
   // let [totalPredictedHeatLoss, setTotalPredictedHeatLoss] = useState<number | undefined>(undefined);
   // let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
   let [radiatorCount, setRadiatorCount] = useState<number | undefined>(undefined);
   let [totalRadiatorOutput, setTotalRadiatorOutput] = useState<number | undefined>(undefined);
-  // let [heatMeterNodeId, setHeatMeterNodeId] = useState<number | undefined>(undefined);
   let [electricalMeterNodeId, setElectricalMeterNodeId] = useState<number | undefined>(undefined);
+  let [electricalMeterSubscription, setElectricalMeterSubscription] = useState<string | undefined>(undefined);
   let [electricalVoltage, setElectricalVoltage] = useState<number | null | undefined>(undefined);
   let [electricalCurrent, setElectricalCurrent] = useState<number | null | undefined>(undefined);
   let [electricalPower, setElectricalPower] = useState<number | null | undefined>(undefined);
@@ -32,20 +37,23 @@ function Home() {
   //
   const applyHome = useCallback((data: any) => {
     setOutdoorTemperature(data.outdoorTemperature);
-    
-    setHeatSourceFlowTemperature(data.heatSourceFlowTemperature);
-    setHeatSourceReturnTemperature(data.heatSourceReturnTemperature);
-    setHeatSourceFlowRate(data.heatSourceFlowRate);
-    setHeatSourceOutput(data.heatSourceOutput);
+    setOutdoorTemperatureSensorNodeId(data.outdoorTemperatureSensorNodeId);
+    setOutdoorTemperatureSensorSubscription(data.outdoorTemperatureSensorSubscription);
+
+    setHeatMeterNodeId(data.heatMeterNodeId);
+    setHeatMeterSubscription(data.heatMeterSubscription);
+    setHeatMeterFlowTemperature(data.heatMeterFlowTemperature);
+    setHeatMeterReturnTemperature(data.heatMeterReturnTemperature);
+    setHeatMeterFlowRate(data.heatMeterFlowRate);
+    setHeatMeterPower(data.heatMeterPower);
 
     // setTotalPredictedHeatLoss(data.predictedHeatLossAtCurrentTemperature);
     // setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
     setRadiatorCount(data.radiatorCount);
     setTotalRadiatorOutput(data.totalRadiatorOutput);
 
-    // setHeatMeterNodeId(data.heatMeterNodeId);
-
     setElectricalMeterNodeId(data.electricalMeterNodeId);
+    setElectricalMeterSubscription(data.electricalMeterSubscription);
     setElectricalVoltage(data.electricalVoltage);
     setElectricalCurrent(data.electricalCurrent);
     setElectricalPower(data.electricalPower);
@@ -78,7 +86,11 @@ function Home() {
     <>
       <h1>Home <NavLink className="btn btn-primary action-button" to={`/edit`}>Edit</NavLink></h1>
       <hr />
-      <h4 style={{marginTop: '20px'}}>Weather</h4>
+      {/* Node 0 is the firmware's "nothing selected". Sections check for it exactly, rather than for
+          falsy, so the alert doesn't flash up before the first fetch has returned. */}
+      <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Weather<SubscriptionPill state={outdoorTemperatureSensorSubscription} /></h4>
+      {outdoorTemperatureSensorNodeId === 0 ?
+        <div className="alert alert-info">No outdoor temperature sensor is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</div> :
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <div className="card">
           <div className="card-header">
@@ -104,15 +116,17 @@ function Home() {
             <p className="card-title"><h3><Power>{totalMeasuredHeatLoss}</Power></h3></p>
           </div>
         </div> */}
-      </div>
-      <h4 style={{marginTop: '20px'}}>Heat Meter</h4>
+      </div>}
+      <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Heat Meter<SubscriptionPill state={heatMeterSubscription} /></h4>
+      {heatMeterNodeId === 0 ?
+        <div className="alert alert-info">No heat meter is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</div> :
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <div className="card">
           <div className="card-header">
             Flow Temperature
           </div>
           <div className="card-body">
-            <p className="card-title"><h3><Temperature>{heatSourceFlowTemperature}</Temperature></h3></p>
+            <p className="card-title"><h3><Temperature>{heatMeterFlowTemperature}</Temperature></h3></p>
           </div>
         </div>
         <div className="card">
@@ -120,7 +134,7 @@ function Home() {
             Return Temperature
           </div>
           <div className="card-body">
-            <p className="card-title"><h3><Temperature>{heatSourceReturnTemperature}</Temperature></h3></p>
+            <p className="card-title"><h3><Temperature>{heatMeterReturnTemperature}</Temperature></h3></p>
           </div>
         </div>
         <div className="card">
@@ -128,7 +142,7 @@ function Home() {
             Flow Rate
           </div>
           <div className="card-body">
-            <p className="card-title"><h3><FlowRate>{heatSourceFlowRate}</FlowRate></h3></p>
+            <p className="card-title"><h3><FlowRate>{heatMeterFlowRate}</FlowRate></h3></p>
           </div>
         </div>
         <div className="card">
@@ -136,10 +150,11 @@ function Home() {
             Output
           </div>
           <div className="card-body">
-            <p className="card-title"><h3>{heatSourceOutput}W</h3></p>
+            {/* The meter reports power in mW, which is what ElectricalPower formats. */}
+            <p className="card-title"><h3><ElectricalPower>{heatMeterPower}</ElectricalPower></h3></p>
           </div>
         </div>
-      </div>
+      </div>}
       <h4 style={{marginTop: '20px'}}>Distribution</h4>
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <div className="card">
@@ -167,9 +182,9 @@ function Home() {
           </div>
         </div>
       </div>
-      {/* Node 0 is the firmware's "no meter selected", so the section only appears once one is picked. */}
-      {!!electricalMeterNodeId && <>
-        <h4 style={{marginTop: '20px'}}>Electricity</h4>
+      <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Electricity<SubscriptionPill state={electricalMeterSubscription} /></h4>
+      {electricalMeterNodeId === 0 ?
+        <div className="alert alert-info">No electrical meter is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</div> :
         <div className="card-group" style={{ marginBottom: '5px' }}>
           <div className="card">
             <div className="card-header">
@@ -195,8 +210,7 @@ function Home() {
               <p className="card-title"><h3><ElectricalPower>{electricalPower}</ElectricalPower></h3></p>
             </div>
           </div>
-        </div>
-      </>}
+        </div>}
     </>
   )
 }

@@ -184,7 +184,7 @@ function AddRoom() {
         </div>
 
         <div className="mb-3">
-          <SensorSelect deviceType={770} title="Room Temperature Sensor" required={true} selectedSensor={temperatureSensor || ''} onSelectedSensorChange={(e) => setTemperatureSensor(e)} />
+          <SensorSelect deviceType={770} title="Room Temperature Sensor" id="temperatureSensor" required={true} selectedSensor={temperatureSensor || ''} onSelectedSensorChange={(e) => setTemperatureSensor(e)} />
         </div>
 
         <h3>Emitters <button type="button" className="btn btn-primary action-button" onClick={addEmitter}>Add Emitter</button></h3>

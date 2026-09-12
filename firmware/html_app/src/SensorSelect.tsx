@@ -28,7 +28,7 @@ const fetchSensors = () => {
     return sensorsRequest;
 };
 
-const SensorSelect = ({ title, required, deviceType, selectedSensor, onSelectedSensorChange, id = "temperatureSensor"  }: { title: string, required: boolean, deviceType: number, selectedSensor: string | undefined, onSelectedSensorChange: (id:string) => void }) => {
+const SensorSelect = ({ title, required, deviceType, selectedSensor, id = undefined, onSelectedSensorChange }: { title: string, required: boolean, deviceType: number, selectedSensor: string | undefined, id:  string | undefined, onSelectedSensorChange: (id:string) => void }) => {
 
     const [sensors, setSensors] = useState<Sensor[]>([]);
 

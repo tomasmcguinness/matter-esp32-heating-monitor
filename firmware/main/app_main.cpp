@@ -64,6 +64,7 @@
 #include "utilities/UrlTokenBindings.h"
 
 #include "storage/history_api.h"
+#include "storage/status_api.h"
 #include "storage/history_logger.h"
 #include "storage/sd_card.h"
 #include "storage/time_sync.h"
@@ -107,6 +108,7 @@ static httpd_handle_t server;
 static void ws_async_send(void *arg);
 static void ws_broadcast_json(cJSON *root);
 static void broadcast_home_state(void);
+static void broadcast_home_if_home_sensor(uint64_t node_id);
 static void log_client_token(httpd_req_t *req, const char *what);
 
 // Commissioning runs on the Matter task, but POST /api/nodes holds its connection open until
@@ -234,6 +236,8 @@ void node_subscription_established_cb(uint64_t remote_node_id, uint32_t subscrip
     // Indicate we have a subscription!
     //
     mark_node_has_subscription(&g_node_manager, remote_node_id, subscription_id);
+
+    broadcast_home_if_home_sensor(remote_node_id);
 }
 
 void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscription_id)
@@ -245,6 +249,8 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     bool create_new_subscription = false;
 
     mark_node_has_no_subscription(&g_node_manager, remote_node_id, subscription_id, &create_new_subscription);
+
+    broadcast_home_if_home_sensor(remote_node_id);
 
     // The node might still have an active subscription, so only establish another if necessary.
     //
@@ -269,6 +275,8 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
     bool create_new_subscription = false;
 
     mark_node_has_no_subscription(&g_node_manager, node_id, 0, &create_new_subscription);
+
+    broadcast_home_if_home_sensor(node_id);
 
     matter_node_t *node = find_node(&g_node_manager, node_id);
 
@@ -797,7 +805,15 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             g_home_manager.has_heat_meter_flow = !value.IsNull();
             g_home_manager.heat_meter_flow = value.IsNull() ? 0.0f : value.Value();
 
-            ESP_LOGI(TAG, "Heat meter flow: %.3f m3/h", g_home_manager.heat_meter_flow);
+            // Logged from the decoded float: heat_meter_flow is a uint16, which %f can't print.
+            if (value.IsNull())
+            {
+                ESP_LOGI(TAG, "Heat meter flow: null");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Heat meter flow: %.3f m3/h", value.Value());
+            }
             break;
         }
 
@@ -825,15 +841,26 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 break;
             }
 
+            // Null is logged as such: the adapter publishes null until it has read the meter, and a
+            // bare 0 is indistinguishable from a real reading.
+            const char *which = path.mAttributeId == HM_ATTR_FLOW_TEMP_ID ? "flow" : "return";
+
+            if (has_value)
+            {
+                ESP_LOGI(TAG, "Heat meter %s temperature: %ld (0.01 degC)", which, (long)reading);
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Heat meter %s temperature: null", which);
+            }
+
             if (path.mAttributeId == HM_ATTR_FLOW_TEMP_ID)
             {
-                ESP_LOGI(TAG, "Heat meter flow temperature: %ld (0.01 degC)", (long)reading);
                 g_home_manager.has_heat_meter_flow_temperature = has_value;
                 g_home_manager.heat_meter_flow_temperature = reading;
             }
             else
             {
-                ESP_LOGI(TAG, "Heat meter return temperature: %ld (0.01 degC)", (long)reading);
                 g_home_manager.has_heat_meter_return_temperature = has_value;
                 g_home_manager.heat_meter_return_temperature = reading;
             }
@@ -864,7 +891,14 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             g_home_manager.has_heat_meter_power = !value.IsNull();
             g_home_manager.heat_meter_power_mw = value.IsNull() ? 0 : value.Value();
 
-            ESP_LOGI(TAG, "Heat meter power: %lld mW", g_home_manager.heat_meter_power_mw);
+            if (value.IsNull())
+            {
+                ESP_LOGI(TAG, "Heat meter power: null");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Heat meter power: %lld mW", g_home_manager.heat_meter_power_mw);
+            }
             break;
         }
 
@@ -1126,6 +1160,8 @@ static void on_icd_checkin_callback(const chip::app::ICDClientInfo &clientInfo)
 
     mark_node_has_no_subscription(&g_node_manager, clientInfo.peer_node.GetNodeId(), 0, &create_new_subscription);
 
+    broadcast_home_if_home_sensor(clientInfo.peer_node.GetNodeId());
+
     save_nodes_to_nvs(&g_node_manager);
 
     if (create_new_subscription)
@@ -1264,6 +1300,17 @@ static esp_err_t ws_get_handler(httpd_req_t *req)
     memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
+
+    // This has to be returned, not just logged. When the peer vanishes without a CLOSE frame, recv()
+    // fails with ENOTCONN, but httpd compares that negative return against a size_t and misses it, so
+    // it hands us a zero "frame" that then fails the mask check. Returning ESP_OK here left the dead
+    // socket open, and select() kept reporting it readable -- a tight loop that flooded the log.
+    // A non-OK return is what makes httpd close the session.
+    //
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
 
     if (ws_pkt.len)
     {
@@ -2720,6 +2767,33 @@ static esp_err_t info_get_handler(httpd_req_t *req)
 // the two can never drift. The caller owns the returned object, and is responsible for having called
 // update_home() first.
 //
+// The subscription state of one of the home's sensors, for the pills on the Home screen: "none"
+// (nothing configured), "missing" (the configured node no longer exists), "subscribed", "pending" or
+// "unsubscribed". One string, so the UI never has to combine flags. Subscriptions are per node, so
+// the endpoint doesn't come into it.
+//
+static const char *home_sensor_subscription_state(uint64_t node_id)
+{
+    if (node_id == 0)
+    {
+        return "none";
+    }
+
+    matter_node_t *node = find_node(&g_node_manager, node_id);
+
+    if (node == NULL)
+    {
+        return "missing";
+    }
+
+    if (node->has_subscription)
+    {
+        return "subscribed";
+    }
+
+    return node->is_subscription_pending ? "pending" : "unsubscribed";
+}
+
 static cJSON *build_home_json(void)
 {
     cJSON *root = cJSON_CreateObject();
@@ -2727,12 +2801,15 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorNodeId", g_home_manager.outdoor_temp_node_id);
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorEndpointId", g_home_manager.outdoor_temp_endpoint_id);
+    cJSON_AddStringToObject(root, "outdoorTemperatureSensorSubscription", home_sensor_subscription_state(g_home_manager.outdoor_temp_node_id));
 
     cJSON_AddNumberToObject(root, "electricalMeterNodeId", g_home_manager.electrical_meter_node_id);
     cJSON_AddNumberToObject(root, "electricalMeterEndpointId", g_home_manager.electrical_meter_endpoint_id);
+    cJSON_AddStringToObject(root, "electricalMeterSubscription", home_sensor_subscription_state(g_home_manager.electrical_meter_node_id));
 
     cJSON_AddNumberToObject(root, "heatMeterNodeId", g_home_manager.heat_meter_node_id);
     cJSON_AddNumberToObject(root, "heatMeterEndpointId", g_home_manager.heat_meter_endpoint_id);
+    cJSON_AddStringToObject(root, "heatMeterSubscription", home_sensor_subscription_state(g_home_manager.heat_meter_node_id));
     
     cJSON_AddNumberToObject(root, "loggingIntervalSeconds", history_logger_interval());
     cJSON_AddNumberToObject(root, "loggingIntervalActiveSeconds", history_logger_active_interval());
@@ -2766,9 +2843,6 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "electricalPower");
     }
 
-    //cJSON_AddNumberToObject(root, "heatMeterFlowTemperature", g_home_manager.heat_meter_flow_temperature);
-    //cJSON_AddNumberToObject(root, "heatMeterReturnTemperature", g_home_manager.heat_meter_return_temperature);
-
     // Flow rate is the one heat meter reading that loses real precision in heat_source_flow_rate's
     // uint16 of 0.1 m^3/h, so send the meter's own float when there is one. Same unit either way;
     // only the fractional part is new.
@@ -2782,7 +2856,35 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "heatMeterFlowRate");
     }
 
-    //cJSON_AddNumberToObject(root, "heatSourceOutput", g_home_manager.heat_source_output);
+    // The rest go out as the cluster reports them, the same units the UI's formatters take for the
+    // standard clusters: temperatures in 0.01 degC (Temperature) and power in mW (ElectricalPower).
+    //
+    if (g_home_manager.has_heat_meter_flow_temperature)
+    {
+        cJSON_AddNumberToObject(root, "heatMeterFlowTemperature", g_home_manager.heat_meter_flow_temperature);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "heatMeterFlowTemperature");
+    }
+
+    if (g_home_manager.has_heat_meter_return_temperature)
+    {
+        cJSON_AddNumberToObject(root, "heatMeterReturnTemperature", g_home_manager.heat_meter_return_temperature);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "heatMeterReturnTemperature");
+    }
+
+    if (g_home_manager.has_heat_meter_power)
+    {
+        cJSON_AddNumberToObject(root, "heatMeterPower", g_home_manager.heat_meter_power_mw);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "heatMeterPower");
+    }
 
     cJSON_AddNumberToObject(root, "totalPredictedHeatLoss", g_home_manager.total_predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "totalMeasuredHeatLoss", g_home_manager.total_measured_heat_loss_per_degree);
@@ -2812,6 +2914,25 @@ static void broadcast_home_state(void)
     ws_broadcast_json(root);
 
     cJSON_Delete(root);
+}
+
+// The Home screen shows the subscription state of the home's own sensors, so a change to one of them
+// is pushed. Other nodes (radiator sensors) are filtered out, because broadcast_home_state also
+// recalculates the home and publishes it to MQTT.
+//
+static void broadcast_home_if_home_sensor(uint64_t node_id)
+{
+    if (node_id == 0)
+    {
+        return;
+    }
+
+    if (node_id == g_home_manager.outdoor_temp_node_id ||
+        node_id == g_home_manager.heat_meter_node_id ||
+        node_id == g_home_manager.electrical_meter_node_id)
+    {
+        broadcast_home_state();
+    }
 }
 
 static esp_err_t home_get_handler(httpd_req_t *req)
@@ -3287,6 +3408,7 @@ httpd_handle_t start_webserver(void)
 
         // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
         history_api_register(server);
+        status_api_register(server);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
