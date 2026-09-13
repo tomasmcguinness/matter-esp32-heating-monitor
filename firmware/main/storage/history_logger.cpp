@@ -16,7 +16,6 @@
 #include "history_paths.h"
 #include "sd_card.h"
 #include "time_sync.h"
-#include "value_cache.h"
 
 static const char *TAG = "history_logger";
 
@@ -27,54 +26,22 @@ static const char *TAG = "history_logger";
 #define FLUSH_TASK_STACK    4096
 #define FLUSH_TASK_PRIORITY 3
 
-// Matter cluster and attribute ids, kept local so this file stays free of the Matter
-// SDK headers -- the same choice node_power_logger.cpp makes in
-// matter-esp32-home-energy-manager. These match the ids decoded in app_main.cpp.
-static constexpr uint32_t CLUSTER_TEMPERATURE = 0x0402;
-static constexpr uint32_t CLUSTER_FLOW        = 0x0404;
-static constexpr uint32_t CLUSTER_ELECTRICAL  = 0x0090;
-static constexpr uint32_t CLUSTER_HEAT_METER  = 0xFFF1FC01;
-
-static constexpr uint32_t ATTR_MEASURED_VALUE = 0x0000;
-static constexpr uint32_t ATTR_EPM_VOLTAGE    = 0x0004;
-static constexpr uint32_t ATTR_EPM_CURRENT    = 0x0005;
-static constexpr uint32_t ATTR_EPM_POWER      = 0x0008;
-static constexpr uint32_t ATTR_HM_FLOW        = 0x0000;
-static constexpr uint32_t ATTR_HM_FLOW_TEMP   = 0x0001;
-static constexpr uint32_t ATTR_HM_RETURN_TEMP = 0x0002;
-static constexpr uint32_t ATTR_HM_POWER       = 0x0003;
-
-// Matter device type ids, from node_manager.h and heat_meter_cluster.h.
-static constexpr uint32_t DEVTYPE_TEMPERATURE = 770;
-static constexpr uint32_t DEVTYPE_FLOW        = 774;
-static constexpr uint32_t DEVTYPE_ELECTRICAL  = 1296;
-static constexpr uint32_t DEVTYPE_HEAT_METER  = 0xFFF10001u;
-
-// Cap on buffered samples between flushes. At the 5 s default a flush carries 12 per
-// series; this leaves room for a fast interval across many sensors and still bounds the
-// memory if a flush ever fails.
+// Cap on buffered samples between flushes. At the 5 s default a flush carries 12; this
+// leaves ample room for a fast interval and still bounds the memory if a flush ever fails.
 #define MAX_PENDING 4096
 
-struct series_t {
-    uint8_t  kind;
-    uint64_t node_id;      // 0 for the synthetic home series
-    uint16_t endpoint_id;
-};
-
 struct pending_t {
-    series_t series;
+    uint8_t  kind;
     uint32_t base_ts;      // local midnight of the day this sample belongs to
     uint32_t slot;
     uint8_t  data[HISTORY_MAX_RECORD_SIZE];
 };
 
 static SemaphoreHandle_t      s_mutex;
-static std::vector<series_t>  s_series;
 static std::vector<pending_t> s_pending;
 static esp_timer_handle_t     s_sample_timer;
 static TaskHandle_t           s_flush_task;
 
-static node_manager_t *s_node_manager;
 static home_manager_t *s_home_manager;
 
 // s_interval_s is what the current day's files are being written at; s_pending_interval_s
@@ -107,141 +74,75 @@ static uint16_t clamp_u16(int64_t v)
     return (uint16_t)v;
 }
 
-// Reads one cached attribute, returning the sentinel when it has never been reported.
-static int16_t cached_i16(const series_t &s, uint32_t cluster, uint32_t attr, int64_t divisor)
+// Builds the home record from the manager's current values. Returns the record size.
+//
+// Reading home_manager directly rather than polling a cache means the sampler races
+// attribute_data_cb, which writes these fields from the CHIP event loop: the 64-bit
+// readings can in principle be read torn on a 32-bit core. That is left unlocked
+// deliberately -- the cost is at worst a single clamped outlier sample every few weeks,
+// against holding a lock that the Matter event loop would then contend on. What the code
+// must not do is read a field twice, hence the locals below: the has_* test and the value
+// it guards come from the same read.
+static size_t build_record(uint8_t *out)
 {
-    int64_t raw = 0;
-    if (!ValueCache::instance().get(s.node_id, s.endpoint_id, cluster, attr, &raw)) {
-        return HIST_NULL_I16;
-    }
-    return clamp_i16(divisor > 1 ? raw / divisor : raw);
-}
+    const home_manager_t *h = s_home_manager;
 
-static uint16_t cached_u16(const series_t &s, uint32_t cluster, uint32_t attr, int64_t divisor)
-{
-    int64_t raw = 0;
-    if (!ValueCache::instance().get(s.node_id, s.endpoint_id, cluster, attr, &raw)) {
-        return HIST_NULL_U16;
-    }
-    return clamp_u16(divisor > 1 ? raw / divisor : raw);
-}
+    // Start from "no reading" for every field, including the reserved tail, so anything not
+    // explicitly filled below reads back as null rather than as a plausible zero.
+    rec_home_t r;
+    history_fill_sentinel(KIND_HOME, &r);
 
-// Builds the record for a series. Returns the record size, or 0 if the kind is unknown.
-static size_t build_record(const series_t &s, uint8_t *out)
-{
-    switch (s.kind) {
-    case KIND_TEMPERATURE: {
-        rec_temperature_t r;
-        r.temp_c100 = cached_i16(s, CLUSTER_TEMPERATURE, ATTR_MEASURED_VALUE, 1);
-        memcpy(out, &r, sizeof(r));
-        return sizeof(r);
-    }
-    case KIND_FLOW: {
-        rec_flow_t r;
-        r.flow_m3h10 = cached_u16(s, CLUSTER_FLOW, ATTR_MEASURED_VALUE, 1);
-        memcpy(out, &r, sizeof(r));
-        return sizeof(r);
-    }
-    case KIND_ELECTRICAL: {
-        rec_electrical_t r;
-        r.power_w    = cached_i16(s, CLUSTER_ELECTRICAL, ATTR_EPM_POWER,   1000); // mW -> W
-        r.voltage_dv = cached_u16(s, CLUSTER_ELECTRICAL, ATTR_EPM_VOLTAGE,  100); // mV -> 0.1 V
-        r.current_ca = cached_u16(s, CLUSTER_ELECTRICAL, ATTR_EPM_CURRENT,   10); // mA -> 0.01 A
-        memcpy(out, &r, sizeof(r));
-        return sizeof(r);
-    }
-    case KIND_HEAT_METER: {
-        rec_heat_meter_t r;
-        r.power_w          = cached_i16(s, CLUSTER_HEAT_METER, ATTR_HM_POWER, 1000); // mW -> W
-        r.flow_temp_c100   = cached_i16(s, CLUSTER_HEAT_METER, ATTR_HM_FLOW_TEMP,   1);
-        r.return_temp_c100 = cached_i16(s, CLUSTER_HEAT_METER, ATTR_HM_RETURN_TEMP, 1);
-        // app_main.cpp caches the flow in l/h, the unit the cluster reports and the unit this
-        // record stores, so it crosses unscaled.
-        r.flow_lph         = cached_u16(s, CLUSTER_HEAT_METER, ATTR_HM_FLOW, 1);
-        memcpy(out, &r, sizeof(r));
-        return sizeof(r);
-    }
-    // case KIND_HOME: {
-    //     const home_manager_t *h = s_home_manager;
-    //     rec_home_t r;
-
-    //     // A quantity with no sensor bound to it is genuinely absent, not zero, so it gets
-    //     // the sentinel. Where a sensor IS bound, zero is a real reading and is kept.
-    //     r.flow_temp_c100    = h->heat_meter_flow_temp_node_id   ? h->heat_source_flow_temperature   : HIST_NULL_I16;
-    //     r.return_temp_c100  = h->heat_meter_return_temp_node_id ? h->heat_source_return_temperature : HIST_NULL_I16;
-    //     r.outdoor_temp_c100 = h->outdoor_temp_node_id            ? h->outdoor_temperature            : HIST_NULL_I16;
-    //     r.flow_m3h10        = h->heat_source_flow_rate_node_id   ? h->heat_source_flow_rate          : HIST_NULL_U16;
-
-    //     r.elec_power_w = h->has_electrical_power ? clamp_i16(h->electrical_power_mw / 1000) : HIST_NULL_I16;
-
-    //     // A heat meter is authoritative when selected; otherwise the output is derived from
-    //     // flow rate and delta-T, which needs all three sensors bound to mean anything.
-    //     if (h->heat_meter_node_id) {
-    //         r.heat_output_w = h->has_heat_meter_power ? clamp_i16(h->heat_meter_power_mw / 1000) : HIST_NULL_I16;
-    //         r.flow_temp_c100   = h->has_heat_meter_flow_temp   ? clamp_i16(h->heat_meter_flow_temp)   : HIST_NULL_I16;
-    //         r.return_temp_c100 = h->has_heat_meter_return_temp ? clamp_i16(h->heat_meter_return_temp) : HIST_NULL_I16;
-    //         r.flow_m3h10       = h->has_heat_meter_flow ? clamp_u16((int64_t)(h->heat_meter_flow_m3h * 10.0f)) : HIST_NULL_U16;
-    //     } else if (h->heat_source_flow_rate_node_id && h->heat_meter_flow_temp_node_id &&
-    //                h->heat_meter_return_temp_node_id) {
-    //         r.heat_output_w = clamp_i16(h->heat_source_output);
-    //     } else {
-    //         r.heat_output_w = HIST_NULL_I16;
-    //     }
-
-    //     memcpy(out, &r, sizeof(r));
-    //     return sizeof(r);
-    // }
-    default:
-        return 0;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Series discovery
-// ---------------------------------------------------------------------------
-
-static uint8_t kind_for_device_type(uint32_t device_type_id)
-{
-    switch (device_type_id) {
-    case DEVTYPE_TEMPERATURE: return KIND_TEMPERATURE;
-    case DEVTYPE_FLOW:        return KIND_FLOW;
-    case DEVTYPE_ELECTRICAL:  return KIND_ELECTRICAL;
-    case DEVTYPE_HEAT_METER:  return KIND_HEAT_METER;
-    default:                  return 0;
-    }
-}
-
-// Rebuilds the sampled set from the node manager: every endpoint whose device type we
-// know how to record, plus the synthetic home series. Called at init and once per flush,
-// so commissioning or deleting a device is picked up without walking the node list on
-// every sample.
-static void refresh_series(void)
-{
-    std::vector<series_t> next;
-
-    next.push_back(series_t{KIND_HOME, 0, 0});
-
-    for (matter_node_t *node = s_node_manager->node_list; node; node = node->next) {
-        for (uint16_t i = 0; i < node->endpoints_count; i++) {
-            const endpoint_entry_t *ep = &node->endpoints[i];
-
-            for (uint8_t d = 0; d < ep->device_type_count; d++) {
-                uint8_t kind = kind_for_device_type(ep->device_type_ids[d]);
-                if (!kind) {
-                    continue;
-                }
-                next.push_back(series_t{kind, node->node_id, ep->endpoint_id});
-                break; // one series per endpoint, first recognised device type wins
-            }
-        }
+    if (h->has_heat_meter_power) {
+        int64_t mw = h->heat_meter_power_mw;
+        r.heat_power_w = clamp_i16(mw / 1000);
     }
 
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_series = std::move(next);
-    size_t count = s_series.size();
-    xSemaphoreGive(s_mutex);
+    if (h->has_electrical_power) {
+        int64_t mw = h->electrical_power_mw;
+        r.elec_power_w = clamp_i16(mw / 1000);
+    }
 
-    ESP_LOGD(TAG, "Tracking %u series", (unsigned)count);
+    if (h->has_heat_meter_flow_temperature) {
+        r.flow_temp_c100 = clamp_i16(h->heat_meter_flow_temperature);
+    }
+
+    if (h->has_heat_meter_return_temperature) {
+        r.return_temp_c100 = clamp_i16(h->heat_meter_return_temperature);
+    }
+
+    // The cluster reports l/h, which is the unit this field stores, so it crosses unscaled.
+    if (h->has_heat_meter_flow) {
+        r.flow_lph = clamp_u16(h->heat_meter_flow);
+    }
+
+    if (h->has_outdoor_temperature) {
+        r.outdoor_temp_c100 = clamp_i16(h->outdoor_temperature);
+    }
+
+    if (h->has_internal_temperature) {
+        r.internal_temp_c100 = clamp_i16(h->internal_temperature);
+    }
+
+    if (h->has_cop) {
+        r.cop_x100 = clamp_i16(h->cop_x100);
+    }
+
+    if (h->has_dhw_running) {
+        r.dhw_running = h->dhw_running ? 1 : 0;
+    }
+
+    if (h->has_electrical_voltage) {
+        int64_t mv = h->electrical_voltage_mv;
+        r.elec_voltage_dv = clamp_u16(mv / 100);
+    }
+
+    if (h->has_electrical_current) {
+        int64_t ma = h->electrical_current_ma;
+        r.elec_current_ca = clamp_u16(ma / 10);
+    }
+
+    memcpy(out, &r, sizeof(r));
+    return sizeof(r);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,24 +173,21 @@ static void on_sample_timer(void *arg)
     uint16_t interval = s_interval_s;
     uint32_t slot     = (now - base_ts) / interval;
 
+    pending_t p;
+    p.kind    = KIND_HOME;
+    p.base_ts = base_ts;
+    p.slot    = slot;
+    memset(p.data, 0, sizeof(p.data));
+
+    if (build_record(p.data) == 0) {
+        return;
+    }
+
     xSemaphoreTake(s_mutex, portMAX_DELAY);
 
     if (s_pending.size() >= MAX_PENDING) {
         s_dropped++;
-        xSemaphoreGive(s_mutex);
-        return;
-    }
-
-    for (const series_t &s : s_series) {
-        pending_t p;
-        p.series  = s;
-        p.base_ts = base_ts;
-        p.slot    = slot;
-        memset(p.data, 0, sizeof(p.data));
-
-        if (build_record(s, p.data) == 0) {
-            continue;
-        }
+    } else {
         s_pending.push_back(p);
     }
 
@@ -298,17 +196,16 @@ static void on_sample_timer(void *arg)
 
 // Appends one series' records for one day, padding any slots that were missed so that
 // offset = header + slot * record_size stays true.
-static void write_series_day(const series_t &series, uint32_t base_ts,
+static void write_series_day(uint8_t kind, uint32_t base_ts,
                              const std::vector<pending_t *> &records)
 {
-    size_t rec_size = history_record_size(series.kind);
+    size_t rec_size = history_record_size(kind);
     if (rec_size == 0) {
         return;
     }
 
     char path[HISTORY_PATH_MAX];
-    if (!history_path_for(series.kind, series.node_id, series.endpoint_id, base_ts,
-                          path, sizeof(path))) {
+    if (!history_path_for(kind, base_ts, path, sizeof(path))) {
         return;
     }
 
@@ -323,7 +220,7 @@ static void write_series_day(const series_t &series, uint32_t base_ts,
         history_header_t hdr;
         hdr.magic       = HISTORY_MAGIC;
         hdr.version     = HISTORY_VERSION;
-        hdr.sensor_kind = series.kind;
+        hdr.sensor_kind = kind;
         hdr.interval_s  = s_interval_s;
         hdr.base_ts     = base_ts;
         hdr.record_size = (uint16_t)rec_size;
@@ -352,7 +249,7 @@ static void write_series_day(const series_t &series, uint32_t base_ts,
     size_t next_slot  = (end > (long)sizeof(hdr)) ? ((size_t)end - sizeof(hdr)) / rec_size : 0;
 
     uint8_t sentinel[HISTORY_MAX_RECORD_SIZE];
-    history_fill_sentinel(series.kind, sentinel);
+    history_fill_sentinel(kind, sentinel);
 
     for (pending_t *p : records) {
         if (p->slot < next_slot) {
@@ -394,7 +291,8 @@ static void flush_once(void)
     }
 
     if (!batch.empty() && sd_card_available()) {
-        // Group by (series, day). A batch spans two days only across local midnight.
+        // Group by (kind, day). With one series this only ever splits across local midnight,
+        // but the grouping is kept general so a second series costs nothing to add.
         std::vector<bool> done(batch.size(), false);
 
         for (size_t i = 0; i < batch.size(); i++) {
@@ -406,21 +304,16 @@ static void flush_once(void)
                 if (done[j]) {
                     continue;
                 }
-                if (batch[j].series.kind == batch[i].series.kind &&
-                    batch[j].series.node_id == batch[i].series.node_id &&
-                    batch[j].series.endpoint_id == batch[i].series.endpoint_id &&
-                    batch[j].base_ts == batch[i].base_ts) {
+                if (batch[j].kind == batch[i].kind && batch[j].base_ts == batch[i].base_ts) {
                     done[j] = true;
                     group.push_back(&batch[j]);
                 }
             }
             std::sort(group.begin(), group.end(),
                       [](const pending_t *a, const pending_t *b) { return a->slot < b->slot; });
-            write_series_day(batch[i].series, batch[i].base_ts, group);
+            write_series_day(batch[i].kind, batch[i].base_ts, group);
         }
     }
-
-    refresh_series();
 
     // Re-arming the sample timer is done here rather than from inside its own callback.
     if (s_restart_sampler) {
@@ -474,17 +367,8 @@ uint16_t history_logger_active_interval(void)
     return s_interval_s;
 }
 
-void history_logger_forget_node(uint64_t node_id)
+esp_err_t history_logger_init(home_manager_t *home_manager)
 {
-    ValueCache::instance().forget_node(node_id);
-    if (s_mutex) {
-        refresh_series();
-    }
-}
-
-esp_err_t history_logger_init(node_manager_t *node_manager, home_manager_t *home_manager)
-{
-    s_node_manager = node_manager;
     s_home_manager = home_manager;
 
     s_mutex = xSemaphoreCreateMutex();
@@ -495,8 +379,6 @@ esp_err_t history_logger_init(node_manager_t *node_manager, home_manager_t *home
     if (home_manager->logging_interval_s) {
         history_logger_set_interval(home_manager->logging_interval_s);
     }
-
-    refresh_series();
 
     esp_timer_create_args_t sample_args = {};
     sample_args.callback = on_sample_timer;

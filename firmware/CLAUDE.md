@@ -94,6 +94,11 @@ Because this build sets `CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n`, there is no 
 Readings are sampled on a fixed cadence (5 s by default, configurable) and appended to a
 MicroSD card, so the UI can show history rather than only "now".
 
+History records **quantities, not sensors**. The sampler reads `home_manager`, so the series
+follows the value — flow temperature, heat output, outdoor temperature — regardless of which
+device supplied it. Replacing or re-pairing a heat meter therefore leaves the recorded series
+continuous, where an archive keyed on `nodeId` would have orphaned it and started again.
+
 - `sd_card.c` — mounts the card over **SPI3** (`CS 4, MISO 5, MOSI 6, CLK 7`). SPI2 is the
   W5500's and must not be shared. Failing to mount is not fatal: `sd_card_available()`
   stays false, the logger no-ops and the history endpoints report
@@ -104,33 +109,39 @@ MicroSD card, so the UI can show history rather than only "now".
   wrong. `CONFIG_ENABLE_SNTP_TIME_SYNC=y` is set as well, but only to unlock the
   `gettimeofday` branch of `ClockImpl::GetClock_RealTime` in the custom platform layer —
   it does not start an SNTP client.
-- `value_cache.cpp` — latest value per (node, endpoint, cluster, attribute), ported from
-  `matter-esp32-home-energy-manager`. `attribute_data_cb` writes into it; the logger polls
-  it. Polling rather than logging on receipt keeps a stalled or bursty subscription from
-  leaving gaps, and keeps SD I/O off the CHIP event loop.
 - `history_format.h` — the on-disk layout. **Records carry no timestamp**: a 16-byte header
   holds `base_ts`, `interval_s` and `record_size`, so slot `i` is `base_ts + i*interval_s`
   and `offset = 16 + slot*record_size`. Lookup is O(1) arithmetic, with no index and no
-  scan. Records are per sensor kind with 16-bit fields (2 bytes for a temperature sensor,
-  6 for electrical, 8 for a heat meter, 12 for the home view). `INT16_MIN`/`UINT16_MAX`
-  mean "no reading" — zero cannot, because 0 W is a real reading.
-- `history_logger.cpp` — an `esp_timer` samples into a RAM buffer; a separate task flushes
-  once a minute (its own task because the esp_timer stack is 3584 bytes, too small for
-  FATFS). Missed slots are padded with sentinels so the offset arithmetic stays true.
-- `history_api.c` — `GET /api/history`, `/api/history/sensors`, `/api/history/sensor`.
-  Downsamples by striding slots and integrates energy over every slot, so kWh and COP do
-  not change with the requested resolution.
+  scan. `rec_home_t` is 28 bytes of 16-bit fields. `INT16_MIN`/`UINT16_MAX` mean "no
+  reading" — zero cannot, because 0 W is a real reading.
 
-Files are per local day: `/sdcard/sensor-<nodeId>-<endpointId>-YYYY-MM-DD` and
-`/sdcard/home-YYYY-MM-DD`. This needs `CONFIG_FATFS_LFN_HEAP=y` — the default 8.3 names
-cannot hold them. **`sdkconfig` is checked in and overrides `sdkconfig.defaults`**, so a
-Kconfig change has to be made in both.
+  The record ends with **three reserved fields**, and they are the point of the design.
+  `record_size` is what makes the offset arithmetic correct, so widening the record is a
+  breaking change — the reader rejects a file whose `record_size` disagrees with its kind.
+  A quantity added later fills a reserved field instead: `record_size` never moves, days
+  already on the card stay readable and simply carry the sentinel in that column, and
+  `history_api.c` names the columns in its response so the UI picks the new one up from the
+  device. Field order is load-bearing in two places — `history_api.c` integrates fields 0
+  and 1 for `energyWh`/COP, and `History.tsx` charts by position. **Append to the reserved
+  tail; never reorder.** `history_unsigned_mask()` is a `uint16_t`, one bit per field, which
+  caps any record at 16 fields.
+- `history_logger.cpp` — an `esp_timer` samples `home_manager` into a RAM buffer; a separate
+  task flushes once a minute (its own task because the esp_timer stack is 3584 bytes, too
+  small for FATFS). Missed slots are padded with sentinels so the offset arithmetic stays
+  true. The sampler races `attribute_data_cb`, which writes those fields from the CHIP event
+  loop; the 64-bit readings are read unlocked and deliberately so — see the comment on
+  `build_record()`.
+- `history_api.c` — `GET /api/history`, `GET /api/history/dates`. Downsamples by striding
+  slots and integrates energy over every slot, so kWh and COP do not change with the
+  requested resolution. Note `s_read_buf` is `READ_CHUNK_RECORDS × HISTORY_MAX_RECORD_SIZE`;
+  scale the first down if the record ever widens.
 
-The `home-*` file duplicates data that is also in the per-sensor files, deliberately: which
-sensors feed the home depends on configuration (a heat meter overrides the discrete sensors
-in `calculations_manager.cpp`), so resolving it at read time would apply today's config to
-yesterday's data. It also lets the dashboard read one file per day instead of joining
-several.
+Files are per local day: `/sdcard/home-YYYY-MM-DD`. This needs `CONFIG_FATFS_LFN_HEAP=y` —
+the default 8.3 names cannot hold them. **`sdkconfig` is checked in and overrides
+`sdkconfig.defaults`**, so a Kconfig change has to be made in both.
+
+There is **no retention or pruning**: files accumulate indefinitely, at roughly 484 KB/day
+(~173 MB/year) at the 5 s default.
 
 The sampling interval is stored in the `home_manager` NVS blob and changed through
 `PUT /api/home`. A change takes effect at the next local midnight, because a file's records
@@ -145,8 +156,8 @@ must stay spaced at the interval its header records.
 2. `set_endpoint_measured_value` updates the node manager
 3. `calculations_manager` recalculates heat loss for affected rooms and home totals
 4. Results are published to **MQTT** and broadcast over the **WebSocket** to the web UI
-5. In parallel, every decoded reading is put into the **ValueCache**, which the history
-   logger samples on its own cadence and writes to the SD card
+5. In parallel, the history logger samples `home_manager` on its own cadence and writes one
+   fixed-width record per slot to the SD card
 
 ### Web App (`html_app/`)
 

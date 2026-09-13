@@ -8,10 +8,14 @@
 
 // On-disk format for the SD card history.
 //
-// Files are per local day, per sensor:
+// History records QUANTITIES, not sensors. One file per local day:
 //
-//   /sdcard/sensor-<nodeId>-<endpointId>-YYYY-MM-DD   raw per-sensor archive
-//   /sdcard/home-YYYY-MM-DD                           resolved home view
+//   /sdcard/home-YYYY-MM-DD
+//
+// holding every value the home tracks -- heat, electrical, weather -- sourced from
+// home_manager rather than from whichever device happens to supply them. Replacing a heat
+// meter therefore leaves the recorded flow temperature continuous, where a per-sensor
+// archive keyed on nodeId would have orphaned it and started again.
 //
 // Readings are sampled on a fixed cadence, so records carry no timestamp: slot i is
 // base_ts + i * interval_s, which makes a lookup
@@ -30,7 +34,7 @@ extern "C" {
 #endif
 
 #define HISTORY_MAGIC   0x31534D48u // 'HMS1' little-endian
-#define HISTORY_VERSION 1
+#define HISTORY_VERSION 2
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
@@ -50,12 +54,11 @@ typedef struct __attribute__((packed)) {
 
 HIST_STATIC_ASSERT(sizeof(history_header_t) == 16, "history_header_t must stay 16 bytes");
 
+// Only one series is written today. The kind is still carried in the header and threaded
+// through the path and record helpers, so adding a second series later (one at a different
+// cadence, say) costs a new enum value rather than a format change.
 typedef enum {
-    KIND_TEMPERATURE = 1,
-    KIND_FLOW        = 2,
-    KIND_ELECTRICAL  = 3,
-    KIND_HEAT_METER  = 4,
-    KIND_HOME        = 5,
+    KIND_HOME = 5,
 } sensor_kind_t;
 
 // "No reading in this slot". Both sit outside any physical range -- INT16_MIN as
@@ -68,54 +71,47 @@ typedef enum {
 // a domestic heat pump but it IS a cap; widen to int32 here if this ever drives
 // something industrial.
 
+// The record is deliberately wider than the quantities in use, and the spare fields are
+// part of the design rather than an oversight.
+//
+// record_size is what makes offset = header + slot * record_size correct, so widening the
+// record is a breaking change: the reader rejects a file whose record_size disagrees with
+// the kind. Reserving fields up front means a quantity added later fills a spare slot
+// instead, record_size never moves, and days already on the card stay readable -- they
+// simply carry the sentinel in that column, which the reader already renders as null.
+// history_api.c names the columns in its response, so the UI picks up a new one from the
+// device rather than from a recompile.
+//
+// Field order is load-bearing in two places: history_api.c integrates fields 0 and 1 for
+// energyWh/COP, and History.tsx charts by position. Append to the reserved tail; never
+// reorder.
 typedef struct __attribute__((packed)) {
-    int16_t temp_c100;          // TemperatureMeasurement MeasuredValue, 0.01 degC
-} rec_temperature_t;
-
-typedef struct __attribute__((packed)) {
-    uint16_t flow_m3h10;        // FlowMeasurement MeasuredValue, 0.1 m3/h
-} rec_flow_t;
-
-typedef struct __attribute__((packed)) {
-    int16_t  power_w;           // ActivePower,   mW -> W
-    uint16_t voltage_dv;        // Voltage,       mV -> 0.1 V
-    uint16_t current_ca;        // ActiveCurrent, mA -> 0.01 A
-} rec_electrical_t;
-
-typedef struct __attribute__((packed)) {
-    int16_t  power_w;           // Heat Meter power,  mW -> W
-    int16_t  flow_temp_c100;    // 0.01 degC
-    int16_t  return_temp_c100;  // 0.01 degC
-    uint16_t flow_lph;          // Heat Meter flow, l/h
-} rec_heat_meter_t;
-
-typedef struct __attribute__((packed)) {
-    int16_t  heat_output_w;
-    int16_t  elec_power_w;
-    int16_t  flow_temp_c100;
-    int16_t  return_temp_c100;
-    uint16_t flow_m3h10;
-    int16_t  outdoor_temp_c100;
+    int16_t  heat_power_w;        // Heat Meter power,        mW -> W
+    int16_t  elec_power_w;        // ElectricalPower.ActivePower, mW -> W
+    int16_t  flow_temp_c100;      // 0.01 degC
+    int16_t  return_temp_c100;    // 0.01 degC
+    uint16_t flow_lph;            // Heat Meter flow, l/h
+    int16_t  outdoor_temp_c100;   // 0.01 degC
+    int16_t  internal_temp_c100;  // 0.01 degC -- no source bound yet
+    int16_t  cop_x100;            // derived by update_home(), 0.01
+    int16_t  dhw_running;         // 0 or 1 -- no source bound yet
+    uint16_t elec_voltage_dv;     // Voltage,       mV -> 0.1 V
+    uint16_t elec_current_ca;     // ActiveCurrent, mA -> 0.01 A
+    int16_t  reserved0;
+    int16_t  reserved1;
+    int16_t  reserved2;
 } rec_home_t;
 
-HIST_STATIC_ASSERT(sizeof(rec_temperature_t) == 2, "rec_temperature_t must stay 2 bytes");
-HIST_STATIC_ASSERT(sizeof(rec_flow_t)        == 2, "rec_flow_t must stay 2 bytes");
-HIST_STATIC_ASSERT(sizeof(rec_electrical_t)  == 6, "rec_electrical_t must stay 6 bytes");
-HIST_STATIC_ASSERT(sizeof(rec_heat_meter_t)  == 8, "rec_heat_meter_t must stay 8 bytes");
-HIST_STATIC_ASSERT(sizeof(rec_home_t)        == 12, "rec_home_t must stay 12 bytes");
+HIST_STATIC_ASSERT(sizeof(rec_home_t) == 28, "rec_home_t must stay 28 bytes");
 
 // Largest record, for fixed-size buffers in the writer and reader.
-#define HISTORY_MAX_RECORD_SIZE 12
+#define HISTORY_MAX_RECORD_SIZE 28
 
 static inline size_t history_record_size(uint8_t kind)
 {
     switch (kind) {
-    case KIND_TEMPERATURE: return sizeof(rec_temperature_t);
-    case KIND_FLOW:        return sizeof(rec_flow_t);
-    case KIND_ELECTRICAL:  return sizeof(rec_electrical_t);
-    case KIND_HEAT_METER:  return sizeof(rec_heat_meter_t);
-    case KIND_HOME:        return sizeof(rec_home_t);
-    default:               return 0;
+    case KIND_HOME: return sizeof(rec_home_t);
+    default:        return 0;
     }
 }
 
@@ -128,15 +124,15 @@ static inline size_t history_field_count(uint8_t kind)
 }
 
 // Bit i set => field i of this kind is unsigned, so its sentinel is HIST_NULL_U16.
+//
+// The mask is a uint16_t, one bit per field, which caps any record at 16 fields / 32
+// bytes. Widen this type before adding a 17th field.
 static inline uint16_t history_unsigned_mask(uint8_t kind)
 {
     switch (kind) {
-    case KIND_TEMPERATURE: return 0x00; // [i16]
-    case KIND_FLOW:        return 0x01; // [u16]
-    case KIND_ELECTRICAL:  return 0x06; // [i16, u16, u16]
-    case KIND_HEAT_METER:  return 0x08; // [i16, i16, i16, u16]
-    case KIND_HOME:        return 0x10; // [i16, i16, i16, i16, u16, i16]
-    default:               return 0x00;
+    // flow_lph (4), elec_voltage_dv (9), elec_current_ca (10)
+    case KIND_HOME: return 0x0610;
+    default:        return 0x0000;
     }
 }
 

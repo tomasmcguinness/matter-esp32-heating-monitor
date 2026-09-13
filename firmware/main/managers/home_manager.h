@@ -18,6 +18,7 @@ typedef struct {
     // which history_logger_init() reads as "use the default".
     uint16_t logging_interval_s;
 
+    bool has_outdoor_temperature;
     int16_t outdoor_temperature;
 
     // ElectricalPowerMeasurement readings, in the units the cluster reports them: mV, mA and mW.
@@ -42,6 +43,20 @@ typedef struct {
 
     bool has_heat_meter_power;
     int64_t heat_meter_power_mw;
+
+    // Indoor temperature representative of the home as a whole. No sensor is bound to this
+    // yet, so it stays absent and the history logs it as "no reading".
+    bool has_internal_temperature;
+    int16_t internal_temperature;
+
+    // True while the heat source is producing domestic hot water rather than space heating.
+    // No source is bound to this yet.
+    bool has_dhw_running;
+    bool dhw_running;
+
+    // Instantaneous coefficient of performance, 0.01 units, derived by update_home().
+    bool has_cop;
+    int16_t cop_x100;
 
     // Transient
     uint16_t total_predicted_heat_loss_per_degree = 0;

@@ -2,20 +2,44 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-// GET /api/history returns the resolved home series for one local day: fixed-cadence
-// slots with nulls where no reading was recorded, plus the day's integrated energy.
+// GET /api/history returns one local day of the home's recorded values: fixed-cadence slots
+// with nulls where no reading was recorded, plus the day's integrated energy.
+//
+// History records quantities, not sensors, so these columns stay continuous across a sensor
+// being replaced or re-paired.
 //
 // Field order matches rec_home_t in firmware/main/storage/history_format.h. The firmware
 // also sends the names in "fields", but the chart needs to know which is which, so the
-// order is relied on here and asserted against that list below.
+// order is relied on here and asserted against that list below. The reserved columns are
+// placeholders for quantities not yet recorded; they always read null.
 const FIELDS = [
-  "heatOutputW",
+  "heatPowerW",
   "elecPowerW",
   "flowTempC100",
   "returnTempC100",
-  "flowM3h10",
+  "flowLph",
   "outdoorTempC100",
+  "internalTempC100",
+  "copX100",
+  "dhwRunning",
+  "elecVoltageDv",
+  "elecCurrentCa",
+  "reserved0",
+  "reserved1",
+  "reserved2",
 ];
+
+// Column index within a point row. Element 0 is the timestamp, so a field's index is its
+// record position plus one.
+const COL = {
+  heatPower: 1,
+  elecPower: 2,
+  flowTemp: 3,
+  returnTemp: 4,
+  outdoorTemp: 6,
+  internalTemp: 7,
+  cop: 8,
+} as const;
 
 type HistoryResponse = {
   storage: string;
@@ -45,15 +69,20 @@ function shiftDate(iso: string, days: number): string {
 }
 
 // uPlot wants column-major data: [xs, series0, series1, ...]. The API sends row-major
-// points, so this transposes and rescales each column into display units.
-function toPlotData(points: (number | null)[][], scales: number[]): uPlot.AlignedData {
+// points, so this picks the columns a chart needs, transposes, and rescales each into
+// display units.
+function toPlotData(
+  points: (number | null)[][],
+  columns: number[],
+  scales: number[]
+): uPlot.AlignedData {
   const xs = new Array<number>(points.length);
-  const cols = scales.map(() => new Array<number | null>(points.length));
+  const cols = columns.map(() => new Array<number | null>(points.length));
 
   for (let i = 0; i < points.length; i++) {
     xs[i] = points[i][0] as number;
-    for (let c = 0; c < scales.length; c++) {
-      const v = points[i][c + 1];
+    for (let c = 0; c < columns.length; c++) {
+      const v = points[i][columns[c]];
       cols[c][i] = v === null || v === undefined ? null : v * scales[c];
     }
   }
@@ -65,9 +94,10 @@ type ChartProps = {
   data: uPlot.AlignedData | null;
   series: { label: string; stroke: string }[];
   unit: string;
+  decimals?: number;
 };
 
-function Chart({ title, data, series, unit }: ChartProps) {
+function Chart({ title, data, series, unit, decimals = 1 }: ChartProps) {
   const holder = useRef<HTMLDivElement>(null);
   const plot = useRef<uPlot | null>(null);
 
@@ -95,7 +125,7 @@ function Chart({ title, data, series, unit }: ChartProps) {
               width: 1.5,
               spanGaps: false,
               value: (_u: uPlot, v: number | null) =>
-                v === null ? "--" : `${v.toFixed(1)} ${unit}`,
+                v === null ? "--" : `${v.toFixed(decimals)} ${unit}`,
             })),
           ],
           axes: [{}, { label: unit }],
@@ -112,7 +142,7 @@ function Chart({ title, data, series, unit }: ChartProps) {
       plot.current?.destroy();
       plot.current = null;
     };
-  }, [data, title, series, unit]);
+  }, [data, title, series, unit, decimals]);
 
   return <div ref={holder} style={{ marginBottom: "20px" }} />;
 }
@@ -126,7 +156,10 @@ const TEMP_SERIES = [
   { label: "Flow", stroke: "#d9534f" },
   { label: "Return", stroke: "#5bc0de" },
   { label: "Outdoor", stroke: "#5cb85c" },
+  { label: "Indoor", stroke: "#f0ad4e" },
 ];
+
+const COP_SERIES = [{ label: "COP", stroke: "#9354d9" }];
 
 function History() {
   const [date, setDate] = useState<string>(todayISO());
@@ -169,11 +202,18 @@ function History() {
   const points = data?.points ?? [];
   const hasPoints = points.length > 0;
 
-  // Watts stay as watts; the 0.01 degC fields become degrees.
-  const powerData = hasPoints ? toPlotData(points.map((p) => [p[0], p[1], p[2]]), [1, 1]) : null;
-  const tempData = hasPoints
-    ? toPlotData(points.map((p) => [p[0], p[3], p[4], p[6]]), [0.01, 0.01, 0.01])
+  // Watts stay as watts; the 0.01 fields become degrees and whole COP units.
+  const powerData = hasPoints
+    ? toPlotData(points, [COL.heatPower, COL.elecPower], [1, 1])
     : null;
+  const tempData = hasPoints
+    ? toPlotData(
+        points,
+        [COL.flowTemp, COL.returnTemp, COL.outdoorTemp, COL.internalTemp],
+        [0.01, 0.01, 0.01, 0.01]
+      )
+    : null;
+  const copData = hasPoints ? toPlotData(points, [COL.cop], [0.01]) : null;
 
   const heatKwh = (data?.energyWh?.heat ?? 0) / 1000;
   const elecKwh = (data?.energyWh?.electrical ?? 0) / 1000;
@@ -260,6 +300,9 @@ function History() {
 
           <Chart title="Power" data={powerData} series={POWER_SERIES} unit="W" />
           <Chart title="Temperatures" data={tempData} series={TEMP_SERIES} unit="&deg;C" />
+          {/* Instantaneous COP, unlike the card above, which is the day's integrated figure.
+              Gaps are the heat source being off rather than missing data. */}
+          <Chart title="COP" data={copData} series={COP_SERIES} unit="" decimals={2} />
         </>
       )}
     </>

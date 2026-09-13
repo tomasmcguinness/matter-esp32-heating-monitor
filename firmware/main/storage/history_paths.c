@@ -30,29 +30,24 @@ bool history_sanitize_token(const char *tok, char *out, size_t out_len)
     return true;
 }
 
-bool history_path_for_date(uint8_t kind, uint64_t node_id, uint16_t endpoint_id,
-                           const char *date, char *out, size_t out_len)
+bool history_path_for_date(uint8_t kind, const char *date, char *out, size_t out_len)
 {
     char safe_date[16];
     if (!history_sanitize_token(date, safe_date, sizeof(safe_date))) {
         return false;
     }
 
-    int written;
-    if (kind == KIND_HOME) {
-        written = snprintf(out, out_len, "%s/home-%s", SD_CARD_MOUNT_POINT, safe_date);
-    } else {
-        written = snprintf(out, out_len, "%s/sensor-%llu-%u-%s", SD_CARD_MOUNT_POINT,
-                           (unsigned long long)node_id, (unsigned)endpoint_id, safe_date);
+    if (kind != KIND_HOME) {
+        return false;
     }
 
+    int written = snprintf(out, out_len, "%s/home-%s", SD_CARD_MOUNT_POINT, safe_date);
     return written > 0 && (size_t)written < out_len;
 }
 
-bool history_path_for(uint8_t kind, uint64_t node_id, uint16_t endpoint_id,
-                      uint32_t base_ts, char *out, size_t out_len)
+bool history_path_for(uint8_t kind, uint32_t base_ts, char *out, size_t out_len)
 {
     char date[16];
     local_date_string(base_ts, date, sizeof(date));
-    return history_path_for_date(kind, node_id, endpoint_id, date, out, out_len);
+    return history_path_for_date(kind, date, out, out_len);
 }

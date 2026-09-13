@@ -68,7 +68,6 @@
 #include "storage/history_logger.h"
 #include "storage/sd_card.h"
 #include "storage/time_sync.h"
-#include "storage/value_cache.h"
 
 #include "mqtt_client.h"
 
@@ -716,16 +715,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             return;
         }
 
-        // Every electrical endpoint is worth recording, whether or not it is the one bound to
-        // the home, so the cache is fed before the filter below.
-        //
-        if (!value.IsNull())
-        {
-            ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, value.Value());
-        }
-
-        // Only the endpoint the user picked as the home's electrical meter is of interest for
-        // the live figures.
+        // Only the endpoint the user picked as the home's electrical meter is of interest:
+        // history records the home's quantities, not each device's, so an unbound endpoint
+        // has nowhere to go.
         //
         if (g_home_manager.electrical_meter_node_id != remote_node_id || g_home_manager.electrical_meter_endpoint_id != path.mEndpointId)
         {
@@ -790,13 +782,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
 
             // The cluster reports litres per hour, which is also the unit the history record
-            // uses, so the reading is cached exactly as it arrives.
-            if (!value.IsNull())
-            {
-                ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId,
-                                           (int64_t)value.Value());
-            }
-
+            // uses, so the reading crosses unscaled.
             if (!is_home_meter)
             {
                 break;
@@ -829,11 +815,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             bool has_value = !value.IsNull();
             int32_t reading = has_value ? value.Value() : 0;
-
-            if (has_value)
-            {
-                ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, reading);
-            }
 
             if (!is_home_meter)
             {
@@ -877,11 +858,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 return;
             }
 
-            if (!value.IsNull())
-            {
-                ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, value.Value());
-            }
-
             if (!is_home_meter)
             {
                 break;
@@ -923,8 +899,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         ESP_LOGI(TAG, "Temperature Value: %d", temperature);
 
-        ValueCache::instance().put(remote_node_id, path.mEndpointId, path.mClusterId, path.mAttributeId, temperature);
-
         set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, temperature);
 
         bool hasMatched = false;
@@ -935,6 +909,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         {
             ESP_LOGI(TAG, "Device is assigned to the outdoor temperature sensor");
 
+            g_home_manager.has_outdoor_temperature = true;
             g_home_manager.outdoor_temperature = temperature;
 
             // A change in outside temperature impacts all the rooms.
@@ -1754,7 +1729,6 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     else
     {
         remove_node(&g_node_manager, node_id);
-        history_logger_forget_node(node_id);
 
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_status(req, "202 Accepted");
@@ -2885,6 +2859,40 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "heatMeterPower");
     }
 
+    // Derived by update_home(). Absent rather than zero while the heat source is off or the
+    // meters have not both reported, so the UI dashes instead of claiming a COP of 0.00.
+    //
+    if (g_home_manager.has_cop)
+    {
+        cJSON_AddNumberToObject(root, "cop", g_home_manager.cop_x100);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "cop");
+    }
+
+    // Neither of these has a source bound yet, so both are always null for now. They are
+    // here, and in the history record, so that wiring a source later is the only change
+    // needed.
+    //
+    if (g_home_manager.has_internal_temperature)
+    {
+        cJSON_AddNumberToObject(root, "internalTemperature", g_home_manager.internal_temperature);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "internalTemperature");
+    }
+
+    if (g_home_manager.has_dhw_running)
+    {
+        cJSON_AddBoolToObject(root, "dhwRunning", g_home_manager.dhw_running);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "dhwRunning");
+    }
+
     cJSON_AddNumberToObject(root, "totalPredictedHeatLoss", g_home_manager.total_predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "totalMeasuredHeatLoss", g_home_manager.total_measured_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "predictedHeatLossAtCurrentTemperature", g_home_manager.total_predicted_heat_loss_at_current_temperature);
@@ -3039,7 +3047,11 @@ static esp_err_t home_put_handler(httpd_req_t *req)
 
     // Copy the outdoor temperature from the sensor to the home manager so that it's available immediately.
     //
-    get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
+    // The lookup failing is how unbinding the sensor clears the reading: a node id of 0 finds
+    // nothing, so has_outdoor_temperature goes false and the stale value stops being reported.
+    //
+    g_home_manager.has_outdoor_temperature =
+        get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature) == ESP_OK;
 
     broadcast_home_state();
 
@@ -3668,7 +3680,7 @@ extern "C" void app_main()
     // is unaffected.
     sd_card_init();
 
-    err = history_logger_init(&g_node_manager, &g_home_manager);
+    err = history_logger_init(&g_home_manager);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to start the history logger, err:%d", err);

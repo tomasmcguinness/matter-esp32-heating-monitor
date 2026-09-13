@@ -3,6 +3,14 @@
 
 static const char *TAG = "calculations_manager";
 
+// Electricity below this is treated as standby rather than as running, so no COP is derived
+// from it. 50 W.
+#define COP_MIN_ELEC_MW 50000
+
+// COP 20.00. Nothing domestic reaches this; the clamp is here so a bad meter reading cannot
+// push the value past what the int16 history field holds.
+#define COP_MAX_X100 2000
+
 void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_manager, radiator_manager_t *radiator_manager, room_manager_t *room_manager, esp_mqtt_client_handle_t mqtt_client, radiator_t *radiator)
 {
     ESP_LOGI(TAG, "Calculating output for radiator %u", radiator->radiator_id);
@@ -181,6 +189,22 @@ void update_all_rooms_heat_loss(node_manager_t *node_manager, home_manager_t *ho
     update_home(home_manager, room_manager, radiator_manager, mqtt_client);
 }
 
+// Publishes a reading, or null where there is none. Absent is not zero: 0 W is a real
+// electrical reading and 0.00 degC a real temperature, which is the same distinction the
+// history record makes with its sentinels and the web UI makes by dashing on null.
+//
+static void add_reading_or_null(cJSON *root, const char *key, bool present, double value)
+{
+    if (present)
+    {
+        cJSON_AddNumberToObject(root, key, value);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, key);
+    }
+}
+
 void update_home(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager, esp_mqtt_client_handle_t mqtt_client)
 {
     // Compute total predicted & total measured heat loss across all rooms.
@@ -223,7 +247,75 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     // TODO UFH.
 
+    // Instantaneous coefficient of performance: heat out over electricity in, both as the
+    // meters report them in mW.
+    //
+    // The electrical floor matters. At standby draw, a few watts of electricity against the
+    // heat still coming off a warm system yields a COP in the hundreds, which is meaningless
+    // and would flatten the chart's Y axis for the rest of the day. Below the floor the
+    // figure is recorded as absent rather than as zero, so the history shows a gap.
+    //
+    home_manager->has_cop = false;
+    home_manager->cop_x100 = 0;
+
+    if (home_manager->has_heat_meter_power && home_manager->has_electrical_power &&
+        home_manager->heat_meter_power_mw > 0 &&
+        home_manager->electrical_power_mw >= COP_MIN_ELEC_MW)
+    {
+        int64_t cop = (home_manager->heat_meter_power_mw * 100) / home_manager->electrical_power_mw;
+
+        if (cop > COP_MAX_X100)
+        {
+            cop = COP_MAX_X100;
+        }
+
+        home_manager->has_cop = true;
+        home_manager->cop_x100 = (int16_t)cop;
+
+        ESP_LOGI(TAG, "COP is %lld.%02lld", cop / 100, cop % 100);
+    }
+
+    // Only publish if we have a conection??
+
     cJSON *root = cJSON_CreateObject();
+
+    // The same quantities the history logger records -- see rec_home_t in
+    // storage/history_format.h -- so a subscriber gets live what the charts show back.
+    //
+    // Published in human units, following the radiator and room payloads above, rather than
+    // the raw cluster units GET /api/home sends: temperatures in degC, power in W, voltage
+    // in V, current in A.
+    //
+    add_reading_or_null(root, "heat_power", home_manager->has_heat_meter_power,
+                        (double)home_manager->heat_meter_power_mw / 1000.0);
+    add_reading_or_null(root, "electrical_power", home_manager->has_electrical_power,
+                        (double)home_manager->electrical_power_mw / 1000.0);
+    add_reading_or_null(root, "flow_temperature", home_manager->has_heat_meter_flow_temperature,
+                        (double)home_manager->heat_meter_flow_temperature / 100.0);
+    add_reading_or_null(root, "return_temperature", home_manager->has_heat_meter_return_temperature,
+                        (double)home_manager->heat_meter_return_temperature / 100.0);
+    add_reading_or_null(root, "flow_rate", home_manager->has_heat_meter_flow,
+                        (double)home_manager->heat_meter_flow);
+
+    add_reading_or_null(root, "outdoor_temperature", home_manager->has_outdoor_temperature,
+                        (double)home_manager->outdoor_temperature / 100.0);
+    add_reading_or_null(root, "internal_temperature", home_manager->has_internal_temperature,
+                        (double)home_manager->internal_temperature / 100.0);
+    add_reading_or_null(root, "cop", home_manager->has_cop,
+                        (double)home_manager->cop_x100 / 100.0);
+    add_reading_or_null(root, "electrical_voltage", home_manager->has_electrical_voltage,
+                        (double)home_manager->electrical_voltage_mv / 1000.0);
+    add_reading_or_null(root, "electrical_current", home_manager->has_electrical_current,
+                        (double)home_manager->electrical_current_ma / 1000.0);
+
+    if (home_manager->has_dhw_running)
+    {
+        cJSON_AddBoolToObject(root, "dhw_running", home_manager->dhw_running);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "dhw_running");
+    }
 
     cJSON_AddNumberToObject(root, "total_predicted_heat_loss_per_degree", home_manager->total_predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "total_measured_heat_loss_per_degree", home_manager->total_measured_heat_loss_per_degree);

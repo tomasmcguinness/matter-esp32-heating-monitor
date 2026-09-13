@@ -18,9 +18,10 @@ static const char *TAG = "history_api";
 #define DEFAULT_POINTS 500
 #define MAX_POINTS     2000
 
-// Records read per disk pass. 512 x 12 bytes is one 4 KB sector's worth of the widest
-// record, and keeps this off the httpd task's stack.
-#define READ_CHUNK_RECORDS 512
+// Records read per disk pass. 256 x 28 bytes is around 7 KB -- a couple of sectors' worth
+// of the widest record, and keeps this off the httpd task's stack. Scale this down if the
+// record ever widens again: the buffer below is the product of the two.
+#define READ_CHUNK_RECORDS 256
 
 static uint8_t s_read_buf[READ_CHUNK_RECORDS * HISTORY_MAX_RECORD_SIZE];
 
@@ -95,16 +96,18 @@ static bool query_param(httpd_req_t *req, const char *key, char *out, size_t out
     return httpd_query_key_value(query, key, out, out_len) == ESP_OK;
 }
 
+// Names every column, in record order, including the reserved tail. The UI charts by
+// position and checks this list before it does, so a field added to the reserved tail shows
+// up as a named column without the UI needing to be rebuilt.
 static const char *field_names_for(uint8_t kind)
 {
     switch (kind) {
-    case KIND_TEMPERATURE: return "\"tempC100\"";
-    case KIND_FLOW:        return "\"flowM3h10\"";
-    case KIND_ELECTRICAL:  return "\"powerW\",\"voltageDv\",\"currentCa\"";
-    case KIND_HEAT_METER:  return "\"powerW\",\"flowTempC100\",\"returnTempC100\",\"flowLph\"";
-    case KIND_HOME:        return "\"heatOutputW\",\"elecPowerW\",\"flowTempC100\","
-                                  "\"returnTempC100\",\"flowM3h10\",\"outdoorTempC100\"";
-    default:               return "";
+    case KIND_HOME: return "\"heatPowerW\",\"elecPowerW\",\"flowTempC100\","
+                           "\"returnTempC100\",\"flowLph\",\"outdoorTempC100\","
+                           "\"internalTempC100\",\"copX100\",\"dhwRunning\","
+                           "\"elecVoltageDv\",\"elecCurrentCa\","
+                           "\"reserved0\",\"reserved1\",\"reserved2\"";
+    default:        return "";
     }
 }
 
@@ -173,7 +176,10 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
 
     httpd_resp_set_type(req, "application/json");
 
-    char head[320];
+    // Must hold the whole preamble including every field name -- about 300 characters for
+    // rec_home_t's fourteen. snprintf would truncate silently and emit malformed JSON, so
+    // grow this alongside the record rather than trimming it to today's exact need.
+    char head[512];
     snprintf(head, sizeof(head),
              "{\"storage\":\"ok\",\"kind\":%u,\"interval\":%u,\"baseTs\":%lu,"
              "\"slots\":%u,\"stride\":%u,\"fields\":[%s],\"points\":[",
@@ -194,7 +200,7 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     size_t in_bucket   = 0;
     size_t bucket_base = 0;
     bool   first_point = true;
-    char   point[192];
+    char   point[256];
 
     while (slot < total_slots) {
         size_t want = total_slots - slot;
@@ -239,8 +245,8 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
                     n = (size_t)w;
                 }
 
-                // A timestamp plus six fields is about 60 characters, so `point` is never
-                // close to full; the guard is here so a wider record can never overrun it.
+                // A timestamp plus fourteen fields is about 130 characters, so `point` has
+                // headroom; the guard is here so a wider record can never overrun it.
                 for (size_t fi = 0; fi < fields && n + 1 < sizeof(point); fi++) {
                     if (bucket_n[fi] == 0) {
                         w = snprintf(point + n, sizeof(point) - n, ",null");
@@ -267,8 +273,10 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     }
     fclose(f);
 
-    // Energy only means something for the power fields: field 0 of an electrical or heat
-    // meter record, and fields 0 and 1 of a home record.
+    // Energy only means something for the power fields, which are 0 and 1 by construction --
+    // see the field-order note in history_format.h. This COP is the day's integrated figure,
+    // which is the honest headline number; the per-slot copX100 column is the instantaneous
+    // one, and the two will not agree.
     char tail[224];
     if (hdr.sensor_kind == KIND_HOME) {
         double heat_wh = (double)energy_sum[0] / 3600.0;
@@ -282,9 +290,6 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
                      "],\"energyWh\":{\"heat\":%.1f,\"electrical\":%.1f},\"cop\":null}",
                      heat_wh, elec_wh);
         }
-    } else if (hdr.sensor_kind == KIND_ELECTRICAL || hdr.sensor_kind == KIND_HEAT_METER) {
-        snprintf(tail, sizeof(tail), "],\"energyWh\":{\"power\":%.1f}}",
-                 (double)energy_sum[0] / 3600.0);
     } else {
         snprintf(tail, sizeof(tail), "]}");
     }
@@ -347,7 +352,7 @@ static esp_err_t history_get_handler(httpd_req_t *req)
     }
 
     char path[HISTORY_PATH_MAX];
-    if (!history_path_for_date(KIND_HOME, 0, 0, date, path, sizeof(path))) {
+    if (!history_path_for_date(KIND_HOME, date, path, sizeof(path))) {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_sendstr(req, "{\"error\":\"bad date\"}");
         return ESP_OK;
@@ -356,54 +361,26 @@ static esp_err_t history_get_handler(httpd_req_t *req)
     return stream_file(req, path, requested_points(req));
 }
 
-// GET /api/history/sensors — what is on the card.
-static esp_err_t sensors_handler(httpd_req_t *req)
+// GET /api/history/dates — which local days have data on the card, so a date picker can
+// tell an empty day from a day that was never recorded.
+static esp_err_t dates_handler(httpd_req_t *req)
 {
     DIR *dir = opendir(SD_CARD_MOUNT_POINT);
     if (!dir) {
         return send_unavailable(req);
     }
 
-    // Distinct sensors and distinct dates, both bounded so a card full of files cannot
-    // exhaust the httpd task.
-    struct { uint64_t node; uint16_t endpoint; } sensors[32];
-    size_t sensor_count = 0;
+    // One file per day, so the names are already distinct. Bounded so a card full of files
+    // cannot exhaust the httpd task.
     char   dates[64][16];
     size_t date_count = 0;
 
     struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        const char *name = ent->d_name;
-
-        unsigned long long node;
-        unsigned           endpoint;
-        char               date[16];
-
-        if (sscanf(name, "sensor-%llu-%u-%15s", &node, &endpoint, date) == 3) {
-            bool seen = false;
-            for (size_t i = 0; i < sensor_count; i++) {
-                if (sensors[i].node == node && sensors[i].endpoint == endpoint) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen && sensor_count < 32) {
-                sensors[sensor_count].node     = node;
-                sensors[sensor_count].endpoint = (uint16_t)endpoint;
-                sensor_count++;
-            }
-        } else if (sscanf(name, "home-%15s", date) == 1) {
-            bool seen = false;
-            for (size_t i = 0; i < date_count; i++) {
-                if (strcmp(dates[i], date) == 0) {
-                    seen = true;
-                    break;
-                }
-            }
-            if (!seen && date_count < 64) {
-                strlcpy(dates[date_count], date, sizeof(dates[0]));
-                date_count++;
-            }
+    while ((ent = readdir(dir)) != NULL && date_count < 64) {
+        char date[16];
+        if (sscanf(ent->d_name, "home-%15s", date) == 1) {
+            strlcpy(dates[date_count], date, sizeof(dates[0]));
+            date_count++;
         }
     }
     closedir(dir);
@@ -416,70 +393,20 @@ static esp_err_t sensors_handler(httpd_req_t *req)
         snprintf(buf, sizeof(buf), "%s\"%s\"", i ? "," : "", dates[i]);
         send_json_chunk(req, buf);
     }
-
-    send_json_chunk(req, "],\"sensors\":[");
-    for (size_t i = 0; i < sensor_count; i++) {
-        snprintf(buf, sizeof(buf), "%s{\"nodeId\":%llu,\"endpointId\":%u}", i ? "," : "",
-                 (unsigned long long)sensors[i].node, (unsigned)sensors[i].endpoint);
-        send_json_chunk(req, buf);
-    }
     send_json_chunk(req, "]}");
 
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-// GET /api/history/sensor?node=&endpoint=&date=&points=
-static esp_err_t sensor_handler(httpd_req_t *req)
-{
-    char node_raw[24], ep_raw[12];
-    if (!query_param(req, "node", node_raw, sizeof(node_raw)) ||
-        !query_param(req, "endpoint", ep_raw, sizeof(ep_raw))) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"node and endpoint are required\"}");
-        return ESP_OK;
-    }
-
-    char safe_node[24], safe_ep[12];
-    if (!history_sanitize_token(node_raw, safe_node, sizeof(safe_node)) ||
-        !history_sanitize_token(ep_raw, safe_ep, sizeof(safe_ep))) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"bad node or endpoint\"}");
-        return ESP_OK;
-    }
-
-    char date[16];
-    if (!requested_date(req, date, sizeof(date))) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"bad or missing date\"}");
-        return ESP_OK;
-    }
-
-    // The kind is not in the path; it comes from the file's own header, so any sensor
-    // kind is served by the same handler.
-    char path[HISTORY_PATH_MAX];
-    int  n = snprintf(path, sizeof(path), "%s/sensor-%s-%s-%s", SD_CARD_MOUNT_POINT,
-                      safe_node, safe_ep, date);
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"path too long\"}");
-        return ESP_OK;
-    }
-
-    return stream_file(req, path, requested_points(req));
-}
-
-// GET /api/history/* — routes to the two sub-resources above.
+// GET /api/history/* — routes to the sub-resources above.
 static esp_err_t history_sub_handler(httpd_req_t *req)
 {
     if (!sd_card_available()) {
         return send_unavailable(req);
     }
 
-    if (strncmp(req->uri, "/api/history/sensors", 20) == 0) {
-        return sensors_handler(req);
-    }
-    if (strncmp(req->uri, "/api/history/sensor", 19) == 0) {
-        return sensor_handler(req);
+    if (strncmp(req->uri, "/api/history/dates", 18) == 0) {
+        return dates_handler(req);
     }
 
     httpd_resp_set_status(req, "404 Not Found");
