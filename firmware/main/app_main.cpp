@@ -55,6 +55,7 @@
 #include "heat_meter_cluster.h"
 #include "commands/pairing_command.h"
 #include "commands/identify_command.h"
+#include "commands/commissioning_window_command.h"
 
 #include "app/InteractionModelEngine.h"
 
@@ -1872,6 +1873,60 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             ESP_LOGI(TAG, "Manually queueing subscription for node 0x%016llX", node_id);
 
             enqueue_subscription(node_id);
+        }
+        else if (strcmp("commissioning-window", bindings.get("action")) == 0)
+        {
+            // Opens the device to a second controller (multi-admin). Like POST /api/nodes, this
+            // parks the httpd task until the device answers, so the UI gets the setup code or a
+            // real error rather than a code for a window that never opened.
+            heating_monitor::controller::commissioning_window_result_t result;
+            CHIP_ERROR chip_err = CHIP_NO_ERROR;
+
+            esp_err_t window_err = heating_monitor::controller::open_commissioning_window(node_id, &result, &chip_err);
+
+            if (window_err != ESP_OK)
+            {
+                char message[128];
+
+                if (window_err == ESP_ERR_INVALID_STATE)
+                {
+                    httpd_resp_set_status(req, "409 Conflict");
+                    snprintf(message, sizeof(message), "A commissioning window request is already in progress");
+                }
+                else if (window_err == ESP_ERR_TIMEOUT)
+                {
+                    httpd_resp_set_status(req, "504 Gateway Timeout");
+                    snprintf(message, sizeof(message), "The device didn't respond in time");
+                }
+                else if (chip_err != CHIP_NO_ERROR)
+                {
+                    httpd_resp_set_status(req, "502 Bad Gateway");
+                    snprintf(message, sizeof(message), "Failed to open commissioning window: %s", ErrorStr(chip_err));
+                }
+                else
+                {
+                    httpd_resp_set_status(req, "500 Internal Server Error");
+                    snprintf(message, sizeof(message), "Failed to open commissioning window: %s", esp_err_to_name(window_err));
+                }
+
+                httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
+                return ESP_OK;
+            }
+
+            cJSON *response = cJSON_CreateObject();
+            cJSON_AddStringToObject(response, "manualCode", result.manual_code);
+            cJSON_AddStringToObject(response, "qrCode", result.qr_code);
+            cJSON_AddNumberToObject(response, "timeout", result.timeout_s);
+
+            char *json = cJSON_PrintUnformatted(response);
+
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, json);
+
+            cJSON_free(json);
+            cJSON_Delete(response);
+
+            return ESP_OK;
         }
 
         if (err != ESP_OK)

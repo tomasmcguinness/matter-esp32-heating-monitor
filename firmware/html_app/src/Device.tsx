@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, useNavigate, useParams } from "react-router"
 
 function Device() {
@@ -26,6 +27,32 @@ function Device() {
     await fetch(`/api/nodes/${nodeId}/identify`, { method: 'PUT' });
   }
 
+  const [openingWindow, setOpeningWindow] = useState(false);
+  const [windowError, setWindowError] = useState<string | null>(null);
+
+  const openCommissioningWindow = async () => {
+    setOpeningWindow(true);
+    setWindowError(null);
+
+    try {
+      const response = await fetch(`/api/nodes/${nodeId}/commissioning-window`, { method: 'PUT' });
+
+      if (!response.ok) {
+        setWindowError(await response.text() || `Request failed (${response.status})`);
+        return;
+      }
+
+      // The code travels in history state, so reloading the new page shows it again rather than
+      // opening a second window.
+      const result = await response.json();
+      navigate(`/devices/${nodeId}/commissioning`, { state: { ...result, openedAt: Date.now() } });
+    } catch (e) {
+      setWindowError(`Request failed: ${e}`);
+    } finally {
+      setOpeningWindow(false);
+    }
+  }
+
   const subscribeToNode = async () => {
     await fetch(`/api/nodes/${nodeId}/subscribe`, { method: 'PUT' });
   }
@@ -45,6 +72,14 @@ function Device() {
         <h4 className="alert-heading">Identify</h4>
         <p>If you're not sure which device is which, you can ask a device to identiy itself. This might blink an LED or play a sound.</p>
         <button className="btn btn-primary" onClick={identifyNode} style={{ 'marginRight': '5px' }}>Identify</button>
+      </div>
+      <div className="alert alert-info" role="alert">
+        <h4 className="alert-heading">Share</h4>
+        <p>To add this device to another Matter controller, such as Apple Home or Google Home, open a commissioning window. The device will accept a new setup code for 15 minutes.</p>
+        {windowError && <p className="text-danger">{windowError}</p>}
+        <button className="btn btn-primary" onClick={openCommissioningWindow} disabled={openingWindow} style={{ 'marginRight': '5px' }}>
+          {openingWindow ? 'Opening…' : 'Open commissioning window'}
+        </button>
       </div>
       <div className="alert alert-danger" role="alert">
         <h4 className="alert-heading">Interview</h4>
