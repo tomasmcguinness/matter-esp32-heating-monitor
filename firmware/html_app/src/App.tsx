@@ -17,6 +17,7 @@ import Room from './Room.tsx'
 import Rooms from './Rooms.tsx'
 import AddRoom from './AddRoom.tsx'
 import EditRoom from "./EditRoom.tsx";
+import RoomHistory from "./RoomHistory.tsx";
 
 import { WebSocketProvider } from './WSContext.jsx'
 import ThreadNetwork from "./ThreadNetwork.tsx";
@@ -74,6 +75,7 @@ function App() {
             <Route path="/rooms/add" element={<AddRoom />} />
             <Route path="/rooms/:roomId" element={<Room />} />
             <Route path="/rooms/:roomId/edit" element={<EditRoom />} />
+            <Route path="/rooms/:roomId/history" element={<RoomHistory />} />
 
             <Route path="/radiators" element={<Radiators />} />
             <Route path="/radiators/add" element={<AddRadiator />} />

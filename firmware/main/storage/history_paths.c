@@ -30,24 +30,49 @@ bool history_sanitize_token(const char *tok, char *out, size_t out_len)
     return true;
 }
 
-bool history_path_for_date(uint8_t kind, const char *date, char *out, size_t out_len)
+bool history_dir_for(uint8_t kind, uint8_t inst, char *out, size_t out_len)
+{
+    int written;
+
+    switch (kind) {
+    case KIND_ROOM:
+        written = snprintf(out, out_len, "%s/room-%u", SD_CARD_MOUNT_POINT, (unsigned)inst);
+        break;
+    case KIND_RADIATOR:
+        written = snprintf(out, out_len, "%s/rad-%u", SD_CARD_MOUNT_POINT, (unsigned)inst);
+        break;
+    default:
+        // KIND_HOME lives directly on the mount point, and an unknown kind has no directory.
+        return false;
+    }
+
+    return written > 0 && (size_t)written < out_len;
+}
+
+bool history_path_for_date(uint8_t kind, uint8_t inst, const char *date, char *out, size_t out_len)
 {
     char safe_date[16];
     if (!history_sanitize_token(date, safe_date, sizeof(safe_date))) {
         return false;
     }
 
-    if (kind != KIND_HOME) {
+    if (kind == KIND_HOME) {
+        int written = snprintf(out, out_len, "%s/home-%s", SD_CARD_MOUNT_POINT, safe_date);
+        return written > 0 && (size_t)written < out_len;
+    }
+
+    char dir[HISTORY_PATH_MAX];
+    if (!history_dir_for(kind, inst, dir, sizeof(dir))) {
         return false;
     }
 
-    int written = snprintf(out, out_len, "%s/home-%s", SD_CARD_MOUNT_POINT, safe_date);
+    int written = snprintf(out, out_len, "%s/%s", dir, safe_date);
     return written > 0 && (size_t)written < out_len;
 }
 
-bool history_path_for(uint8_t kind, uint32_t base_ts, char *out, size_t out_len)
+bool history_path_for(uint8_t kind, uint8_t inst, uint32_t base_ts, char *out, size_t out_len)
 {
     char date[16];
     local_date_string(base_ts, date, sizeof(date));
-    return history_path_for_date(kind, date, out, out_len);
+    return history_path_for_date(kind, inst, date, out, out_len);
 }

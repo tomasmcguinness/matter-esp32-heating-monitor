@@ -97,7 +97,47 @@ MicroSD card, so the UI can show history rather than only "now".
 History records **quantities, not sensors**. The sampler reads `home_manager`, so the series
 follows the value — flow temperature, heat output, outdoor temperature — regardless of which
 device supplied it. Replacing or re-pairing a heat meter therefore leaves the recorded series
-continuous, where an archive keyed on `nodeId` would have orphaned it and started again.
+continuous, where an archive keyed on `nodeId` would have orphaned it and started again. Rooms
+and radiators follow the same rule, keyed on `room_id` and `radiator_id`.
+
+There are three series, **all sampled on one shared interval**:
+
+| Kind | File | Record |
+|---|---|---|
+| `KIND_HOME` | `/sdcard/home-YYYY-MM-DD` | `rec_home_t`, 28 B |
+| `KIND_ROOM` | `/sdcard/room-<id>/YYYY-MM-DD` | `rec_room_t`, 8 B |
+| `KIND_RADIATOR` | `/sdcard/rad-<id>/YYYY-MM-DD` | `rec_radiator_t`, 8 B |
+
+The single interval is load-bearing, not just tidy: slot `i` is the same instant in every file
+written that day, so a room's temperature, its radiators' flow and return, and the home's heat
+and electrical power **join on index with no timestamp matching at all**.
+
+Rooms and radiators store **measurements only** — no heat output, no mean water temperature, no
+heat loss. Every one of those is a pure function of the stored temperatures plus configuration
+already in NVS (`output_dt_50`, `predicted_heat_loss_per_degree`, target, room↔radiator
+membership), so `calculations_manager`'s arithmetic is replayed at read time instead of frozen
+on the card. That is what makes the archive durable: the heat-loss maths carried a sign bug
+until 2026-09-14 that inflated every figure taken below freezing, and stored values would have
+stayed wrong for the life of the card. The trade-off is that **configuration is not versioned**
+— re-rate a radiator or move it between rooms and every historical derived figure changes
+silently. Write a per-day config sidecar if that matters.
+
+Do the deriving off the device (web app, ML pipeline), not in `history_api.c`: `pow()` per
+radiator per slot over 17280 slots does not belong on the httpd task.
+
+**Freshness is still a gap in the history, but no longer in the UI.** Sensors are subscribed
+min 0 / max 60 (`subscription_manager.cpp`), so a 5 s sampler writes a mix of fresh and held
+readings, and a steady column on a chart still looks identical to a sensor that died an hour
+ago. `attribute_data_cb` now stamps `matter_node_t::last_seen` on every report, which
+`GET /api/nodes` exposes as `lastSeen` and `Devices.tsx` shows as the subscription icon's
+tooltip — so the device list distinguishes a live subscription from a silent one. That is
+**per node, not per endpoint**: `endpoint_entry_t` still carries no timestamp, and the records
+still reserve a field for `age_s`, which needs the stamp at endpoint granularity to fill.
+
+`last_seen` is deliberately transient — it is absent from the NVS blob, so it reads 0 after a
+restart and the API reports `null`, which the UI renders as "not seen since restart". It is
+only stamped once `clock_is_valid()`, because before the first SNTP sync `time(NULL)` is in
+1970.
 
 - `sd_card.c` — mounts the card over **SPI3** (`CS 4, MISO 5, MOSI 6, CLK 7`). SPI2 is the
   W5500's and must not be shared. Failing to mount is not fatal: `sd_card_available()`
@@ -125,27 +165,50 @@ continuous, where an archive keyed on `nodeId` would have orphaned it and starte
   and 1 for `energyWh`/COP, and `History.tsx` charts by position. **Append to the reserved
   tail; never reorder.** `history_unsigned_mask()` is a `uint16_t`, one bit per field, which
   caps any record at 16 fields.
-- `history_logger.cpp` — an `esp_timer` samples `home_manager` into a RAM buffer; a separate
+- `history_logger.cpp` — an `esp_timer` samples every series into a RAM buffer; a separate
   task flushes once a minute (its own task because the esp_timer stack is 3584 bytes, too
   small for FATFS). Missed slots are padded with sentinels so the offset arithmetic stays
   true. The sampler races `attribute_data_cb`, which writes those fields from the CHIP event
   loop; the 64-bit readings are read unlocked and deliberately so — see the comment on
   `build_record()`.
-- `history_api.c` — `GET /api/history`, `GET /api/history/dates`. Downsamples by striding
-  slots and integrates energy over every slot, so kWh and COP do not change with the
-  requested resolution. Note `s_read_buf` is `READ_CHUNK_RECORDS × HISTORY_MAX_RECORD_SIZE`;
-  scale the first down if the record ever widens.
 
-Files are per local day: `/sdcard/home-YYYY-MM-DD`. This needs `CONFIG_FATFS_LFN_HEAP=y` —
-the default 8.3 names cannot hold them. **`sdkconfig` is checked in and overrides
-`sdkconfig.defaults`**, so a Kconfig change has to be made in both.
+  **Rooms and radiators are read from a snapshot, never from the manager lists.** Those are
+  linked lists whose nodes the HTTP task frees (`remove_room`, `remove_radiator`), and the
+  sampler runs on the esp_timer task — walking them there is a use-after-free, not a torn
+  read, so the argument that makes `build_record()` safe does not carry over.
+  `history_logger_snapshot()` copies both lists into fixed arrays of plain values, and is
+  called from `update_home()` — the one function every calculation path ends in, which already
+  traverses both lists on the calling task. Adding a manager field to the history means adding
+  it to the snapshot, not making the sampler walk anything.
+- `history_api.c` — `GET /api/history`, `/api/history/dates`, `/api/history/room?id=N`,
+  `/api/history/room/dates?id=N`, and the same two for `/api/history/radiator`. Downsamples by
+  striding slots and integrates energy over every slot, so kWh and COP do not change with the
+  requested resolution. Energy and COP are emitted for `KIND_HOME` only — the other kinds
+  carry no power column by design. Note `s_read_buf` is
+  `READ_CHUNK_RECORDS × HISTORY_MAX_RECORD_SIZE`; scale the first down if the record ever
+  widens.
 
-There is **no retention or pruning**: files accumulate indefinitely, at roughly 484 KB/day
-(~173 MB/year) at the 5 s default.
+  **The API is a chart endpoint and is lossy**: buckets average across `stride` slots and
+  `MAX_POINTS` is 2000 against 17280 slots in a 5 s day. For ML, read the raw files off the
+  card rather than training on bucket means.
+
+Files are per local day. This needs `CONFIG_FATFS_LFN_HEAP=y` — the default 8.3 names cannot
+hold them. Rooms and radiators get a directory each rather than a flat name, because the date
+listing `opendir()`s and walks every entry: flat, a dozen radiators over a year would put
+thousands of long-filename entries in one directory for every lookup to scan past. Home stays
+flat where it already is, so history written before the other series existed is still found.
+
+**`sdkconfig` is checked in and overrides `sdkconfig.defaults`**, so a Kconfig change has to be
+made in both.
+
+There is **no retention or pruning**: files accumulate indefinitely. At the 5 s default that is
+484 KB/day for the home series plus 138 KB/day for each room and each radiator — roughly
+3 MB/day (~1.1 GB/year) for a house with 8 rooms and 12 radiators.
 
 The sampling interval is stored in the `home_manager` NVS blob and changed through
 `PUT /api/home`. A change takes effect at the next local midnight, because a file's records
-must stay spaced at the interval its header records.
+must stay spaced at the interval its header records. It applies to **all three series** — that
+is what keeps them slot-aligned, so there is deliberately no per-kind interval.
 
 **Other components:**
 - `commands/` — Matter pairing and identify command wrappers
@@ -156,8 +219,10 @@ must stay spaced at the interval its header records.
 2. `set_endpoint_measured_value` updates the node manager
 3. `calculations_manager` recalculates heat loss for affected rooms and home totals
 4. Results are published to **MQTT** and broadcast over the **WebSocket** to the web UI
-5. In parallel, the history logger samples `home_manager` on its own cadence and writes one
-   fixed-width record per slot to the SD card
+5. `update_home()` hands the logger a flat snapshot of the room and radiator lists
+6. In parallel, the history logger samples `home_manager` and that snapshot on its own cadence,
+   writing one fixed-width record per slot to the SD card for the home, each room and each
+   radiator — all on the same slot number
 
 ### Web App (`html_app/`)
 

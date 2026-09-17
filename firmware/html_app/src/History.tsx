@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import uPlot from "uplot";
-import "uplot/dist/uPlot.min.css";
+import { useCallback, useEffect, useState } from "react";
+import { Chart, DateToolbar } from "./HistoryChart";
+import { toPlotData, todayISO, type HistoryResponse } from "./historyData";
 
 // GET /api/history returns one local day of the home's recorded values: fixed-cadence slots
 // with nulls where no reading was recorded, plus the day's integrated energy.
@@ -40,112 +40,6 @@ const COL = {
   internalTemp: 7,
   cop: 8,
 } as const;
-
-type HistoryResponse = {
-  storage: string;
-  interval?: number;
-  baseTs?: number;
-  slots?: number;
-  fields?: string[];
-  points?: (number | null)[][];
-  energyWh?: { heat?: number; electrical?: number };
-  cop?: number | null;
-  reason?: string;
-};
-
-function todayISO(): string {
-  // Local date, matching the firmware's local-day file naming.
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-function shiftDate(iso: string, days: number): string {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + days);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-// uPlot wants column-major data: [xs, series0, series1, ...]. The API sends row-major
-// points, so this picks the columns a chart needs, transposes, and rescales each into
-// display units.
-function toPlotData(
-  points: (number | null)[][],
-  columns: number[],
-  scales: number[]
-): uPlot.AlignedData {
-  const xs = new Array<number>(points.length);
-  const cols = columns.map(() => new Array<number | null>(points.length));
-
-  for (let i = 0; i < points.length; i++) {
-    xs[i] = points[i][0] as number;
-    for (let c = 0; c < columns.length; c++) {
-      const v = points[i][columns[c]];
-      cols[c][i] = v === null || v === undefined ? null : v * scales[c];
-    }
-  }
-  return [xs, ...cols] as unknown as uPlot.AlignedData;
-}
-
-type ChartProps = {
-  title: string;
-  data: uPlot.AlignedData | null;
-  series: { label: string; stroke: string }[];
-  unit: string;
-  decimals?: number;
-};
-
-function Chart({ title, data, series, unit, decimals = 1 }: ChartProps) {
-  const holder = useRef<HTMLDivElement>(null);
-  const plot = useRef<uPlot | null>(null);
-
-  useEffect(() => {
-    if (!holder.current || !data) {
-      return;
-    }
-
-    // uPlot sizes itself once, so it is rebuilt on data change and on resize rather than
-    // being asked to reflow.
-    const build = () => {
-      plot.current?.destroy();
-      plot.current = new uPlot(
-        {
-          title,
-          width: holder.current!.clientWidth,
-          height: 260,
-          // Gaps: the API sends null for slots with no reading, and this keeps uPlot from
-          // drawing a line across an outage.
-          series: [
-            { label: "Time" },
-            ...series.map((s) => ({
-              label: s.label,
-              stroke: s.stroke,
-              width: 1.5,
-              spanGaps: false,
-              value: (_u: uPlot, v: number | null) =>
-                v === null ? "--" : `${v.toFixed(decimals)} ${unit}`,
-            })),
-          ],
-          axes: [{}, { label: unit }],
-        },
-        data,
-        holder.current!
-      );
-    };
-
-    build();
-    window.addEventListener("resize", build);
-    return () => {
-      window.removeEventListener("resize", build);
-      plot.current?.destroy();
-      plot.current = null;
-    };
-  }, [data, title, series, unit, decimals]);
-
-  return <div ref={holder} style={{ marginBottom: "20px" }} />;
-}
 
 const POWER_SERIES = [
   { label: "Heat out", stroke: "#d9534f" },
@@ -223,28 +117,7 @@ function History() {
       <h1>History</h1>
       <hr />
 
-      <div className="btn-toolbar" style={{ marginBottom: "20px", gap: "10px" }}>
-        <button className="btn btn-outline-secondary" onClick={() => setDate(shiftDate(date, -1))}>
-          &larr; Previous
-        </button>
-        <input
-          type="date"
-          className="form-control"
-          style={{ maxWidth: "200px" }}
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-        />
-        <button
-          className="btn btn-outline-secondary"
-          onClick={() => setDate(shiftDate(date, 1))}
-          disabled={date >= todayISO()}
-        >
-          Next &rarr;
-        </button>
-        <button className="btn btn-outline-secondary" onClick={() => setDate(todayISO())}>
-          Today
-        </button>
-      </div>
+      <DateToolbar date={date} setDate={setDate} />
 
       {loading && <p>Loading&hellip;</p>}
 

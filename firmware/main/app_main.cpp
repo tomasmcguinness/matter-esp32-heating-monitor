@@ -33,6 +33,7 @@
 #include <freertos/semphr.h>
 
 #include <cmath>
+#include <ctime>
 #include <atomic>
 #include <string>
 
@@ -63,6 +64,7 @@
 #include "utilities/TokenIterator.h"
 #include "utilities/UrlTokenBindings.h"
 
+#include "mqtt/ha_discovery.h"
 #include "storage/history_api.h"
 #include "storage/status_api.h"
 #include "storage/history_logger.h"
@@ -374,6 +376,16 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
     ChipLogProgress(chipTool, "attribute_data_cb: Nodeid: %016llx Endpoint: %u Cluster: " ChipLogFormatMEI " Attribute " ChipLogFormatMEI " DataVersion: %" PRIu32,
                     remote_node_id, path.mEndpointId, ChipLogValueMEI(path.mClusterId), ChipLogValueMEI(path.mAttributeId),
                     path.mDataVersion.ValueOr(0));
+
+    // "Last seen" for the device list. Stamped before the null-data check below, because a report
+    // carrying only a status is still the device answering us. Nothing is recorded until SNTP has
+    // set the clock -- time(NULL) is in 1970 before that, and a 1970 date in the UI is worse than
+    // no date at all, which the null lastSeen in nodes_get_handler already says plainly.
+    //
+    if (clock_is_valid())
+    {
+        mark_node_seen(&g_node_manager, remote_node_id, (uint32_t)time(NULL));
+    }
 
     // ReadClient hands us a null reader whenever the report carries a status rather than a
     // value -- an unsupported attribute, cluster or endpoint, or an access denial. Not every
@@ -1567,6 +1579,18 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "extAddress", node->ext_address);
 
         cJSON_AddBoolToObject(jNode, "hasSubscription", node->has_subscription);
+
+        // Transient, so null means "nothing heard since this controller booted" rather than "never
+        // heard from". The UI has to say which, so it cannot be flattened to a 0.
+        //
+        if (node->last_seen != 0)
+        {
+            cJSON_AddNumberToObject(jNode, "lastSeen", node->last_seen);
+        }
+        else
+        {
+            cJSON_AddItemToObject(jNode, "lastSeen", cJSON_CreateNull());
+        }
 
         cJSON *endpoint_array = cJSON_CreateArray();
 
@@ -3447,7 +3471,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
         is_mqtt_connected = true;
 
-        // announce_mqtt_devices();
+        // Republished on every connect as well as being retained at the broker. Home Assistant
+        // replays retained discovery when its MQTT integration restarts, and this covers the case
+        // where the broker itself lost the retained copy.
+        ha_discovery_publish_online(_mqtt_client);
+        ha_discovery_announce_all(_mqtt_client);
 
         break;
     case MQTT_EVENT_DISCONNECTED:
@@ -3501,7 +3529,22 @@ static void start_mqtt_service(void)
         .broker = {
             .address = {
                 .uri = mqtt_url}},
-        .credentials = {.username = mqtt_username, .authentication = {.password = mqtt_password}}};
+        .credentials = {.username = mqtt_username, .authentication = {.password = mqtt_password}},
+        // The broker publishes this if the device stops responding, which is what makes the
+        // entities go unavailable in Home Assistant rather than sitting on their last value.
+        .session = {
+            .last_will = {
+                .topic = HA_AVAILABILITY_TOPIC,
+                .msg = "offline",
+                .msg_len = 0,
+                .qos = 0,
+                .retain = 1}},
+        // esp-mqtt defaults to 1024 bytes for both directions, and the discovery payload is around
+        // 3.5 KB -- it would simply fail to publish. Only the outbound side needs the headroom;
+        // nothing subscribed here receives anything large.
+        .buffer = {
+            .size = 1024,
+            .out_size = 6144}};
 
     _mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
 

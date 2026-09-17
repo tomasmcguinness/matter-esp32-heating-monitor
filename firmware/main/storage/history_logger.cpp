@@ -5,6 +5,7 @@
 #include <ctime>
 #include <algorithm>
 #include <vector>
+#include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -26,12 +27,18 @@ static const char *TAG = "history_logger";
 #define FLUSH_TASK_STACK    4096
 #define FLUSH_TASK_PRIORITY 3
 
-// Cap on buffered samples between flushes. At the 5 s default a flush carries 12; this
-// leaves ample room for a fast interval and still bounds the memory if a flush ever fails.
+// Cap on buffered samples between flushes. Every series samples on the same tick, so at the
+// 5 s default a flush carries 12 x (1 + rooms + radiators) -- around 250 for a typical house,
+// not the 12 it was when home was the only series.
+//
+// This is only a safety valve: flush_once drains the buffer every minute whether or not a card
+// is there to write to, so the cap is reached only if the flush task itself is starved. 4096
+// still leaves a dozen flushes of headroom at that size, and bounds the memory at ~160 KB.
 #define MAX_PENDING 4096
 
 struct pending_t {
     uint8_t  kind;
+    uint8_t  inst;         // room or radiator id; 0 for the singleton KIND_HOME
     uint32_t base_ts;      // local midnight of the day this sample belongs to
     uint32_t slot;
     uint8_t  data[HISTORY_MAX_RECORD_SIZE];
@@ -43,6 +50,31 @@ static esp_timer_handle_t     s_sample_timer;
 static TaskHandle_t           s_flush_task;
 
 static home_manager_t *s_home_manager;
+
+// Snapshot of the room and radiator readings, refreshed by history_logger_snapshot() from
+// whichever task is already walking the manager lists. The sampler never touches those lists:
+// they are linked lists the HTTP task frees nodes from, and the timer task has no business
+// chasing pointers that can vanish mid-walk. Plain values keyed on id, no pointers, fixed size.
+struct room_snap_t {
+    uint8_t id;
+    bool    bound;        // a temperature sensor is assigned to this room
+    int16_t temp_c100;
+};
+
+struct rad_snap_t {
+    uint8_t id;
+    bool    flow_bound;
+    bool    return_bound;
+    int16_t flow_c100;
+    int16_t return_c100;
+};
+
+static SemaphoreHandle_t s_snap_mutex;
+static room_snap_t       s_rooms[HISTORY_MAX_ROOMS];
+static size_t            s_room_count;
+static rad_snap_t        s_rads[HISTORY_MAX_RADIATORS];
+static size_t            s_rad_count;
+static bool              s_warned_overflow;
 
 // s_interval_s is what the current day's files are being written at; s_pending_interval_s
 // is what the user has asked for. They are latched together at the local-midnight rollover
@@ -145,9 +177,147 @@ static size_t build_record(uint8_t *out)
     return sizeof(r);
 }
 
+// Rooms and radiators store raw measurements only -- see the note on rec_room_t. Anything
+// derived (radiator output, mean water temperature, heat loss per degree) is a function of
+// these columns plus NVS configuration, so it is replayed at read time instead of frozen here.
+static size_t build_room_record(const room_snap_t *snap, uint8_t *out)
+{
+    rec_room_t r;
+    history_fill_sentinel(KIND_ROOM, &r);
+
+    // An unbound room records the sentinel rather than the zero its struct was initialised to:
+    // 0.00 degC is a reading a room could genuinely have.
+    if (snap->bound) {
+        r.current_temp_c100 = clamp_i16(snap->temp_c100);
+    }
+
+    memcpy(out, &r, sizeof(r));
+    return sizeof(r);
+}
+
+static size_t build_radiator_record(const rad_snap_t *snap, uint8_t *out)
+{
+    rec_radiator_t r;
+    history_fill_sentinel(KIND_RADIATOR, &r);
+
+    if (snap->flow_bound) {
+        r.flow_temp_c100 = clamp_i16(snap->flow_c100);
+    }
+    if (snap->return_bound) {
+        r.return_temp_c100 = clamp_i16(snap->return_c100);
+    }
+
+    memcpy(out, &r, sizeof(r));
+    return sizeof(r);
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot
+// ---------------------------------------------------------------------------
+
+void history_logger_snapshot(room_manager_t *room_manager, radiator_manager_t *radiator_manager)
+{
+    // update_home() runs before history_logger_init() on an early HTTP request, so the mutex
+    // may not exist yet. Nothing is lost by skipping: the next calculation refreshes it.
+    if (!s_snap_mutex) {
+        return;
+    }
+
+    xSemaphoreTake(s_snap_mutex, portMAX_DELAY);
+
+    s_room_count = 0;
+    if (room_manager) {
+        for (room_t *r = room_manager->room_list; r; r = r->next) {
+            if (s_room_count >= HISTORY_MAX_ROOMS) {
+                break;
+            }
+            s_rooms[s_room_count].id        = r->room_id;
+            s_rooms[s_room_count].bound     = r->room_temperature_node_id != 0;
+            s_rooms[s_room_count].temp_c100 = r->current_temperature;
+            s_room_count++;
+        }
+    }
+
+    s_rad_count = 0;
+    if (radiator_manager) {
+        for (radiator_t *a = radiator_manager->radiator_list; a; a = a->next) {
+            if (s_rad_count >= HISTORY_MAX_RADIATORS) {
+                break;
+            }
+            s_rads[s_rad_count].id           = a->radiator_id;
+            s_rads[s_rad_count].flow_bound   = a->flow_temp_node_id != 0;
+            s_rads[s_rad_count].return_bound = a->return_temp_node_id != 0;
+            s_rads[s_rad_count].flow_c100    = a->flow_temperature;
+            s_rads[s_rad_count].return_c100  = a->return_temperature;
+            s_rad_count++;
+        }
+    }
+
+    bool overflow = (room_manager && room_manager->room_count > HISTORY_MAX_ROOMS) ||
+                    (radiator_manager && radiator_manager->radiator_count > HISTORY_MAX_RADIATORS);
+
+    xSemaphoreGive(s_snap_mutex);
+
+    if (overflow && !s_warned_overflow) {
+        s_warned_overflow = true;
+        ESP_LOGW(TAG, "More than %u rooms or %u radiators; the extras are not being logged",
+                 HISTORY_MAX_ROOMS, HISTORY_MAX_RADIATORS);
+    }
+}
+
+// Copies snapshot entry `i` out under the lock, so the sampler never holds it while building a
+// record or queueing one. False once the index is past the end.
+static bool snap_room_at(size_t i, room_snap_t *out)
+{
+    bool ok = false;
+    xSemaphoreTake(s_snap_mutex, portMAX_DELAY);
+    if (i < s_room_count) {
+        *out = s_rooms[i];
+        ok   = true;
+    }
+    xSemaphoreGive(s_snap_mutex);
+    return ok;
+}
+
+static bool snap_rad_at(size_t i, rad_snap_t *out)
+{
+    bool ok = false;
+    xSemaphoreTake(s_snap_mutex, portMAX_DELAY);
+    if (i < s_rad_count) {
+        *out = s_rads[i];
+        ok   = true;
+    }
+    xSemaphoreGive(s_snap_mutex);
+    return ok;
+}
+
 // ---------------------------------------------------------------------------
 // Timers
 // ---------------------------------------------------------------------------
+
+// Queues one built record. Kept out of on_sample_timer so that nothing larger than a single
+// pending_t is ever on the esp_timer task's stack, which is CONFIG_ESP_TIMER_TASK_STACK_SIZE
+// (3584 bytes here) -- staging a whole tick's worth of series there would overrun it.
+static void queue_sample(uint8_t kind, uint8_t inst, uint32_t base_ts, uint32_t slot,
+                         const uint8_t *data)
+{
+    pending_t p;
+    p.kind    = kind;
+    p.inst    = inst;
+    p.base_ts = base_ts;
+    p.slot    = slot;
+    memcpy(p.data, data, HISTORY_MAX_RECORD_SIZE);
+
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+
+    if (s_pending.size() >= MAX_PENDING) {
+        s_dropped++;
+    } else {
+        s_pending.push_back(p);
+    }
+
+    xSemaphoreGive(s_mutex);
+}
 
 static void on_sample_timer(void *arg)
 {
@@ -173,30 +343,40 @@ static void on_sample_timer(void *arg)
     uint16_t interval = s_interval_s;
     uint32_t slot     = (now - base_ts) / interval;
 
-    pending_t p;
-    p.kind    = KIND_HOME;
-    p.base_ts = base_ts;
-    p.slot    = slot;
-    memset(p.data, 0, sizeof(p.data));
+    // One slot number, computed once, used by every series. That is the whole point of running
+    // them on a single interval: slot i means the same instant in the home file, in every
+    // room's file and in every radiator's file, so the series join on index alone.
+    uint8_t buf[HISTORY_MAX_RECORD_SIZE];
 
-    if (build_record(p.data) == 0) {
-        return;
+    memset(buf, 0, sizeof(buf));
+    if (build_record(buf) != 0) {
+        queue_sample(KIND_HOME, 0, base_ts, slot, buf);
     }
 
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-
-    if (s_pending.size() >= MAX_PENDING) {
-        s_dropped++;
-    } else {
-        s_pending.push_back(p);
+    for (size_t i = 0;; i++) {
+        room_snap_t rs;
+        if (!snap_room_at(i, &rs)) {
+            break;
+        }
+        memset(buf, 0, sizeof(buf));
+        build_room_record(&rs, buf);
+        queue_sample(KIND_ROOM, rs.id, base_ts, slot, buf);
     }
 
-    xSemaphoreGive(s_mutex);
+    for (size_t i = 0;; i++) {
+        rad_snap_t as;
+        if (!snap_rad_at(i, &as)) {
+            break;
+        }
+        memset(buf, 0, sizeof(buf));
+        build_radiator_record(&as, buf);
+        queue_sample(KIND_RADIATOR, as.id, base_ts, slot, buf);
+    }
 }
 
 // Appends one series' records for one day, padding any slots that were missed so that
 // offset = header + slot * record_size stays true.
-static void write_series_day(uint8_t kind, uint32_t base_ts,
+static void write_series_day(uint8_t kind, uint8_t inst, uint32_t base_ts,
                              const std::vector<pending_t *> &records)
 {
     size_t rec_size = history_record_size(kind);
@@ -205,13 +385,21 @@ static void write_series_day(uint8_t kind, uint32_t base_ts,
     }
 
     char path[HISTORY_PATH_MAX];
-    if (!history_path_for(kind, base_ts, path, sizeof(path))) {
+    if (!history_path_for(kind, inst, base_ts, path, sizeof(path))) {
         return;
     }
 
     FILE *f = fopen(path, "r+b");
     if (!f) {
-        // New day, or first ever record for this series.
+        // New day, or first ever record for this series. Rooms and radiators live in a
+        // directory each, which will not exist the first time one is written; mkdir is
+        // unconditional rather than guarded by a stat, since EEXIST is the expected answer
+        // on every day but the first and fopen below reports any real failure anyway.
+        char dir[HISTORY_PATH_MAX];
+        if (history_dir_for(kind, inst, dir, sizeof(dir))) {
+            mkdir(dir, 0777);
+        }
+
         f = fopen(path, "w+b");
         if (!f) {
             ESP_LOGW(TAG, "Cannot open %s", path);
@@ -291,8 +479,9 @@ static void flush_once(void)
     }
 
     if (!batch.empty() && sd_card_available()) {
-        // Group by (kind, day). With one series this only ever splits across local midnight,
-        // but the grouping is kept general so a second series costs nothing to add.
+        // Group by (kind, instance, day): one file per group, opened once per flush. With
+        // every series sampling on the same tick a batch now holds a group per room and per
+        // radiator as well as the home's, plus a split across local midnight.
         std::vector<bool> done(batch.size(), false);
 
         for (size_t i = 0; i < batch.size(); i++) {
@@ -304,14 +493,15 @@ static void flush_once(void)
                 if (done[j]) {
                     continue;
                 }
-                if (batch[j].kind == batch[i].kind && batch[j].base_ts == batch[i].base_ts) {
+                if (batch[j].kind == batch[i].kind && batch[j].inst == batch[i].inst &&
+                    batch[j].base_ts == batch[i].base_ts) {
                     done[j] = true;
                     group.push_back(&batch[j]);
                 }
             }
             std::sort(group.begin(), group.end(),
                       [](const pending_t *a, const pending_t *b) { return a->slot < b->slot; });
-            write_series_day(batch[i].kind, batch[i].base_ts, group);
+            write_series_day(batch[i].kind, batch[i].inst, batch[i].base_ts, group);
         }
     }
 
@@ -373,6 +563,11 @@ esp_err_t history_logger_init(home_manager_t *home_manager)
 
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_snap_mutex = xSemaphoreCreateMutex();
+    if (!s_snap_mutex) {
         return ESP_ERR_NO_MEM;
     }
 

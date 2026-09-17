@@ -58,8 +58,14 @@ HIST_STATIC_ASSERT(sizeof(history_header_t) == 16, "history_header_t must stay 1
 // through the path and record helpers, so adding a second series later (one at a different
 // cadence, say) costs a new enum value rather than a format change.
 typedef enum {
-    KIND_HOME = 5,
+    KIND_HOME     = 5,
+    KIND_ROOM     = 6,
+    KIND_RADIATOR = 7,
 } sensor_kind_t;
+
+// KIND_HOME is a singleton, but a room and a radiator are instances: there are many of each
+// and every one needs its own series. Everything below that is switched on the kind therefore
+// takes an instance id alongside it -- see history_paths.h, where the id becomes a directory.
 
 // "No reading in this slot". Both sit outside any physical range -- INT16_MIN as
 // 0.01 degC is -327.68 degC. Zero cannot be used: 0 W is a real electrical reading, a
@@ -104,14 +110,61 @@ typedef struct __attribute__((packed)) {
 
 HIST_STATIC_ASSERT(sizeof(rec_home_t) == 28, "rec_home_t must stay 28 bytes");
 
+// Rooms and radiators record MEASUREMENTS ONLY -- no heat output, no heat loss, no mean water
+// temperature. Every one of those is a pure function of the temperatures below plus
+// configuration that already lives in NVS (a radiator's output_dt_50, a room's
+// predicted_heat_loss_per_degree and target, and which radiators are in which room), so
+// calculations_manager's arithmetic can be replayed at read time from these columns.
+//
+// That is deliberate, and it is what makes the archive worth keeping. Storing a derived value
+// freezes the formula that produced it: the heat-loss maths carried a sign bug until
+// 2026-09-14 that inflated every figure taken below freezing, and had those numbers been on
+// the card they would have stayed wrong for as long as the card was kept. Measurements do not
+// go stale when the code improves.
+//
+// The cost of deriving rather than storing is that the configuration is NOT versioned here.
+// Re-rate a radiator or move it to another room and every historical figure computed from it
+// changes silently. Write a per-day sidecar of the config if that matters.
+
+typedef struct __attribute__((packed)) {
+    int16_t current_temp_c100;   // room air temperature, 0.01 degC
+    int16_t reserved0;           // earmarked for age_s -- see the freshness note below
+    int16_t reserved1;
+    int16_t reserved2;
+} rec_room_t;
+
+HIST_STATIC_ASSERT(sizeof(rec_room_t) == 8, "rec_room_t must stay 8 bytes");
+
+typedef struct __attribute__((packed)) {
+    int16_t flow_temp_c100;      // 0.01 degC
+    int16_t return_temp_c100;    // 0.01 degC
+    int16_t reserved0;           // earmarked for age_s -- see the freshness note below
+    int16_t reserved1;
+} rec_radiator_t;
+
+HIST_STATIC_ASSERT(sizeof(rec_radiator_t) == 8, "rec_radiator_t must stay 8 bytes");
+
+// dT is flow - return and mean water temperature is their mean, both exact. Neither is stored:
+// a stored copy can disagree with its own operands once either has been clamped.
+//
+// The freshness gap, which matters for anything learning from these series. Sensors are
+// subscribed min 0 / max 60 (subscription_manager.cpp), so a value is reported on change and
+// otherwise re-sent at most once a minute. A 5 s sampler therefore writes a mix of fresh and
+// held readings, and nothing here can tell them apart -- endpoint_entry_t carries no
+// last-updated timestamp. A steady column and a sensor that fell over an hour ago look
+// identical. Fixing that means stamping endpoint_entry_t in attribute_data_cb and spending
+// reserved0 on the age; until then, treat flat runs with suspicion.
+
 // Largest record, for fixed-size buffers in the writer and reader.
 #define HISTORY_MAX_RECORD_SIZE 28
 
 static inline size_t history_record_size(uint8_t kind)
 {
     switch (kind) {
-    case KIND_HOME: return sizeof(rec_home_t);
-    default:        return 0;
+    case KIND_HOME:     return sizeof(rec_home_t);
+    case KIND_ROOM:     return sizeof(rec_room_t);
+    case KIND_RADIATOR: return sizeof(rec_radiator_t);
+    default:            return 0;
     }
 }
 
@@ -132,7 +185,10 @@ static inline uint16_t history_unsigned_mask(uint8_t kind)
     switch (kind) {
     // flow_lph (4), elec_voltage_dv (9), elec_current_ca (10)
     case KIND_HOME: return 0x0610;
-    default:        return 0x0000;
+    // Every field of both is a signed temperature, so the sentinel is HIST_NULL_I16 throughout.
+    case KIND_ROOM:
+    case KIND_RADIATOR: return 0x0000;
+    default:            return 0x0000;
     }
 }
 

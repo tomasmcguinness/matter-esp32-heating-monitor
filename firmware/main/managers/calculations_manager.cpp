@@ -1,6 +1,8 @@
 #include "calculations_manager.h"
 #include <math.h>
 
+#include "storage/history_logger.h"
+
 static const char *TAG = "calculations_manager";
 
 // Electricity below this is treated as standby rather than as running, so no COP is derived
@@ -44,7 +46,11 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
                 //
                 if (room->current_temperature > 0)
                 {
-                    double deltaT = abs((double)radiator->mean_water_temperature / 100 - (double)room->current_temperature / 100);
+                    // fabs, not abs: the magnitude of the whole difference is what is wanted here
+                    // (a probe fitted the wrong way round should not flip the sign of the output),
+                    // but abs() is the integer one from stdlib.h and truncates its argument unless
+                    // the C++ overload from math.h happens to be the one in scope.
+                    double deltaT = fabs((double)radiator->mean_water_temperature / 100 - (double)room->current_temperature / 100);
 
                     ESP_LOGI(TAG, "Radiator %u has a MWT->Room ΔT of %f", radiator->radiator_id, deltaT);
 
@@ -104,8 +110,15 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
     ESP_LOGI(TAG, "Room %u has a current temperature of %d", room->room_id, room->current_temperature);
 
-    double target_temperature_delta_t = abs((double)room->target_temperature / 100) - abs((double)home_manager->outdoor_temperature / 100);
-    double current_delta_t = abs((double)room->current_temperature / 100) - abs((double)home_manager->outdoor_temperature / 100);
+    // No abs() on either side. The quantity wanted is the signed difference indoor - outdoor,
+    // and taking the magnitude of each term separately gets it wrong in exactly the weather
+    // that matters: at 21 degC indoors and -5 outdoors it yielded 21 - 5 = 16 rather than 26,
+    // which then inflated measured_heat_loss_per_degree below because the division under-counts
+    // the delta. Taking abs() of the whole difference would be wrong too -- when the outdoor
+    // temperature is above the room's, the house is gaining heat, and a negative delta is the
+    // honest answer rather than a heat loss of the same size.
+    double target_temperature_delta_t = (double)room->target_temperature / 100 - (double)home_manager->outdoor_temperature / 100;
+    double current_delta_t = (double)room->current_temperature / 100 - (double)home_manager->outdoor_temperature / 100;
 
     ESP_LOGI(TAG, "Outdoor temperature is %d", home_manager->outdoor_temperature);
     ESP_LOGI(TAG, "Room %u has a target temperature of %d", room->room_id, room->target_temperature);
@@ -244,6 +257,12 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
         home_manager->radiator_count++;
         radiator = radiator->next;
     }
+
+    // Hand the history logger a flat copy of what both lists currently hold. This is the one
+    // function every calculation path ends in, and it has just walked both lists on this task,
+    // so the sampler never has to: it runs on the esp_timer task, and these are linked lists
+    // whose nodes the HTTP task frees in remove_room() and remove_radiator().
+    history_logger_snapshot(room_manager, radiator_manager);
 
     // TODO UFH.
 

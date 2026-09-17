@@ -5,6 +5,20 @@ import Battery from "./Battery"
 import CheckMark from "./CheckMark";
 import CrossMark from "./CrossMark";
 
+// The subscription icon's tooltip. lastSeen is transient on the device -- the firmware stamps it
+// when a report arrives and never persists it -- so null means nothing has been heard since the
+// controller restarted, which is not the same as a device that has never reported.
+function subscriptionTitle(node: { hasSubscription?: boolean, lastSeen?: number | null }) {
+
+  const state = node.hasSubscription ? "Subscribed" : "No active subscription";
+
+  const seen = node.lastSeen
+    ? `last seen ${new Date(node.lastSeen * 1000).toLocaleString()}`
+    : "not seen since restart";
+
+  return `${state} \u2014 ${seen}`;
+}
+
 function Devices() {
 
   let navigate = useNavigate();
@@ -104,10 +118,9 @@ function Devices() {
       <td>{n.nodeName}</td>
       <td>{n.vendorName}</td>
       <td>{n.productName}</td>
-      <td>{n.extAddress}</td>
       <td><PowerSource powerSource={n.powerSource} /></td>
       <td><Battery powerSource={n.powerSource} percent={n.batteryPercent} voltage={n.batteryVoltage} /></td>
-      <td>{n.hasSubscription ? <CheckMark /> : <span className="text-danger" title="No active subscription"><CrossMark /></span>}</td>
+      <td><span className={n.hasSubscription ? "" : "text-danger"} title={subscriptionTitle(n)}>{n.hasSubscription ? <CheckMark /> : <CrossMark />}</span></td>
     </tr>);
 
     if (showEndpoints) {
@@ -155,7 +168,6 @@ function Devices() {
             <th>Name</th>
             <th>Vendor</th>
             <th>Product</th>
-            <th>ExtAddress</th>
             <th>Power</th>
             <th>Battery</th>
             <th>Sub</th>

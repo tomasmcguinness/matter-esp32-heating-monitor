@@ -76,10 +76,28 @@ uint8_t get_next_room_id(room_manager_t *manager)
         return 0;
     }
 
+    // The counter is 64-bit in NVS, but a room id is a uint8_t. It must not be allowed to wrap:
+    // the 256th room ever created would truncate to 0 -- which add_room already reads as an
+    // allocation failure -- and the 257th to 1, colliding with a live room. Since the room id
+    // also keys that room's history directory on the SD card (/sdcard/room-<id>/), a collision
+    // would point two rooms at one archive. Fail the creation loudly instead.
+    //
+    // The counter is deliberately not reused after a delete, which is what keeps a new room from
+    // inheriting a deleted one's history, so the ceiling is rooms-ever-created rather than rooms
+    // at once. Widen room_id (and radiator_id, pending_t.inst, history_dir_for and the history
+    // API's id validation, all uint8_t) if that ever stops being enough.
+    if (next_id > UINT8_MAX)
+    {
+        nvs_close(nvs_handle);
+        ESP_LOGE(TAG, "Room id counter has reached %llu, past the %u a room id can hold; cannot create another room",
+                 (unsigned long long)next_id, (unsigned)UINT8_MAX);
+        return 0;
+    }
+
     nvs_set_u64(nvs_handle, "current_id", next_id);
     nvs_commit(nvs_handle);
 
-    return next_id;
+    return (uint8_t)next_id;
 }
 
 room_t *find_room(room_manager_t *manager, uint8_t room_id)

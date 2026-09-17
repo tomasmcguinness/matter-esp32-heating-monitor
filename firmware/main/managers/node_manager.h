@@ -72,6 +72,13 @@ typedef struct matter_node
     bool is_subscription_pending;
     uint32_t subscription_id;
 
+    // Unix time of the most recent report from this node, or 0 if we have not heard from it.
+    // Transient: it is absent from the NVS blob on purpose, so a restart shows "not seen yet"
+    // rather than resurrecting a time from before the reboot. uint32_t rather than time_t
+    // because the CHIP event loop writes it and the httpd task reads it unlocked -- a 32-bit
+    // load cannot tear on this target, where a 64-bit one can.
+    uint32_t last_seen;
+
     endpoint_entry_t *endpoints;
     uint16_t endpoints_count;
 
@@ -113,6 +120,11 @@ esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t n
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
 esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id, bool *create_new_subscription);
 esp_err_t mark_node_subscription_pending(node_manager_t *manager, uint64_t node_id);
+
+// Records that we have just heard from a node. The caller supplies the timestamp so this stays
+// free of any dependency on the clock -- see the call in attribute_data_cb, which skips the call
+// entirely until SNTP has set the time.
+esp_err_t mark_node_seen(node_manager_t *manager, uint64_t node_id, uint32_t timestamp);
 bool node_needs_subscription(node_manager_t *manager, uint64_t node_id);
 
 esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value);

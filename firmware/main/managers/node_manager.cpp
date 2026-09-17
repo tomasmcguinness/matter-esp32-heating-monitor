@@ -453,6 +453,18 @@ esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, 
     return ESP_OK;
 }
 
+esp_err_t mark_node_seen(node_manager_t *manager, uint64_t node_id, uint32_t timestamp)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        node->last_seen = timestamp;
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t mark_node_has_no_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id, bool *create_new_subscription)
 {
     matter_node_t *node = find_node(manager, node_id);

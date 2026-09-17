@@ -107,6 +107,9 @@ static const char *field_names_for(uint8_t kind)
                            "\"internalTempC100\",\"copX100\",\"dhwRunning\","
                            "\"elecVoltageDv\",\"elecCurrentCa\","
                            "\"reserved0\",\"reserved1\",\"reserved2\"";
+    case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"reserved1\",\"reserved2\"";
+    case KIND_RADIATOR: return "\"flowTempC100\",\"returnTempC100\","
+                               "\"reserved0\",\"reserved1\"";
     default:        return "";
     }
 }
@@ -312,6 +315,25 @@ static int requested_points(httpd_req_t *req)
     return p;
 }
 
+// The room or radiator id a request names. Required for those kinds; there is no sensible
+// default, since "the first room" is not a thing a caller can rely on.
+static bool requested_instance(httpd_req_t *req, uint8_t *out)
+{
+    char buf[16];
+    if (!query_param(req, "id", buf, sizeof(buf))) {
+        return false;
+    }
+
+    char *end = NULL;
+    long  v   = strtol(buf, &end, 10);
+    if (end == buf || *end != '\0' || v < 0 || v > 255) {
+        return false;
+    }
+
+    *out = (uint8_t)v;
+    return true;
+}
+
 // Defaults to today when no date is given, so the dashboard's first load needs no
 // round trip to find out what "today" is on the device.
 static bool requested_date(httpd_req_t *req, char *out, size_t out_len)
@@ -352,7 +374,7 @@ static esp_err_t history_get_handler(httpd_req_t *req)
     }
 
     char path[HISTORY_PATH_MAX];
-    if (!history_path_for_date(KIND_HOME, date, path, sizeof(path))) {
+    if (!history_path_for_date(KIND_HOME, 0, date, path, sizeof(path))) {
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_sendstr(req, "{\"error\":\"bad date\"}");
         return ESP_OK;
@@ -361,44 +383,99 @@ static esp_err_t history_get_handler(httpd_req_t *req)
     return stream_file(req, path, requested_points(req));
 }
 
-// GET /api/history/dates — which local days have data on the card, so a date picker can
-// tell an empty day from a day that was never recorded.
-static esp_err_t dates_handler(httpd_req_t *req)
+// GET /api/history/dates, /api/history/room/dates, /api/history/radiator/dates -- which
+// local days have data, so a date picker can tell an empty day from one never recorded.
+//
+// Dates are streamed straight out of readdir rather than collected first. The old version
+// buffered into a fixed char[64][16], which silently stopped listing after 64 days; there is
+// nothing to sort or de-duplicate here (one file per day), so the buffer bought nothing and
+// cost a two-month ceiling.
+static esp_err_t dates_handler(httpd_req_t *req, uint8_t kind, uint8_t inst)
 {
-    DIR *dir = opendir(SD_CARD_MOUNT_POINT);
+    char dir_path[HISTORY_PATH_MAX];
+
+    if (kind == KIND_HOME) {
+        strlcpy(dir_path, SD_CARD_MOUNT_POINT, sizeof(dir_path));
+    } else if (!history_dir_for(kind, inst, dir_path, sizeof(dir_path))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad history resource\"}");
+        return ESP_OK;
+    }
+
+    DIR *dir = opendir(dir_path);
     if (!dir) {
-        return send_unavailable(req);
-    }
-
-    // One file per day, so the names are already distinct. Bounded so a card full of files
-    // cannot exhaust the httpd task.
-    char   dates[64][16];
-    size_t date_count = 0;
-
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL && date_count < 64) {
-        char date[16];
-        if (sscanf(ent->d_name, "home-%15s", date) == 1) {
-            strlcpy(dates[date_count], date, sizeof(dates[0]));
-            date_count++;
+        // The mount point failing to open means the card has gone; an instance directory
+        // failing to open just means nothing has been recorded for it yet.
+        if (kind == KIND_HOME) {
+            return send_unavailable(req);
         }
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"storage\":\"ok\",\"dates\":[]}");
+        return ESP_OK;
     }
-    closedir(dir);
 
     httpd_resp_set_type(req, "application/json");
     send_json_chunk(req, "{\"storage\":\"ok\",\"dates\":[");
 
-    char buf[128];
-    for (size_t i = 0; i < date_count; i++) {
-        snprintf(buf, sizeof(buf), "%s\"%s\"", i ? "," : "", dates[i]);
-        send_json_chunk(req, buf);
-    }
-    send_json_chunk(req, "]}");
+    struct dirent *ent;
+    bool           first = true;
+    char           buf[64];
 
+    while ((ent = readdir(dir)) != NULL) {
+        char date[16];
+
+        if (kind == KIND_HOME) {
+            // Home files are flat on the mount point alongside the instance directories, so
+            // the prefix is what picks them out.
+            if (sscanf(ent->d_name, "home-%15s", date) != 1) {
+                continue;
+            }
+        } else {
+            // An instance directory holds nothing but its own day files, so the entry name is
+            // the date. Sanitising it also drops "." and ".." for free.
+            char safe[16];
+            if (!history_sanitize_token(ent->d_name, safe, sizeof(safe))) {
+                continue;
+            }
+            strlcpy(date, safe, sizeof(date));
+        }
+
+        snprintf(buf, sizeof(buf), "%s\"%s\"", first ? "" : ",", date);
+        send_json_chunk(req, buf);
+        first = false;
+    }
+    closedir(dir);
+
+    send_json_chunk(req, "]}");
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-// GET /api/history/* — routes to the sub-resources above.
+// One room's or one radiator's series for a day. Same streaming path as the home series --
+// only the kind, the instance and therefore the file differ.
+static esp_err_t instance_series_handler(httpd_req_t *req, uint8_t kind, uint8_t inst)
+{
+    char date[16];
+    if (!requested_date(req, date, sizeof(date))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad or missing date\"}");
+        return ESP_OK;
+    }
+
+    char path[HISTORY_PATH_MAX];
+    if (!history_path_for_date(kind, inst, date, path, sizeof(path))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad date\"}");
+        return ESP_OK;
+    }
+
+    return stream_file(req, path, requested_points(req));
+}
+
+// GET /api/history/* -- routes to the sub-resources above.
+//
+//   /api/history/dates
+//   /api/history/room?id=N[&date=&points=]        /api/history/room/dates?id=N
+//   /api/history/radiator?id=N[&date=&points=]    /api/history/radiator/dates?id=N
 static esp_err_t history_sub_handler(httpd_req_t *req)
 {
     if (!sd_card_available()) {
@@ -406,7 +483,37 @@ static esp_err_t history_sub_handler(httpd_req_t *req)
     }
 
     if (strncmp(req->uri, "/api/history/dates", 18) == 0) {
-        return dates_handler(req);
+        return dates_handler(req, KIND_HOME, 0);
+    }
+
+    uint8_t     kind = 0;
+    const char *rest = NULL;
+
+    if (strncmp(req->uri, "/api/history/room", 17) == 0) {
+        kind = KIND_ROOM;
+        rest = req->uri + 17;
+    } else if (strncmp(req->uri, "/api/history/radiator", 21) == 0) {
+        kind = KIND_RADIATOR;
+        rest = req->uri + 21;
+    }
+
+    if (kind != 0) {
+        uint8_t inst;
+        if (!requested_instance(req, &inst)) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"error\":\"bad or missing id\"}");
+            return ESP_OK;
+        }
+
+        if (strncmp(rest, "/dates", 6) == 0) {
+            return dates_handler(req, kind, inst);
+        }
+
+        // Anything else trailing the prefix is a different resource that happens to share it
+        // -- /api/history/rooms, say -- rather than this one.
+        if (*rest == '\0' || *rest == '?') {
+            return instance_series_handler(req, kind, inst);
+        }
     }
 
     httpd_resp_set_status(req, "404 Not Found");
