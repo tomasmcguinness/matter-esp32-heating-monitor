@@ -1,16 +1,8 @@
 import { useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router";
 import SensorSelect from "./SensorSelect";
-
-type Emitter = {
-  key: number;
-  name: string;
-  mqttName: string;
-  type: number;
-  output: string;
-  flowSensor: string;
-  returnSensor: string;
-};
+import EmitterCard from "./EmitterCard"
+import { emitterToRadiatorJson, type Emitter } from "./emitter";
 
 function AddRoom() {
 
@@ -59,22 +51,7 @@ function AddRoom() {
 
       for (const emitter of emitters) {
 
-        var flowSensorNodeId = parseInt(emitter.flowSensor.split('|')[0]);
-        var flowSensorEndpointId = parseInt(emitter.flowSensor.split('|')[1]);
-
-        var returnSensorNodeId = parseInt(emitter.returnSensor.split('|')[0]);
-        var returnSensorEndpointId = parseInt(emitter.returnSensor.split('|')[1]);
-
-        var radiatorJson = JSON.stringify({
-          name: emitter.name,
-          mqttName: emitter.mqttName.toLowerCase(),
-          type: emitter.type,
-          output: parseInt(emitter.output),
-          flowSensorNodeId,
-          flowSensorEndpointId,
-          returnSensorNodeId,
-          returnSensorEndpointId
-        });
+        var radiatorJson = emitterToRadiatorJson(emitter);
 
         var radiatorResponse = await fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: radiatorJson });
 
@@ -114,53 +91,9 @@ function AddRoom() {
     }
   }
 
-  let emitterCards = emitters.map((emitter, index) => {
-    return (
-      <div className="card mb-3" key={emitter.key}>
-        <div className="card-header">Emitter {index + 1}</div>
-        <div className="card-body">
-          <div className="row">
-            <div className="col mb-3">
-              <label htmlFor={`emitterName-${emitter.key}`} className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
-              <input type="text" maxLength={50} className="form-control" id={`emitterName-${emitter.key}`} placeholder="Office Radiator" required={true} value={emitter.name} onChange={(e) => updateEmitter(emitter.key, { name: e.target.value })} />
-            </div>
-            <div className="col mb-3">
-              <label htmlFor={`emitterType-${emitter.key}`} className="form-label">Type <span style={{ 'color': 'red' }}>*</span></label>
-              <select className="form-control" id={`emitterType-${emitter.key}`} required={true} value={emitter.type} onChange={(e) => updateEmitter(emitter.key, { type: parseInt(e.target.value) })}>
-                <option value="0">Designer</option>
-                <option value="1">Towel</option>
-                <option value="2">Column</option>
-                <option value="10">Type 10 (P1)</option>
-                <option value="11">Type 11 (K1)</option>
-                <option value="20">Type 20</option>
-                <option value="21">Type 21 (P+)</option>
-                <option value="22">Type 22 (K2)</option>
-                <option value="33">Type 33 (K3)</option>
-                <option value="44">Type 44 (K4)</option>
-              </select>
-            </div>
-          </div>
-          <div className="row">
-            <div className="col mb-3">
-              <label htmlFor={`emitterOutput-${emitter.key}`} className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
-              <input type="number" className="form-control" id={`emitterOutput-${emitter.key}`} placeholder="600" required={true} value={emitter.output} onChange={(e) => updateEmitter(emitter.key, { output: e.target.value })} />
-            </div>
-            <div className="col mb-3">
-              <label htmlFor={`emitterMqttName-${emitter.key}`} className="form-label">MQTT Name</label>
-              <input type="text" maxLength={20} className="form-control" id={`emitterMqttName-${emitter.key}`} placeholder="office_radiator" required={false} value={emitter.mqttName} onChange={(e) => updateEmitter(emitter.key, { mqttName: e.target.value })} />
-            </div>
-          </div>
-          <div className="mb-3">
-            <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={true} id={`emitterFlowSensor-${emitter.key}`} selectedSensor={emitter.flowSensor} onSelectedSensorChange={(e) => updateEmitter(emitter.key, { flowSensor: e })} />
-          </div>
-          <div className="mb-3">
-            <SensorSelect deviceType={770} title="Return Temperature Sensor" required={true} id={`emitterReturnSensor-${emitter.key}`} selectedSensor={emitter.returnSensor} onSelectedSensorChange={(e) => updateEmitter(emitter.key, { returnSensor: e })} />
-          </div>
-          <button type="button" className="btn btn-danger btn-sm action-button" onClick={() => removeEmitter(emitter.key)}>Remove</button>
-        </div>
-      </div>
-    );
-  });
+  let emitterCards = emitters.map((emitter, index) => (
+    <EmitterCard key={emitter.key} emitter={emitter} index={index} onChange={(changes) => updateEmitter(emitter.key, changes)} onRemove={() => removeEmitter(emitter.key)} />
+  ));
 
   return (
     <>
