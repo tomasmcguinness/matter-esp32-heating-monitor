@@ -50,7 +50,6 @@
 #include "managers/radiator_manager.h"
 #include "managers/room_manager.h"
 #include "managers/home_manager.h"
-#include "managers/pairing_manager.h"
 
 #include "heat_meter_cluster.h"
 #include "commands/pairing_command.h"
@@ -72,16 +71,15 @@
 #include "storage/sd_card.h"
 #include "storage/time_sync.h"
 
+#include "device_identity.h"
+#include "node_api.h"
+#include "companion_api.h"
+
 #include "mqtt_client.h"
 
 #include "mdns.h"
 
 static const char *TAG = "app_main";
-
-// Published over mDNS once Ethernet has an address, so the web UI is reachable at
-// http://heating-monitor.local without having to look up the DHCP lease.
-#define MDNS_HOSTNAME "heating-monitor"
-#define MDNS_HTTP_PORT 80
 
 using chip::NodeId;
 using chip::ScopedNodeId;
@@ -99,7 +97,6 @@ node_manager_t g_node_manager = {0};
 radiator_manager_t g_radiator_manager = {0};
 room_manager_t g_room_manager = {0};
 home_manager_t g_home_manager = {0};
-pairing_manager_t g_pairing_manager = {0};
 
 esp_mqtt_client_handle_t _mqtt_client;
 static bool is_mqtt_connected = false;
@@ -111,7 +108,6 @@ static void ws_async_send(void *arg);
 static void ws_broadcast_json(cJSON *root);
 static void broadcast_home_state(void);
 static void broadcast_home_if_home_sensor(uint64_t node_id);
-static void log_client_token(httpd_req_t *req, const char *what);
 
 // Commissioning runs on the Matter task, but POST /api/nodes holds its connection open until
 // the outcome is known: the companion app's Matter extension has no other way to learn whether
@@ -629,93 +625,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
         }
     }
-    else if (path.mClusterId == ThreadNetworkDiagnostics::Id && path.mAttributeId == ThreadNetworkDiagnostics::Attributes::NeighborTable::Id)
-    {
-        ESP_LOGI(TAG, "Processing ThreadNetworkDiagnostics->NeighborTable attribute response...");
-
-        // Read the list of neighbours and send them via websockets.
-        //
-        chip::TLV::TLVType containerType;
-
-        if (data->EnterContainer(containerType) != CHIP_NO_ERROR)
-        {
-            ESP_LOGE(TAG, "Failed to enter TLV container");
-            return;
-        }
-
-        while (data->Next() == CHIP_NO_ERROR)
-        {
-            chip::TLV::TLVType listContainerType;
-
-            if (data->EnterContainer(listContainerType) != CHIP_NO_ERROR)
-            {
-                ESP_LOGE(TAG, "Failed to enter TLV container");
-                return;
-            }
-
-            cJSON *root = cJSON_CreateObject();
-            cJSON_AddStringToObject(root, "channel", "network");
-
-            matter_node_t *node = find_node(&g_node_manager, remote_node_id);
-
-            cJSON_AddNumberToObject(root, "extAddress", node->ext_address);
-
-            while (data->Next() == CHIP_NO_ERROR)
-            {
-                chip::TLV::Tag tag = data->GetTag();
-
-                int tagNumber = TLV::TagNumFromTag(tag);
-
-                ESP_LOGI(TAG, "Processing Tag ID: %d", tagNumber);
-
-                switch (tagNumber)
-                {
-                case 0: // ExtAddress
-                    uint64_t ext_address;
-                    chip::app::DataModel::Decode(*data, ext_address);
-
-                    cJSON_AddNumberToObject(root, "neighborExtAddress", ext_address);
-                    break;
-                case 5:
-                    uint8_t lqi;
-                    chip::app::DataModel::Decode(*data, lqi);
-
-                    cJSON_AddNumberToObject(root, "lqi", lqi);
-                    break;
-
-                case 6: // AverageRSSI
-                    int8_t average_rssi;
-                    chip::app::DataModel::Decode(*data, average_rssi);
-
-                    cJSON_AddNumberToObject(root, "averageRssi", average_rssi);
-                    break;
-
-                case 11: // FullThreadDevice
-                    bool full_thread_device;
-                    chip::app::DataModel::Decode(*data, full_thread_device);
-
-                    cJSON_AddBoolToObject(root, "fullThreadDevice", full_thread_device);
-                    break;
-
-                case 13: // IsChild
-                    bool is_child;
-                    chip::app::DataModel::Decode(*data, is_child);
-
-                    cJSON_AddBoolToObject(root, "isChild", is_child);
-                    break;
-                }
-            }
-
-            data->ExitContainer(containerType);
-
-            // All the tags have been process so sent it.
-            ws_broadcast_json(root);
-
-            cJSON_Delete(root);
-        }
-
-        data->ExitContainer(containerType);
-    }
     else if (path.mClusterId == ElectricalPowerMeasurement::Id)
     {
         // Voltage, ActiveCurrent and ActivePower are all nullable int64s, in mV, mA and mW.
@@ -966,6 +875,12 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 }
 
                 update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
+
+                // Added after the recalculation, not with the fields above, or the push would carry
+                // the output from the previous reading. The Layout schematic shows watts per radiator
+                // and only ever sees this channel, so a stale figure would sit there until a reload.
+                //
+                cJSON_AddNumberToObject(root, "currentOutput", radiator->heat_output);
 
                 ws_broadcast_json(root);
 
@@ -1329,25 +1244,11 @@ static esp_err_t ws_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t nodes_post_handler(httpd_req_t *req)
+// Reads a request body and parses it as JSON. Every handler wants the same thing and most of the
+// older ones get it subtly wrong -- httpd_req_recv() does not NUL-terminate, and a buffer sized
+// exactly content_len leaves cJSON_Parse() reading past the end.
+cJSON *read_json_body(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Commissioning a node");
-
-    uint64_t node_id = get_next_node_id(&g_node_manager);
-
-    if (node_id == 0)
-    {
-        ESP_LOGE(TAG, "Failed to get a valid node ID for commissioning");
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_send(req, "Failed to get a valid node ID", HTTPD_RESP_USE_STRLEN);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    ESP_LOGI(TAG, "Will use %llu as node ID", node_id);
-
-    log_client_token(req, "POST /api/nodes");
-
-    /* Read the data from the request into a buffer */
     char content[req->content_len + 1];
     int received = httpd_req_recv(req, content, req->content_len);
 
@@ -1356,7 +1257,7 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         ESP_LOGE(TAG, "Failed to read the request body");
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "Could not read request body", HTTPD_RESP_USE_STRLEN);
-        return ESP_ERR_INVALID_ARG;
+        return NULL;
     }
 
     content[received] = '\0';
@@ -1368,30 +1269,37 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
         ESP_LOGE(TAG, "Failed to parse JSON");
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
-        return ESP_ERR_INVALID_ARG;
+        return NULL;
     }
 
-    const cJSON *setupCodeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
+    return root;
+}
 
-    if (!cJSON_IsString(setupCodeJSON) || setupCodeJSON->valuestring == NULL)
+// Commissions a device onto the fabric. Shared by POST /api/nodes and the companion app's
+// POST /api/companion/nodes -- see node_api.h.
+esp_err_t commission_node(const char *setup_code, commission_outcome_t *outcome)
+{
+    memset(outcome, 0, sizeof(*outcome));
+
+    uint64_t node_id = get_next_node_id(&g_node_manager);
+
+    if (node_id == 0)
     {
-        ESP_LOGE(TAG, "Request is missing a setupCode");
-        cJSON_Delete(root);
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_send(req, "setupCode is required", HTTPD_RESP_USE_STRLEN);
-        return ESP_ERR_INVALID_ARG;
+        ESP_LOGE(TAG, "Failed to get a valid node ID for commissioning");
+        outcome->http_status = 500;
+        snprintf(outcome->message, sizeof(outcome->message), "Failed to get a valid node ID");
+        return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Setup Code: %s", setupCodeJSON->valuestring);
+    ESP_LOGI(TAG, "Will use %llu as node ID", node_id);
 
-    char *setupCode = setupCodeJSON->valuestring;
+    outcome->node_id = node_id;
 
     if (s_commissioning_lock == NULL || s_commissioning_done == NULL)
     {
         ESP_LOGE(TAG, "Commissioning synchronisation was never set up");
-        cJSON_Delete(root);
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_send(req, "Commissioning is unavailable", HTTPD_RESP_USE_STRLEN);
+        outcome->http_status = 500;
+        snprintf(outcome->message, sizeof(outcome->message), "Commissioning is unavailable");
         return ESP_OK;
     }
 
@@ -1400,9 +1308,8 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     if (xSemaphoreTake(s_commissioning_lock, 0) != pdTRUE)
     {
         ESP_LOGE(TAG, "A commissioning request is already in progress");
-        cJSON_Delete(root);
-        httpd_resp_set_status(req, "409 Conflict");
-        httpd_resp_send(req, "A commissioning request is already in progress", HTTPD_RESP_USE_STRLEN);
+        outcome->http_status = 409;
+        snprintf(outcome->message, sizeof(outcome->message), "A commissioning request is already in progress");
         return ESP_OK;
     }
 
@@ -1426,10 +1333,8 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     s_commissioning_waiting = true;
 
     chip::DeviceLayer::PlatformMgr().LockChipStack();
-    esp_err_t pairing_err = heating_monitor::controller::pairing_code(node_id, setupCode);
+    esp_err_t pairing_err = heating_monitor::controller::pairing_code(node_id, setup_code);
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-
-    cJSON_Delete(root);
 
     if (pairing_err != ESP_OK)
     {
@@ -1440,9 +1345,8 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
 
         // ESP_ERR_INVALID_STATE means the commissioner still has a pairing delegate registered
         // from an attempt that never finished.
-        httpd_resp_set_status(req, pairing_err == ESP_ERR_INVALID_STATE ? "409 Conflict"
-                                                                       : "500 Internal Server Error");
-        httpd_resp_send(req, "Failed to start commissioning", HTTPD_RESP_USE_STRLEN);
+        outcome->http_status = pairing_err == ESP_ERR_INVALID_STATE ? 409 : 500;
+        snprintf(outcome->message, sizeof(outcome->message), "Failed to start commissioning");
         return ESP_OK;
     }
 
@@ -1480,26 +1384,53 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     if (!signalled)
     {
         ESP_LOGE(TAG, "Commissioning of node %llu timed out", node_id);
-        httpd_resp_set_status(req, "504 Gateway Timeout");
-        httpd_resp_send(req, "The device didn't finish commissioning in time", HTTPD_RESP_USE_STRLEN);
+        outcome->http_status = 504;
+        snprintf(outcome->message, sizeof(outcome->message), "The device didn't finish commissioning in time");
         return ESP_OK;
     }
 
     if (!succeeded)
     {
-        char message[128];
-        snprintf(message, sizeof(message), "Commissioning failed: %s", ErrorStr(commissioning_error));
-
         ESP_LOGE(TAG, "Commissioning of node %llu failed: %s", node_id, ErrorStr(commissioning_error));
-        httpd_resp_set_status(req, "502 Bad Gateway");
-        httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
+        outcome->http_status = 502;
+        snprintf(outcome->message, sizeof(outcome->message), "Commissioning failed: %s", ErrorStr(commissioning_error));
         return ESP_OK;
     }
 
     ESP_LOGI(TAG, "Commissioning of node %llu completed", node_id);
 
+    outcome->http_status = 201;
+    return ESP_OK;
+}
+
+esp_err_t send_commission_outcome(httpd_req_t *req, const commission_outcome_t *outcome)
+{
+    if (outcome->http_status != 201)
+    {
+        // httpd_resp_set_status() keeps the pointer rather than copying, so these have to be
+        // literals with static storage, not a snprintf'd buffer on this stack frame.
+        switch (outcome->http_status)
+        {
+        case 409:
+            httpd_resp_set_status(req, "409 Conflict");
+            break;
+        case 502:
+            httpd_resp_set_status(req, "502 Bad Gateway");
+            break;
+        case 504:
+            httpd_resp_set_status(req, "504 Gateway Timeout");
+            break;
+        default:
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            break;
+        }
+
+        httpd_resp_send(req, outcome->message, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
     cJSON *response = cJSON_CreateObject();
-    cJSON_AddNumberToObject(response, "nodeId", node_id);
+    cJSON_AddNumberToObject(response, "nodeId", outcome->node_id);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "201 Created");
@@ -1513,10 +1444,42 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t nodes_get_handler(httpd_req_t *req)
+static esp_err_t nodes_post_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Getting all nodes ...");
+    ESP_LOGI(TAG, "Commissioning a node");
 
+    cJSON *root = read_json_body(req);
+
+    if (root == NULL)
+    {
+        return ESP_OK;
+    }
+
+    const cJSON *setupCodeJSON = cJSON_GetObjectItemCaseSensitive(root, "setupCode");
+
+    if (!cJSON_IsString(setupCodeJSON) || setupCodeJSON->valuestring == NULL)
+    {
+        ESP_LOGE(TAG, "Request is missing a setupCode");
+        cJSON_Delete(root);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "setupCode is required", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Setup Code: %s", setupCodeJSON->valuestring);
+
+    commission_outcome_t outcome;
+    commission_node(setupCodeJSON->valuestring, &outcome);
+
+    cJSON_Delete(root);
+
+    return send_commission_outcome(req, &outcome);
+}
+
+// The node list both APIs serve. Shared by GET /api/nodes and GET /api/companion/nodes -- see
+// node_api.h. The companion app decodes every field here except `lastSeen`, which it ignores.
+cJSON *build_nodes_json(void)
+{
     ESP_LOGI(TAG, "There are %u node(s)", g_node_manager.node_count);
 
     cJSON *root = cJSON_CreateArray();
@@ -1654,14 +1617,24 @@ static esp_err_t nodes_get_handler(httpd_req_t *req)
         node = node->next;
     }
 
+    return root;
+}
+
+static esp_err_t nodes_get_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Getting all nodes ...");
+
+    cJSON *root = build_nodes_json();
+
     // TODO Add caching!!
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_status(req, "200 Accepted");
+    httpd_resp_set_status(req, "200 OK");
 
-    const char *json = cJSON_Print(root);
+    char *json = cJSON_PrintUnformatted(root);
     httpd_resp_sendstr(req, json);
-    free((void *)json);
+
+    cJSON_free(json);
     cJSON_Delete(root);
 
     return ESP_OK;
@@ -1720,22 +1693,10 @@ static esp_err_t node_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t node_delete_handler(httpd_req_t *req)
+// Shared by DELETE /api/nodes/:nodeId and DELETE /api/companion/nodes/:nodeId -- see node_api.h.
+esp_err_t unpair_node(uint64_t node_id)
 {
-    ESP_LOGI(TAG, "Unpairing node...");
-
-    log_client_token(req, "DELETE /api/nodes");
-
-    char templatePath[] = "/api/nodes/:nodeId";
-    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
-    UrlTokenBindings bindings(templateItr, req->uri);
-
-    uint64_t node_id = 0;
-
-    if (bindings.hasBinding("nodeId"))
-    {
-        node_id = strtoull(bindings.get("nodeId"), NULL, 10);
-    }
+    ESP_LOGI(TAG, "Unpairing node %llu...", node_id);
 
     esp_matter::controller::pairing_command_callbacks_t callbacks = {
         .unpair_complete_callback = on_unpair_complete_callback};
@@ -1749,15 +1710,54 @@ static esp_err_t node_delete_handler(httpd_req_t *req)
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Unpairing failed");
-        httpd_resp_set_status(req, "500 Internal Server Error");
+        return err;
     }
-    else
-    {
-        remove_node(&g_node_manager, node_id);
 
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_status(req, "202 Accepted");
+    remove_node(&g_node_manager, node_id);
+
+    return ESP_OK;
+}
+
+// Shared by PUT /api/nodes/:nodeId/update and PUT /api/companion/nodes/:nodeId/update -- see
+// node_api.h.
+esp_err_t rename_node(uint64_t node_id, const char *name)
+{
+    matter_node_t *node = find_node(&g_node_manager, node_id);
+
+    if (node == NULL)
+    {
+        return ESP_ERR_NOT_FOUND;
     }
+
+    set_node_name(node, name);
+
+    return save_nodes_to_nvs(&g_node_manager);
+}
+
+static esp_err_t node_delete_handler(httpd_req_t *req)
+{
+    char templatePath[] = "/api/nodes/:nodeId";
+    auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
+    UrlTokenBindings bindings(templateItr, req->uri);
+
+    uint64_t node_id = 0;
+
+    if (bindings.hasBinding("nodeId"))
+    {
+        node_id = strtoull(bindings.get("nodeId"), NULL, 10);
+    }
+
+    if (unpair_node(node_id) != ESP_OK)
+    {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Could not remove the device", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    // An empty body still has to be sent: httpd never answers a request the handler didn't
+    // respond to, so returning here without this left the client waiting for its own timeout.
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_send(req, NULL, 0);
 
     return ESP_OK;
 }
@@ -1790,13 +1790,17 @@ static esp_err_t node_put_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    if (bindings.hasBinding("action"))
+    // get() is what reports a missing segment, not hasBinding(), which only inspects the pattern
+    // and so answers yes for a URI that stopped at the node id.
+    const char *action = bindings.get("action");
+
+    if (action != NULL)
     {
-        ESP_LOGI(TAG, "Action: %s", bindings.get("action"));
+        ESP_LOGI(TAG, "Action: %s", action);
 
         // Select based on the action
         //
-        if (strcmp("identify", bindings.get("action")) == 0)
+        if (strcmp("identify", action) == 0)
         {
             ESP_LOGI(TAG, "Sending identify command");
 
@@ -1806,7 +1810,7 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             esp_err_t err = heating_monitor::controller::identify_command::get_instance().send_identify_command(node_id);
             chip::DeviceLayer::PlatformMgr().UnlockChipStack();
         }
-        else if (strcmp("interview", bindings.get("action")) == 0)
+        else if (strcmp("interview", action) == 0)
         {
             ESP_LOGI(TAG, "Sending interview command");
 
@@ -1845,36 +1849,36 @@ static esp_err_t node_put_handler(httpd_req_t *req)
             err = read_attr_command->send_command();
             chip::DeviceLayer::PlatformMgr().UnlockChipStack();
         }
-        else if (strcmp("update", bindings.get("action")) == 0)
+        else if (strcmp("update", action) == 0)
         {
-            char content[req->content_len];
-            esp_err_t err = httpd_req_recv(req, content, req->content_len);
-
-            cJSON *root = cJSON_Parse(content);
+            cJSON *root = read_json_body(req);
 
             if (root == NULL)
             {
-                ESP_LOGE(TAG, "Failed to parse JSON");
-                httpd_resp_set_status(req, "400 Bad Request");
-                httpd_resp_send(req, "Invalid JSON", HTTPD_RESP_USE_STRLEN);
-                return ESP_ERR_INVALID_ARG;
+                return ESP_OK;
             }
 
             const cJSON *nameJSON = cJSON_GetObjectItemCaseSensitive(root, "name");
 
-            set_node_name(node, nameJSON->valuestring);
+            if (!cJSON_IsString(nameJSON) || nameJSON->valuestring == NULL)
+            {
+                cJSON_Delete(root);
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_send(req, "name is required", HTTPD_RESP_USE_STRLEN);
+                return ESP_OK;
+            }
 
-            save_nodes_to_nvs(&g_node_manager);
+            err = rename_node(node_id, nameJSON->valuestring);
 
             cJSON_Delete(root);
         }
-        else if (strcmp("subscribe", bindings.get("action")) == 0)
+        else if (strcmp("subscribe", action) == 0)
         {
             ESP_LOGI(TAG, "Manually queueing subscription for node 0x%016llX", node_id);
 
             enqueue_subscription(node_id);
         }
-        else if (strcmp("commissioning-window", bindings.get("action")) == 0)
+        else if (strcmp("commissioning-window", action) == 0)
         {
             // Opens the device to a second controller (multi-admin). Like POST /api/nodes, this
             // parks the httpd task until the device answers, so the UI gets the setup code or a
@@ -2439,6 +2443,15 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
         uint16_t total_radiator_output = 0;
 
+        // The room's radiators are carried inline so a caller that needs the whole system at once --
+        // the Layout schematic -- gets it in one request. room->radiators[] is the only link there
+        // is: radiator_t::room_id is never assigned, and GET /api/radiators does not report it. The
+        // fields match the ones room_get_handler emits, so both endpoints describe a radiator the
+        // same way.
+        //
+        cJSON *radiators;
+        cJSON_AddItemToObject(jNode, "radiators", radiators = cJSON_CreateArray());
+
         for (uint8_t r = 0; r < room->radiator_count; r++)
         {
             radiator_t *radiator = find_radiator(&g_radiator_manager, room->radiators[r]);
@@ -2446,6 +2459,17 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
             if (radiator)
             {
                 total_radiator_output += radiator->heat_output;
+
+                cJSON *radiatorNode = cJSON_CreateObject();
+
+                cJSON_AddNumberToObject(radiatorNode, "radiatorId", radiator->radiator_id);
+                cJSON_AddStringToObject(radiatorNode, "name", radiator->name);
+                cJSON_AddNumberToObject(radiatorNode, "type", radiator->type);
+                cJSON_AddNumberToObject(radiatorNode, "flowTemp", radiator->flow_temperature);
+                cJSON_AddNumberToObject(radiatorNode, "returnTemp", radiator->return_temperature);
+                cJSON_AddNumberToObject(radiatorNode, "currentOutput", radiator->heat_output);
+
+                cJSON_AddItemToArray(radiators, radiatorNode);
             }
         }
 
@@ -2721,89 +2745,6 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_status(req, "200 OK");
-
-    char *json = cJSON_PrintUnformatted(root);
-    httpd_resp_sendstr(req, json);
-
-    cJSON_free(json);
-    cJSON_Delete(root);
-
-    return ESP_OK;
-}
-
-// Reads the bearer token off the request and reports whether it matches the one this device
-// issued. Nothing is rejected yet -- the embedded web UI has no token, so enforcing this
-// would lock the browser out. Logging it lets us confirm the companion app is sending the
-// right credential before turning enforcement on in a later change.
-static void log_client_token(httpd_req_t *req, const char *what)
-{
-    size_t header_len = httpd_req_get_hdr_value_len(req, "Authorization");
-
-    if (header_len == 0)
-    {
-        ESP_LOGI(TAG, "%s: no Authorization header", what);
-        return;
-    }
-
-    char header[header_len + 1];
-
-    if (httpd_req_get_hdr_value_str(req, "Authorization", header, sizeof(header)) != ESP_OK)
-    {
-        ESP_LOGW(TAG, "%s: could not read the Authorization header", what);
-        return;
-    }
-
-    const char *presented = header;
-
-    if (strncasecmp(presented, "Bearer ", 7) == 0)
-    {
-        presented += 7;
-    }
-
-    if (pairing_token_matches(&g_pairing_manager, presented))
-    {
-        ESP_LOGI(TAG, "%s: pairing token accepted", what);
-    }
-    else
-    {
-        ESP_LOGW(TAG, "%s: pairing token did NOT match (allowing anyway)", what);
-    }
-}
-
-// Everything the companion app needs to find and talk to this device. The web UI renders
-// this verbatim as a QR code on the Settings page, and the app scans it to pair.
-static esp_err_t info_get_handler(httpd_req_t *req)
-{
-    ESP_LOGI(TAG, "Getting device info...");
-
-    cJSON *root = cJSON_CreateObject();
-
-    cJSON_AddNumberToObject(root, "v", 1);
-    cJSON_AddStringToObject(root, "name", "Heating Monitor");
-    cJSON_AddStringToObject(root, "host", MDNS_HOSTNAME ".local");
-    cJSON_AddStringToObject(root, "url", "http://" MDNS_HOSTNAME ".local");
-    cJSON_AddStringToObject(root, "id", pairing_get_device_id(&g_pairing_manager));
-    cJSON_AddStringToObject(root, "token", pairing_get_token(&g_pairing_manager));
-
-    // mDNS on this board is an IPv4 delegated hostname and resolution is not always quick
-    // off a phone, so hand out the raw address as a fallback the app can fall back to.
-    esp_netif_t *eth_netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
-    esp_netif_ip_info_t ip_info;
-
-    if (eth_netif != NULL && esp_netif_get_ip_info(eth_netif, &ip_info) == ESP_OK && ip_info.ip.addr != 0)
-    {
-        char ip[16];
-        snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ip_info.ip));
-        cJSON_AddStringToObject(root, "ip", ip);
-    }
-    else
-    {
-        cJSON_AddNullToObject(root, "ip");
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_status(req, "200 OK");
 
     char *json = cJSON_PrintUnformatted(root);
@@ -3142,62 +3083,6 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static esp_err_t network_post_handler(httpd_req_t *req)
-{
-    ESP_LOGI(TAG, "Start to map Thread network...");
-
-    matter_node_t *node = g_node_manager.node_list;
-
-    while (node)
-    {
-        // Request the neightbour table from all wired Thread sensors.
-        //
-        if (node->ext_address != 0 && !node->is_icd)
-        {
-            auto *args = new std::tuple<uint64_t>(node->node_id);
-
-            chip::DeviceLayer::PlatformMgr().ScheduleWork([](intptr_t arg)
-                                                          {
-            auto *args = reinterpret_cast<std::tuple<uint64_t> *>(arg);
-                                                        
-            // We want to read a few attributes from the Basic Information cluster.
-            //
-            ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-            attr_paths.Alloc(1);
-
-            if (!attr_paths.Get())
-            {
-                ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
-                delete args;
-                return;
-            }
-
-            attr_paths[0] = AttributePathParams(0x0, ThreadNetworkDiagnostics::Id, ThreadNetworkDiagnostics::Attributes::NeighborTable::Id);
-
-            ScopedMemoryBufferWithSize<EventPathParams> event_paths;
-            event_paths.Alloc(0);
-        
-            esp_matter::controller::read_command *read_attr_command = chip::Platform::New<read_command>(std::get<0>(*args),
-                                                                                                        std::move(attr_paths),
-                                                                                                        std::move(event_paths),
-                                                                                                        attribute_data_cb,
-                                                                                                        attribute_data_read_done,
-                                                                                                        nullptr);
-
-            delete args;
-            read_attr_command->send_command(); }, reinterpret_cast<intptr_t>(args));
-        }
-
-        node = node->next;
-    }
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_status(req, "201 OK");
-
-    return ESP_OK;
-}
-
 static esp_err_t icd_counter_delete_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Resetting the ICD Counter Offset ...");
@@ -3321,18 +3206,12 @@ httpd_handle_t start_webserver(void)
         ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
     }
 
-    config.max_uri_handlers = 30;
+    config.max_uri_handlers = 34;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
 
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
-
-    const httpd_uri_t info_get_uri = {
-        .uri = "/api/info",
-        .method = HTTP_GET,
-        .handler = info_get_handler,
-        .user_ctx = NULL};
 
     const httpd_uri_t home_get_uri = {
         .uri = "/api/home",
@@ -3448,12 +3327,6 @@ httpd_handle_t start_webserver(void)
         .handler = sensors_get_handler,
         .user_ctx = NULL};
 
-    const httpd_uri_t network_post_uri = {
-        .uri = "/api/network",
-        .method = HTTP_POST,
-        .handler = network_post_handler,
-        .user_ctx = NULL};
-
     const httpd_uri_t icd_counter_delete_uri = {
         .uri = "/api/icd_counter/*",
         .method = HTTP_DELETE,
@@ -3473,7 +3346,6 @@ httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Registering URI handlers");
 
         httpd_register_uri_handler(server, &ws_uri);
-        httpd_register_uri_handler(server, &info_get_uri);
         httpd_register_uri_handler(server, &home_get_uri);
         httpd_register_uri_handler(server, &home_put_uri);
         httpd_register_uri_handler(server, &nodes_post_uri);
@@ -3493,12 +3365,12 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &rooms_delete_uri);
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
-        httpd_register_uri_handler(server, &network_post_uri);
         httpd_register_uri_handler(server, &icd_counter_delete_uri);
 
         // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
         history_api_register(server);
         status_api_register(server);
+        companion_api_register(server);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
@@ -3741,7 +3613,6 @@ extern "C" void app_main()
     radiator_manager_init(&g_radiator_manager);
     room_manager_init(&g_room_manager);
     home_manager_init(&g_home_manager);
-    pairing_manager_init(&g_pairing_manager);
 
     /* Matter start */
 

@@ -2,6 +2,7 @@ import { NavLink, Routes, Route } from "react-router";
 import './App.css'
 import Home from './Home.tsx'
 import EditHome from './EditHome.tsx'
+import Layout from './Layout.tsx'
 
 import Device from './Device.tsx'
 import Devices from './Devices.tsx'
@@ -21,7 +22,6 @@ import EditRoom from "./EditRoom.tsx";
 import RoomHistory from "./RoomHistory.tsx";
 
 import { WebSocketProvider } from './WSContext.jsx'
-import ThreadNetwork from "./ThreadNetwork.tsx";
 import History from "./History.tsx";
 import Settings from "./Settings.tsx";
 import Status from "./Status.tsx";
@@ -42,6 +42,9 @@ function App() {
                 <NavLink className="nav-link" to="/">Home</NavLink>
               </li>
               <li className="nav-item">
+                <NavLink className="nav-link" to="/layout">Layout</NavLink>
+              </li>
+              <li className="nav-item">
                 <NavLink className="nav-link" to="/rooms">Rooms</NavLink>
               </li>
               <li className="nav-item">
@@ -52,9 +55,6 @@ function App() {
               </li>
               <li className="nav-item">
                 <NavLink className="nav-link" to="/history">History</NavLink>
-              </li>
-              <li className="nav-item">
-                <NavLink className="nav-link" to="/threadnetwork">Thread Network</NavLink>
               </li>
               <li className="nav-item">
                 <NavLink className="nav-link" to="/settings">Settings</NavLink>
@@ -71,6 +71,8 @@ function App() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/edit" element={<EditHome />} />
+
+            <Route path="/layout" element={<Layout />} />
 
             <Route path="/rooms" element={<Rooms />} />
             <Route path="/rooms/add" element={<AddRoom />} />
@@ -90,8 +92,6 @@ function App() {
             <Route path="/devices/:nodeId/commissioning" element={<CommissioningWindow />} />
 
             <Route path="/history" element={<History />} />
-
-            <Route path="/threadnetwork" element={<ThreadNetwork />} />
 
             <Route path="/settings" element={<Settings />} />
 

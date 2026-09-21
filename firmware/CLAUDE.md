@@ -210,6 +210,43 @@ The sampling interval is stored in the `home_manager` NVS blob and changed throu
 must stay spaced at the interval its header records. It applies to **all three series** — that
 is what keeps them slot-aligned, so there is deliberately no per-kind interval.
 
+**The companion API (`companion_api.{h,cpp}`, `node_api.h`):**
+
+`/api/companion/*` is **not our API**. It is the contract of the generic
+[Matter Controller Companion](https://github.com/tomasmcguinness/matter-controller-companion-app)
+(MCC) iOS app, which works against any self-hosted controller, and its paths, bodies and status
+codes come from that repo's `README.md`, `iOS/Shared/MCCClient.swift` and `iOS/Shared/Models.swift`.
+Change the app first; do not reshape these to suit the firmware.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/companion/info` | Reachability. The app ignores the body and takes any 2xx |
+| `GET` | `/api/companion/nodes` | The node array |
+| `POST` | `/api/companion/nodes` | `{inUse, setupCode}` → `{nodeId}`, held open until pairing finishes |
+| `PUT` | `/api/companion/nodes/{nodeId}/update` | `{name}` |
+| `DELETE` | `/api/companion/nodes/{nodeId}` | Unpair |
+
+There is **no authentication**. There was, briefly — a `pairing_manager` issuing a token that
+`GET /api/info` handed out as a QR code for the old bespoke app in `companion_app/`. All of it is
+gone: MCC is added by address and the generic API has no place to put a credential. `POST` and
+`DELETE` here will commission and unpair for anyone who can reach port 80, exactly as the web UI's
+equivalents already did.
+
+Every operation is shared with the web UI's `/api/nodes` endpoints through `node_api.h` —
+`build_nodes_json()`, `commission_node()`, `unpair_node()`, `rename_node()` — which is what stops
+the two drifting. They are implemented in `app_main.cpp` rather than in `companion_api.cpp` so the
+commissioning statics and the CHIP pairing callbacks stay in one translation unit. `node_api.h`
+also carries `read_json_body()`, the NUL-terminating body read that most of the older handlers do
+by hand and get subtly wrong.
+
+`companion_api.cpp` includes `device_identity.h`, not `app_main.h`: the latter declares
+`attribute_data_read_done` in terms of `ScopedMemoryBufferWithSize` and only compiles after
+`app_main.cpp`'s `using namespace` block, so it cannot be included from anywhere else.
+
+`companion_api_register()` must run **before** the `/*` wildcard, like `history_api_register()` and
+`status_api_register()`. `config.max_uri_handlers` is a hard cap — it was raised to 34 for these
+five; count the registrations before adding more.
+
 **Other components:**
 - `commands/` — Matter pairing and identify command wrappers
 - `utilities/` — URL path token parsing (from the `path_variable_handlers` pattern)
@@ -227,14 +264,45 @@ is what keeps them slot-aligned, so there is deliberately no per-kind interval.
 ### Web App (`html_app/`)
 
 React 19 + TypeScript, built with Vite. Uses:
-- **React Router v7** for client-side routing (Home, Rooms, Radiators, Devices, History, Thread Network)
+- **React Router v7** for client-side routing (Home, Layout, Rooms, Radiators, Devices, History)
 - **uPlot** for the History page's charts — chosen over heavier chart libraries because the
   whole bundle is embedded in the firmware image and ships in every OTA
 - **`react-use-websocket`** via `WSContext.jsx` for real-time data updates from the device
 - **Bootstrap** (icons) for styling
-- **vis-network** for Thread Network topology visualisation
+
+There was a **Thread Network** tab that drew the mesh topology with `vis-network`. It is gone, and
+with it `vis-network`, `vis-data`, `POST /api/network` (`network_post_handler`, which read the
+`NeighborTable` attribute from every non-ICD node), the `NeighborTable` branch of
+`attribute_data_cb`, and the `network` WebSocket channel.
+
+`ThreadNetworkDiagnostics::ExtAddress` is **not** part of that removal — it is subscribed for every
+node, stored on `matter_node_t::ext_address`, persisted in the node NVS blob and reported by
+`GET /api/nodes` as `extAddress`.
 
 Routes mirror the REST API structure: `/rooms`, `/rooms/:roomId`, `/radiators`, `/radiators/:radiatorId`, `/devices`, `/devices/:nodeId`, etc.
+
+`/layout` (`Layout.tsx`) is the exception — it is a view over the whole system rather than one
+resource. It draws the circuit as a schematic: a flow trunk across the top, a return trunk across
+the bottom, and one radiator symbol dropped between them per emitter, with the heat meter on the
+left. Geometry comes from a supplied mock-up and is laid out from the radiator count, so the canvas
+widens as the system grows and scrolls horizontally rather than shrinking.
+
+It is the reason `GET /api/rooms` carries each room's `radiators` inline. There is otherwise **no
+pair of calls that can be joined**: `GET /api/radiators` does not report a room, and
+`radiator_t::room_id` is declared and persisted but never assigned, so `room->radiators[]` is the
+only real link. The page draws one column per radiator, so a room with several gets a bracketed
+group rather than one aggregated symbol.
+
+Live values come from the existing WebSocket channels, not from polling — `home` for the heat
+meter, `radiator` and `room` for the columns. That is why the `radiator` push carries
+`currentOutput` alongside the temperature that changed: the schematic shows watts per radiator and
+only ever sees that channel, so without it the figure would sit stale until a reload. It is added
+**after** `update_radiator_outputs()` runs, or it would carry the previous reading.
+
+`Layout.css` scopes every rule under `.layout-schematic`. The mock-up styles bare `.legend`,
+`.canvas`, `.name`, `.meter` and `.alert` — unscoped, that last one would restyle every Bootstrap
+alert in the app. It needs no entry in `WEB_APP_FILES` because Vite merges all imported CSS into
+the single `app.css`.
 
 The built output (`html_compiled_app/index.html`, `app.css`, `app.js`) is embedded directly into the firmware binary — no separate file system is used — and served from the `_binary_*_start`/`_binary_*_end` symbols by `wildcard_get_handler` in `app_main.cpp`, which falls back to `index.html` for the SPA's client-side routes.
 

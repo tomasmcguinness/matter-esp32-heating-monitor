@@ -101,7 +101,7 @@ matter_node_t *find_node(node_manager_t *manager, uint64_t node_id);
 esp_err_t remove_node(node_manager_t *manager, uint64_t node_id);
 
 matter_node_t *add_node(node_manager_t *manager, uint64_t node_id, bool is_icd_device);
-esp_err_t set_node_name(matter_node_t *node, char *name);
+esp_err_t set_node_name(matter_node_t *node, const char *name);
 esp_err_t set_node_label(matter_node_t *node, char *label);
 esp_err_t set_node_power_source(matter_node_t *node, uint8_t power_source);
 esp_err_t set_node_ext_address(matter_node_t *node, uint64_t ext_address);

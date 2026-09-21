@@ -277,7 +277,7 @@ esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, u
     return ESP_OK;
 }
 
-esp_err_t set_node_name(matter_node_t *node, char *name)
+esp_err_t set_node_name(matter_node_t *node, const char *name)
 {
     if (node->name)
     {

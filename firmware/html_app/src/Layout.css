@@ -1,0 +1,172 @@
+/* Lifted from the supplied schematic mock-up, with every rule scoped under .layout-schematic.
+   The mock-up styles bare .legend/.canvas/.name/.meter -- and .alert, which Bootstrap also owns --
+   so unscoped it would reach out of this page and restyle every alert in the app. */
+
+.layout-schematic {
+  color: #1c1c1c;
+}
+
+.layout-schematic .legend {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #555;
+  padding: 14px 0 10px;
+  border-bottom: 1px solid #ececec;
+}
+
+.layout-schematic .legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.layout-schematic .swatch-flow {
+  width: 20px;
+  height: 0;
+  border-top: 3px solid #1a1a1a;
+}
+
+.layout-schematic .swatch-return {
+  width: 20px;
+  height: 0;
+  border-top: 2px dashed #555;
+}
+
+.layout-schematic .scroll {
+  overflow: auto;
+}
+
+/* Width and height are set inline from the radiator count -- the canvas grows with the system. */
+.layout-schematic .canvas {
+  position: relative;
+  background: #fff;
+}
+
+.layout-schematic .lbl {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 700;
+  background: #fff;
+  padding: 0 3px;
+  white-space: nowrap;
+}
+
+.layout-schematic .name {
+  top: 40px;
+  width: 80px;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.15;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.layout-schematic .room-temp {
+  top: 74px;
+  font-size: 13px;
+}
+
+.layout-schematic .room-target {
+  top: 92px;
+  font-size: 9px;
+  font-weight: 400;
+  color: #9a9a9a;
+}
+
+/* Only drawn for rooms with more than one radiator, to tell the columns apart. */
+.layout-schematic .rad-name {
+  top: 300px;
+  max-width: 78px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 9px;
+  font-weight: 400;
+  color: #6a6a6a;
+}
+
+.layout-schematic .watt {
+  top: 386px;
+  font-size: 10px;
+  color: #6a6a6a;
+}
+
+.layout-schematic .flow-temp {
+  top: 320px;
+  color: #c94f24;
+}
+
+.layout-schematic .ret-temp {
+  top: 437px;
+  color: #2f6fed;
+}
+
+/* A room with no radiators keeps its header and gets this in place of a drop. */
+.layout-schematic .no-emitters {
+  top: 360px;
+  font-size: 10px;
+  font-weight: 400;
+  color: #9a9a9a;
+}
+
+/* Position and size come from the same constants as the SVG rect behind it, set inline. */
+.layout-schematic .meter {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.layout-schematic .meter-title {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #c94f24;
+  font-weight: 700;
+}
+
+/* `top` is set inline to the y at which this row's leg crosses the box, and translateY centres the
+   text on it -- so the reading sits on the pipe it was measured from. */
+.layout-schematic .meter-row {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.layout-schematic .meter-row .k {
+  color: #9a9a9a;
+}
+
+.layout-schematic .meter-row .flow {
+  font-weight: 700;
+  color: #c94f24;
+}
+
+.layout-schematic .meter-row .ret {
+  font-weight: 700;
+  color: #2f6fed;
+}
+
+.layout-schematic .meter-power {
+  position: absolute;
+  left: 12px;
+  bottom: 8px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.layout-schematic .meter-power span {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a8a8a;
+}
