@@ -3,6 +3,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include <esp_matter_controller_subscribe_command.h>
@@ -28,12 +29,113 @@ static const char *TAG = "subscription_manager";
 // How often to look for nodes that ought to have a subscription but don't.
 #define SWEEP_INTERVAL_MS 60000
 
+// Subscription attempts allowed in flight at once. Each holds a CASE session-setup slot until it
+// resolves; the controller has CHIP_CONFIG_CONTROLLER_MAX_ACTIVE_CASE_CLIENTS (16) of those and
+// CHIP_CONFIG_CONTROLLER_MAX_ACTIVE_DEVICES (8) operational session setups, shared with reads, ICD
+// check-ins and commissioning. Four leaves most of both for everything else.
+#define MAX_ATTEMPTS_IN_FLIGHT 4
+
+// An attempt that has not reported back after this long gives up its slot anyway. Normally every
+// attempt ends in one of the callbacks that call subscription_attempt_finished(), but one path does
+// not: if the session connects and esp-matter then fails to send the subscribe request, it deletes
+// the command without calling anything. CASE over Thread gives up well inside this.
+#define ATTEMPT_TIMEOUT_MS 90000
+
+// How often the worker rechecks for a free slot while all of them are in use.
+#define SLOT_POLL_MS 250
+
 // Subscription reporting intervals, unchanged from the call sites this replaces.
 #define SUBSCRIBE_MIN_INTERVAL 0
 #define SUBSCRIBE_MAX_INTERVAL 60
 
 static QueueHandle_t s_queue = NULL;
 static node_manager_t *s_node_manager = NULL;
+
+// Attempts in flight, keyed by node. The worker task claims slots and the CHIP task frees them from
+// the subscription callbacks, so the table is only touched under s_slots_mutex.
+struct attempt_slot_t {
+    uint64_t node_id; // 0 when the slot is free
+    TickType_t started;
+};
+
+static SemaphoreHandle_t s_slots_mutex = NULL;
+static attempt_slot_t s_slots[MAX_ATTEMPTS_IN_FLIGHT];
+
+// Frees any slot held longer than ATTEMPT_TIMEOUT_MS. Caller holds s_slots_mutex.
+static void reclaim_expired_slots_locked(void)
+{
+    TickType_t now = xTaskGetTickCount();
+
+    for (size_t i = 0; i < MAX_ATTEMPTS_IN_FLIGHT; i++)
+    {
+        if (s_slots[i].node_id != 0 && (now - s_slots[i].started) > pdMS_TO_TICKS(ATTEMPT_TIMEOUT_MS))
+        {
+            ESP_LOGW(TAG, "Subscription attempt for node 0x%016llX never reported back; releasing its slot", s_slots[i].node_id);
+
+            // Nothing will retry a node still marked pending, so clear that too and let the sweep
+            // pick it up again.
+            bool create_new_subscription = false;
+            mark_node_has_no_subscription(s_node_manager, s_slots[i].node_id, 0, &create_new_subscription);
+
+            s_slots[i].node_id = 0;
+        }
+    }
+}
+
+// Blocks until a slot is free, then claims it for node_id.
+static void claim_slot(uint64_t node_id)
+{
+    bool logged = false;
+
+    while (true)
+    {
+        xSemaphoreTake(s_slots_mutex, portMAX_DELAY);
+
+        reclaim_expired_slots_locked();
+
+        for (size_t i = 0; i < MAX_ATTEMPTS_IN_FLIGHT; i++)
+        {
+            if (s_slots[i].node_id == 0)
+            {
+                s_slots[i].node_id = node_id;
+                s_slots[i].started = xTaskGetTickCount();
+                xSemaphoreGive(s_slots_mutex);
+                return;
+            }
+        }
+
+        xSemaphoreGive(s_slots_mutex);
+
+        if (!logged)
+        {
+            ESP_LOGI(TAG, "%d subscription attempts in flight; node 0x%016llX waits for one to finish", MAX_ATTEMPTS_IN_FLIGHT, node_id);
+            logged = true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(SLOT_POLL_MS));
+    }
+}
+
+void subscription_attempt_finished(uint64_t node_id)
+{
+    if (!s_slots_mutex || node_id == 0)
+    {
+        return;
+    }
+
+    xSemaphoreTake(s_slots_mutex, portMAX_DELAY);
+
+    for (size_t i = 0; i < MAX_ATTEMPTS_IN_FLIGHT; i++)
+    {
+        if (s_slots[i].node_id == node_id)
+        {
+            s_slots[i].node_id = 0;
+            break;
+        }
+    }
+
+    xSemaphoreGive(s_slots_mutex);
+}
 
 /**
  * Runs on the CHIP event loop, so it is safe to touch the controller from here.
@@ -47,6 +149,7 @@ static void send_subscription(intptr_t arg)
     if (!node)
     {
         ESP_LOGW(TAG, "Node 0x%016llX went away before we could subscribe", node_id);
+        subscription_attempt_finished(node_id);
         return;
     }
 
@@ -63,6 +166,7 @@ static void send_subscription(intptr_t arg)
 
         bool create_new_subscription = false;
         mark_node_has_no_subscription(s_node_manager, node_id, 0, &create_new_subscription);
+        subscription_attempt_finished(node_id);
         return;
     }
 
@@ -72,6 +176,7 @@ static void send_subscription(intptr_t arg)
     if (!attr_paths.Get())
     {
         ESP_LOGE(TAG, "Failed to alloc memory for attribute paths");
+        subscription_attempt_finished(node_id);
         return;
     }
 
@@ -150,6 +255,7 @@ static void send_subscription(intptr_t arg)
     if (!cmd)
     {
         ESP_LOGE(TAG, "Failed to alloc memory for subscribe_command");
+        subscription_attempt_finished(node_id);
         return;
     }
 
@@ -157,7 +263,10 @@ static void send_subscription(intptr_t arg)
 
     if (err != ESP_OK)
     {
+        // send_command() deletes the command on failure without calling any of the callbacks, so
+        // nothing else would free the slot.
         ESP_LOGE(TAG, "Failed to send subscribe command: %s", esp_err_to_name(err));
+        subscription_attempt_finished(node_id);
     }
 }
 
@@ -208,7 +317,20 @@ static void subscription_task(void *arg)
                 continue;
             }
 
-            chip::DeviceLayer::PlatformMgr().ScheduleWork(send_subscription, (intptr_t)node_id);
+            // Waits here while MAX_ATTEMPTS_IN_FLIGHT attempts are outstanding. The slot is freed by
+            // subscription_attempt_finished(), from the subscription callbacks in app_main.cpp.
+            claim_slot(node_id);
+
+            if (chip::DeviceLayer::PlatformMgr().ScheduleWork(send_subscription, (intptr_t)node_id) != CHIP_NO_ERROR)
+            {
+                // send_subscription will never run, so nothing else would free the slot or clear
+                // the pending flag. The sweep picks the node up again.
+                ESP_LOGE(TAG, "Failed to schedule subscription for node 0x%016llX", node_id);
+
+                bool create_new_subscription = false;
+                mark_node_has_no_subscription(s_node_manager, node_id, 0, &create_new_subscription);
+                subscription_attempt_finished(node_id);
+            }
 
             vTaskDelay(pdMS_TO_TICKS(SUBSCRIBE_PACING_MS));
         }
@@ -227,6 +349,14 @@ esp_err_t subscription_manager_init(node_manager_t *manager)
     }
 
     s_node_manager = manager;
+
+    s_slots_mutex = xSemaphoreCreateMutex();
+
+    if (!s_slots_mutex)
+    {
+        ESP_LOGE(TAG, "Failed to create subscription slot mutex");
+        return ESP_ERR_NO_MEM;
+    }
 
     s_queue = xQueueCreate(SUBSCRIPTION_QUEUE_DEPTH, sizeof(uint64_t));
 

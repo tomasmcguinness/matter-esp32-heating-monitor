@@ -6,12 +6,15 @@ import FlowRate from "./FlowRate";
 import Voltage from "./Voltage";
 import Current from "./Current";
 import ElectricalPower from "./ElectricalPower";
+import Cop from "./Cop";
 import SubscriptionPill from "./SubscriptionPill";
 import { WebSocketContext } from "./WSContext.jsx";
 
 function Home() {
 
-  let [outdoorTemperature, setOutdoorTemperature] = useState<number | undefined>(undefined);
+  let [averageInternalTemperature, setAverageInternalTemperature] = useState<number | null | undefined>(undefined);
+  let [cop, setCop] = useState<number | null | undefined>(undefined);
+  let [outdoorTemperature, setOutdoorTemperature] = useState<number | null | undefined>(undefined);
   let [outdoorTemperatureSensorNodeId, setOutdoorTemperatureSensorNodeId] = useState<number | undefined>(undefined);
   let [outdoorTemperatureSensorSubscription, setOutdoorTemperatureSensorSubscription] = useState<string | undefined>(undefined);
   let [heatMeterNodeId, setHeatMeterNodeId] = useState<number | undefined>(undefined);
@@ -36,6 +39,9 @@ function Home() {
   // initial fetch and every push can share one applier.
   //
   const applyHome = useCallback((data: any) => {
+    setAverageInternalTemperature(data.averageInternalTemperature);
+    setCop(data.cop);
+
     setOutdoorTemperature(data.outdoorTemperature);
     setOutdoorTemperatureSensorNodeId(data.outdoorTemperatureSensorNodeId);
     setOutdoorTemperatureSensorSubscription(data.outdoorTemperatureSensorSubscription);
@@ -88,18 +94,28 @@ function Home() {
       <hr />
       {/* Node 0 is the firmware's "nothing selected". Sections check for it exactly, rather than for
           falsy, so the alert doesn't flash up before the first fetch has returned. */}
-      <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Weather<SubscriptionPill state={outdoorTemperatureSensorSubscription} /></h4>
-      {outdoorTemperatureSensorNodeId === 0 ?
-        <div className="alert alert-info">No outdoor temperature sensor is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</div> :
-      <div className="card-group" style={{ marginBottom: '5px' }}>
-        <div className="card">
-          <div className="card-header">
-            Outside Temperature
-          </div>
-          <div className="card-body">
-            <p className="card-title"><h3><Temperature>{outdoorTemperature}</Temperature></h3></p>
-          </div>
-        </div>
+      <div className="row">
+        {/* Both of these are derived by the firmware rather than read from one device, so this
+            heading carries no subscription pill. */}
+        <div className="col-md-6">
+          <h4 style={{marginTop: '20px'}}>Indoors</h4>
+          <div className="card-group" style={{ marginBottom: '5px' }}>
+            <div className="card">
+              <div className="card-header">
+                Average Temperature
+              </div>
+              <div className="card-body">
+                <p className="card-title"><h3><Temperature>{averageInternalTemperature}</Temperature></h3></p>
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header">
+                COP
+              </div>
+              <div className="card-body">
+                <p className="card-title"><h3><Cop>{cop}</Cop></h3></p>
+              </div>
+            </div>
         {/* <div className="card">
           <div className="card-header">
             Predicted Heat Loss
@@ -116,7 +132,31 @@ function Home() {
             <p className="card-title"><h3><Power>{totalMeasuredHeatLoss}</Power></h3></p>
           </div>
         </div> */}
-      </div>}
+          </div>
+        </div>
+        <div className="col-md-6">
+          <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Outdoors<SubscriptionPill state={outdoorTemperatureSensorSubscription} /></h4>
+          <div className="card-group" style={{ marginBottom: '5px' }}>
+            <div className="card">
+              <div className="card-header">
+                Temperature
+              </div>
+              <div className="card-body">
+                {outdoorTemperatureSensorNodeId === 0 ?
+                  <span>No outdoor temperature sensor is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</span> :
+                  <p className="card-title"><h3><Temperature>{outdoorTemperature}</Temperature></h3></p>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header">
+                Forecast
+              </div>
+              <div className="card-body">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
       <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Heat Meter<SubscriptionPill state={heatMeterSubscription} /></h4>
       {heatMeterNodeId === 0 ?
         <div className="alert alert-info">No heat meter is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</div> :

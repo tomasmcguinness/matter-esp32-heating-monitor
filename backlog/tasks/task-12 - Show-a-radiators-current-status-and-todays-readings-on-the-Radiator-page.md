@@ -4,7 +4,7 @@ title: Show a radiator's current status and today's readings on the Radiator pag
 status: In Progress
 assignee: []
 created_date: '2026-09-26 05:40'
-updated_date: '2026-09-26 05:43'
+updated_date: '2026-09-26 06:17'
 labels: []
 dependencies: []
 ---
@@ -39,4 +39,6 @@ Web:
 Verified: eslint clean on the changed files; app_main.cpp compiles on its own. The full idf build is blocked by an in-progress edit to Radiators.tsx (unused NavLink import, TS6133), which is not part of this task. Not yet verified on hardware.
 
 Flagged, not fixed: radiator_get_handler and room_get_handler dereference a missing radiator/room (crash on an unknown id).
+
+Update: the Radiators.tsx edit has since been finished, and the full idf build (firmware and web app) now passes.
 <!-- SECTION:NOTES:END -->

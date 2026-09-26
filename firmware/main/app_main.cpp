@@ -114,6 +114,8 @@ static void ws_async_send(void *arg);
 static void ws_broadcast_json(cJSON *root);
 static void broadcast_home_state(void);
 static void broadcast_home_if_home_sensor(uint64_t node_id);
+static bool node_is_subscribed(uint64_t node_id);
+static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
 
 // Commissioning runs on the Matter task, but POST /api/nodes holds its connection open until
 // the outcome is known: the companion app's Matter extension has no other way to learn whether
@@ -241,6 +243,9 @@ void node_subscription_established_cb(uint64_t remote_node_id, uint32_t subscrip
     //
     mark_node_has_subscription(&g_node_manager, remote_node_id, subscription_id);
 
+    // The attempt has resolved, so its in-flight slot can go to the next queued node.
+    subscription_attempt_finished(remote_node_id);
+
     broadcast_home_if_home_sensor(remote_node_id);
 }
 
@@ -253,6 +258,12 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     bool create_new_subscription = false;
 
     mark_node_has_no_subscription(&g_node_manager, remote_node_id, subscription_id, &create_new_subscription);
+
+    // Also how an attempt ends that connected but never got as far as establishing -- esp-matter
+    // reports that as a termination with subscription id 0. A no-op after an established one.
+    subscription_attempt_finished(remote_node_id);
+
+    forget_outdoor_temperature_if_unsubscribed(remote_node_id);
 
     broadcast_home_if_home_sensor(remote_node_id);
 
@@ -279,6 +290,10 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
     bool create_new_subscription = false;
 
     mark_node_has_no_subscription(&g_node_manager, node_id, 0, &create_new_subscription);
+
+    subscription_attempt_finished(node_id);
+
+    forget_outdoor_temperature_if_unsubscribed(node_id);
 
     broadcast_home_if_home_sensor(node_id);
 
@@ -2855,7 +2870,18 @@ static cJSON *build_home_json(void)
 {
     cJSON *root = cJSON_CreateObject();
 
-    cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
+    // Null rather than the struct's initial 0 until the sensor has reported over a live
+    // subscription -- see forget_outdoor_temperature_if_unsubscribed().
+    //
+    if (g_home_manager.has_outdoor_temperature)
+    {
+        cJSON_AddNumberToObject(root, "outdoorTemperature", g_home_manager.outdoor_temperature);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "outdoorTemperature");
+    }
+
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorNodeId", g_home_manager.outdoor_temp_node_id);
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorEndpointId", g_home_manager.outdoor_temp_endpoint_id);
     cJSON_AddStringToObject(root, "outdoorTemperatureSensorSubscription", home_sensor_subscription_state(g_home_manager.outdoor_temp_node_id));
@@ -3012,6 +3038,44 @@ static void broadcast_home_state(void)
 // is pushed. Other nodes (radiator sensors) are filtered out, because broadcast_home_state also
 // recalculates the home and publishes it to MQTT.
 //
+// True while the node has a live subscription. A reading from a node without one is the last value
+// it happened to send, which could be hours old.
+//
+static bool node_is_subscribed(uint64_t node_id)
+{
+    if (node_id == 0)
+    {
+        return false;
+    }
+
+    matter_node_t *node = find_node(&g_node_manager, node_id);
+
+    return node != NULL && node->has_subscription;
+}
+
+// Called when a node's subscription ends or fails to establish. If that node is the outdoor
+// sensor, its reading stops being reported: the UI shows a dash, MQTT publishes null and the
+// history records the sentinel, rather than all three carrying the last value forward as if it
+// were current. The priming report of the next subscription sets it again.
+//
+static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id)
+{
+    if (node_id == 0 || node_id != g_home_manager.outdoor_temp_node_id || node_is_subscribed(node_id))
+    {
+        return;
+    }
+
+    if (g_home_manager.has_outdoor_temperature)
+    {
+        ESP_LOGI(TAG, "Outdoor temperature sensor lost its subscription; reading is no longer current");
+
+        g_home_manager.has_outdoor_temperature = false;
+
+        // Republishes the home state to MQTT without the stale reading.
+        update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+    }
+}
+
 static void broadcast_home_if_home_sensor(uint64_t node_id)
 {
     if (node_id == 0)
@@ -3130,13 +3194,19 @@ static esp_err_t home_put_handler(httpd_req_t *req)
 
     save_home_to_nvs(&g_home_manager);
 
-    // Copy the outdoor temperature from the sensor to the home manager so that it's available immediately.
+    // Copy the outdoor temperature from the sensor to the home manager so that it's available
+    // immediately -- but only from a node with a live subscription. get_endpoint_measured_value()
+    // returns ESP_OK whether or not it finds anything, so its result cannot be the test: an
+    // unbound sensor (node 0), or one that is not currently subscribed, leaves the reading absent
+    // rather than reporting a stale value or the initial 0.
     //
-    // The lookup failing is how unbinding the sensor clears the reading: a node id of 0 finds
-    // nothing, so has_outdoor_temperature goes false and the stale value stops being reported.
-    //
-    g_home_manager.has_outdoor_temperature =
-        get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature) == ESP_OK;
+    g_home_manager.has_outdoor_temperature = false;
+
+    if (node_is_subscribed(g_home_manager.outdoor_temp_node_id))
+    {
+        get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
+        g_home_manager.has_outdoor_temperature = true;
+    }
 
     broadcast_home_state();
 
