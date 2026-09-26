@@ -29,9 +29,15 @@
 
 #include <esp_http_server.h>
 
+#include <lwip/sockets.h>
+#include <lwip/inet.h>
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
 #include <cmath>
 #include <ctime>
 #include <atomic>
@@ -1476,9 +1482,10 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     return send_commission_outcome(req, &outcome);
 }
 
-// The node list both APIs serve. Shared by GET /api/nodes and GET /api/companion/nodes -- see
-// node_api.h. The companion app decodes every field here except `lastSeen`, which it ignores.
-cJSON *build_nodes_json(void)
+// The node list GET /api/nodes serves. This one feeds our own web UI and is free to carry
+// whatever the UI needs; the companion app's array is built separately in companion_api.cpp
+// against its published contract. Do not merge the two.
+static cJSON *build_nodes_json(void)
 {
     ESP_LOGI(TAG, "There are %u node(s)", g_node_manager.node_count);
 
@@ -2179,7 +2186,38 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
 
     cJSON_AddNumberToObject(root, "flowTemp", radiator->flow_temperature);
     cJSON_AddNumberToObject(root, "returnTemp", radiator->return_temperature);
+    cJSON_AddNumberToObject(root, "meanWaterTemperature", radiator->mean_water_temperature);
     cJSON_AddNumberToObject(root, "currentOutput", radiator->heat_output);
+
+    // The room this radiator is in. radiator_t::room_id is never assigned, so room->radiators[]
+    // is the only real link -- the same walk update_radiator_outputs() does. Null when the
+    // radiator has not been put in a room.
+    room_t *owning_room = NULL;
+
+    for (room_t *room = g_room_manager.room_list; room != NULL && owning_room == NULL; room = room->next)
+    {
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            if (room->radiators[r] == radiator->radiator_id)
+            {
+                owning_room = room;
+                break;
+            }
+        }
+    }
+
+    if (owning_room)
+    {
+        cJSON_AddNumberToObject(root, "roomId", owning_room->room_id);
+        cJSON_AddStringToObject(root, "roomName", owning_room->name);
+        cJSON_AddNumberToObject(root, "roomTemperature", owning_room->current_temperature);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "roomId");
+        cJSON_AddNullToObject(root, "roomName");
+        cJSON_AddNullToObject(root, "roomTemperature");
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_status(req, "200 Accepted");
@@ -2419,16 +2457,46 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// Orders two rooms by name for the listing below: case-insensitively ascending, falling back to
+// room_id so rooms sharing a name keep a stable order rather than swapping between requests.
+static int compare_rooms_by_name(const void *lhs, const void *rhs)
+{
+    const room_t *a = *(const room_t *const *)lhs;
+    const room_t *b = *(const room_t *const *)rhs;
+
+    int by_name = strcasecmp(a->name ? a->name : "", b->name ? b->name : "");
+
+    if (by_name != 0)
+    {
+        return by_name;
+    }
+
+    return (int)a->room_id - (int)b->room_id;
+}
+
 static esp_err_t rooms_get_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Getting all rooms ...");
 
     cJSON *root = cJSON_CreateArray();
 
-    room_t *room = g_room_manager.room_list;
+    // Sorted here rather than by keeping room_list ordered: the list's order is also its NVS
+    // order and what the history snapshot walks, and neither wants re-ordering every time a room
+    // is renamed. room_count is a uint8_t, so this is at most 255 pointers.
+    room_t *rooms[g_room_manager.room_count];
+    uint8_t room_count = 0;
 
-    while (room)
+    for (room_t *r = g_room_manager.room_list; r != NULL && room_count < g_room_manager.room_count; r = r->next)
     {
+        rooms[room_count++] = r;
+    }
+
+    qsort(rooms, room_count, sizeof(rooms[0]), compare_rooms_by_name);
+
+    for (uint8_t i = 0; i < room_count; i++)
+    {
+        room_t *room = rooms[i];
+
         cJSON *jNode = cJSON_CreateObject();
 
         cJSON_AddNumberToObject(jNode, "roomId", room->room_id);
@@ -2476,8 +2544,6 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "heatInput", total_radiator_output);
 
         cJSON_AddItemToArray(root, jNode);
-
-        room = room->next;
     }
 
     httpd_resp_set_type(req, "application/json");
@@ -2711,8 +2777,6 @@ static esp_err_t sensors_get_handler(httpd_req_t *req)
 
             for (uint16_t k = 0; k < endpoint.device_type_count; k++)
             {
-                uint32_t device_type_id = endpoint.device_type_ids[k];
-
                 cJSON *jSensor = cJSON_CreateObject();
                 cJSON_AddNumberToObject(jSensor, "nodeId", node->node_id);
                 cJSON_AddNumberToObject(jSensor, "deviceTypeId", endpoint.device_type_ids[k]);
@@ -2891,17 +2955,18 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "cop");
     }
 
-    // Neither of these has a source bound yet, so both are always null for now. They are
-    // here, and in the history record, so that wiring a source later is the only change
+    // The average of the rooms' temperatures, derived by update_home(); null while no room
+    // has a reading. dhwRunning has no source bound yet, so it is always null for now -- it
+    // is here, and in the history record, so that wiring a source later is the only change
     // needed.
     //
-    if (g_home_manager.has_internal_temperature)
+    if (g_home_manager.has_average_internal_temperature)
     {
-        cJSON_AddNumberToObject(root, "internalTemperature", g_home_manager.internal_temperature);
+        cJSON_AddNumberToObject(root, "averageInternalTemperature", g_home_manager.average_internal_temperature);
     }
     else
     {
-        cJSON_AddNullToObject(root, "internalTemperature");
+        cJSON_AddNullToObject(root, "averageInternalTemperature");
     }
 
     if (g_home_manager.has_dhw_running)
@@ -3178,9 +3243,60 @@ static esp_err_t wildcard_get_handler(httpd_req_t *req)
         return write_app_css(req);
     }
 
+    // An /api path that got this far matched no handler, and serving it index.html makes that
+    // impossible to see from the client: a JSON client gets 200 text/html and can only report
+    // that it couldn't read the response. Say what actually happened, and echo the URI -- the
+    // companion app shows a non-2xx body to the user, so a stray "//api/..." from a base address
+    // with a trailing slash names itself.
+    if (strncmp(req->uri, "/api/", 5) == 0 || strncmp(req->uri, "//api/", 6) == 0)
+    {
+        char message[CONFIG_HTTPD_MAX_URI_LEN + 32];
+        snprintf(message, sizeof(message), "No such endpoint: %s", req->uri);
+
+        ESP_LOGW(TAG, "Unmatched API request: %s", req->uri);
+
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
+
+        return ESP_OK;
+    }
+
     // Anything else is either "/" or one of the SPA's client-side routes
     // (/rooms, /devices, ...), all of which are served by index.html.
+    //
+    // Logged because this is where a request with an unexpected path lands, and index.html is a
+    // 200: a JSON client that ends up here can only report that it could not read the response,
+    // with nothing on the wire to say why. The URI is the whole diagnosis.
+    ESP_LOGI(TAG, "Serving the web app for %s", req->uri);
+
     return write_index_html(req);
+}
+
+// Logs who connected, so "the app can't reach us" and "the app is talking to something else"
+// stop looking the same from here. A client that never appears in this log never reached us.
+static esp_err_t on_socket_opened(httpd_handle_t hd, int sockfd)
+{
+    struct sockaddr_in6 addr;
+    socklen_t addr_len = sizeof(addr);
+
+    if (getpeername(sockfd, (struct sockaddr *)&addr, &addr_len) == 0)
+    {
+        char ip[INET6_ADDRSTRLEN] = {0};
+
+        // Ethernet clients arrive as IPv4-mapped IPv6, so skip the ::ffff: prefix when there is one.
+        inet_ntop(AF_INET6, &addr.sin6_addr, ip, sizeof(ip));
+
+        const char *mapped = strncmp(ip, "::ffff:", 7) == 0 ? ip + 7 : ip;
+
+        ESP_LOGI(TAG, "HTTP client connected from %s (fd %d)", mapped, sockfd);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "HTTP client connected (fd %d)", sockfd);
+    }
+
+    return ESP_OK;
 }
 
 static const httpd_uri_t ws_uri = {
@@ -3210,6 +3326,7 @@ httpd_handle_t start_webserver(void)
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
+    config.open_fn = on_socket_opened;
 
     ESP_LOGI(TAG, "Starting server on port: '%d'", config.server_port);
 
@@ -3370,7 +3487,7 @@ httpd_handle_t start_webserver(void)
         // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
         history_api_register(server);
         status_api_register(server);
-        companion_api_register(server);
+        companion_api_register(server, &g_node_manager);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 

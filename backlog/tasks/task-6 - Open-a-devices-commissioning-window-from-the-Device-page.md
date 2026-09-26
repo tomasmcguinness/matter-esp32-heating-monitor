@@ -1,14 +1,15 @@
 ---
 id: TASK-6
 title: Open a device's commissioning window from the Device page
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-17 05:14'
-updated_date: '2026-09-17 05:16'
+updated_date: '2026-09-25 05:27'
 labels:
   - firmware
   - web-app
 dependencies: []
+ordinal: 3000
 ---
 
 ## Description

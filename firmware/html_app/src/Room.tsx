@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, useNavigate, useParams } from "react-router"
 import Temperature from "./Temperature";
 import Power from "./Power";
+import RoomTodayChart from "./RoomTodayChart";
 
 function Room() {
 
@@ -78,6 +79,8 @@ function Room() {
           </div>
         </div>
       </div>
+
+      <RoomTodayChart roomId={room.roomId} />
 
       <div className="card" style={{ marginBottom: '5px' }}>
         <div className="card-header">

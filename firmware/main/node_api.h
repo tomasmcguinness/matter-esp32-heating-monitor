@@ -10,14 +10,15 @@
 extern "C" {
 #endif
 
-// The node operations, factored out of the HTTP handlers in app_main.cpp so that the web app's
-// /api/nodes and the companion app's /api/companion/nodes are the same code and cannot drift.
-// The companion API is a published contract (see companion_api.h), so a change here has to be
-// checked against both callers.
-
-// The array GET /api/nodes and GET /api/companion/nodes both return. The caller owns it and must
-// cJSON_Delete() it.
-cJSON *build_nodes_json(void);
+// The node *operations*, factored out of the HTTP handlers in app_main.cpp so the web UI's
+// /api/nodes and the companion app's /api/companion/nodes drive the same Matter code.
+//
+// Operations only. **Payload shapes are not shared**: /api/nodes feeds our own web UI and changes
+// whenever the UI needs it to, while /api/companion/* is a published contract owned by someone
+// else (see companion_api.h). Each builds its own JSON, which is the whole point of the separate
+// namespace -- a field added for the UI must not appear on the contract, and the contract must not
+// constrain the UI. The web UI's node array is built by app_main.cpp's build_nodes_json(); the
+// companion app's by companion_api.cpp's build_companion_nodes_json().
 
 // Everything the caller needs to answer a commissioning request. `message` is sent as the body of
 // a non-2xx, and the companion app shows it to the user, so keep it readable.

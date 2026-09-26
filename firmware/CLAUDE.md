@@ -34,7 +34,18 @@ A custom command in `main/CMakeLists.txt` runs `npm run build` in `html_app/` as
 idf.py flash monitor
 ```
 
-The board comes up on DHCP as soon as a cable is plugged in — there is no console provisioning step. The web UI is published over mDNS at `http://heating-monitor.local`.
+The board comes up on DHCP as soon as a cable is plugged in — there is no console provisioning step.
+
+**Reach it by IP, not by name.** `CONFIG_USE_MINIMAL_MDNS=y` gives UDP 5353 to CHIP's own mDNS
+responder, so `start_mdns_service()` in `app_main.cpp` is commented out and **nothing advertises
+`heating-monitor.local`**. The name does not resolve to this board, and handing it to a client is
+worse than useless: the client reaches whichever other machine on the network answers, gets that
+machine's web page, and reports an unreadable response while this device logs no request at all.
+That cost the companion app a working device list once already — see the `/api/companion/info`
+comment in `companion_api.cpp`. Re-enabling `start_mdns_service()` means setting
+`CONFIG_USE_MINIMAL_MDNS=n` first, in both `sdkconfig` and `sdkconfig.defaults`.
+
+The IP is on the Settings page, and `GET /api/companion/info` reports it as `ip` and `url`.
 
 ### Web App Development
 ```sh
@@ -232,12 +243,34 @@ gone: MCC is added by address and the generic API has no place to put a credenti
 `DELETE` here will commission and unpair for anyone who can reach port 80, exactly as the web UI's
 equivalents already did.
 
-Every operation is shared with the web UI's `/api/nodes` endpoints through `node_api.h` —
-`build_nodes_json()`, `commission_node()`, `unpair_node()`, `rename_node()` — which is what stops
-the two drifting. They are implemented in `app_main.cpp` rather than in `companion_api.cpp` so the
-commissioning statics and the CHIP pairing callbacks stay in one translation unit. `node_api.h`
-also carries `read_json_body()`, the NUL-terminating body read that most of the older handlers do
-by hand and get subtly wrong.
+**The operations are shared; the payloads are not.** `node_api.h` carries
+`commission_node()`, `unpair_node()` and `rename_node()`, implemented in `app_main.cpp` so the
+commissioning statics and the CHIP pairing callbacks stay in one translation unit, plus
+`read_json_body()` — the NUL-terminating body read most of the older handlers do by hand and get
+subtly wrong. Both APIs drive the same Matter code through those.
+
+The node array is built **twice, on purpose**: `build_nodes_json()` in `app_main.cpp` for
+`/api/nodes`, and `build_companion_nodes_json()` in `companion_api.cpp` for
+`/api/companion/nodes`. That is what the separate namespace is for. `/api/nodes` feeds our web UI
+and carries whatever the UI needs — `lastSeen` today, more later — and none of that may leak onto
+the contract; equally, the contract must not dictate what the UI can have. Sharing one builder
+between them collapses that distinction, and did: the UI's `lastSeen` ended up on the contract
+endpoint. Add a field to one, not both.
+
+`build_companion_nodes_json()` sends **less than the contract allows, on purpose**. Every field
+bar `nodeId` is optional with a documented default, and the app only uses the name (`nodeName`,
+falling back to `productName` then the id), `vendorName` for the subtitle, `hasSubscription`, and
+the endpoints with their device types — the same set `matter-esp32-controller` and
+`matter-esp32-home-energy-manager` send. So `isIcd`, `powerSource`, `batteryPercent`,
+`batteryVoltage` and `measuredValue` are left off: they are real readings, but the app doesn't
+show them, and a list the app refreshes on every pull shouldn't carry a per-endpoint sensor feed.
+They stay on `/api/nodes`, where the web UI does show them. `extAddress` is left off for a
+different reason — there is no working source for it, since the
+`ThreadNetworkDiagnostics::ExtAddress` subscription reads 0 for every node, and a missing value
+and a 0 decode identically on the app's side. Restore it when that read is fixed.
+
+The rule for both directions: a field goes on the companion array because the app has a use for
+it, and on `/api/nodes` because the web UI does. Neither is a reason to add it to the other.
 
 `companion_api.cpp` includes `device_identity.h`, not `app_main.h`: the latter declares
 `attribute_data_read_done` in terms of `ScopedMemoryBufferWithSize` and only compiles after
@@ -265,8 +298,26 @@ five; count the registrations before adding more.
 
 React 19 + TypeScript, built with Vite. Uses:
 - **React Router v7** for client-side routing (Home, Layout, Rooms, Radiators, Devices, History)
-- **uPlot** for the History page's charts — chosen over heavier chart libraries because the
-  whole bundle is embedded in the firmware image and ships in every OTA
+- **uPlot** for the charts — chosen over heavier chart libraries because the whole bundle is
+  embedded in the firmware image and ships in every OTA
+
+`HistoryChart.tsx`'s `Chart` wraps every plot in a `ChartCard`, whose header carries the title, so
+uPlot is given no `title` of its own. A chart's empty and error states have to render their own
+`ChartCard` — otherwise the panel disappears when there is nothing to draw and the page shifts
+under it. `Chart` has one y axis by default; a series with `axis: "right"` moves to a second one,
+which is how a radiator's output in watts sits alongside its flow and return in °C. Mixing units on
+the *same* axis is still not possible, so `History.tsx` keeps one chart per unit.
+
+**Recorded quantities are charted; derived ones are computed in the browser.** A radiator's heat
+output is not on the card — `rec_radiator_t` stores flow and return only — so `RoomHistory.tsx`
+derives it per point with the same arithmetic as `update_radiator_outputs()`
+(`rated / (50 / ΔT)^1.3`, ΔT being mean water temperature against room air). That needs the rated
+output at dT 50, which the room payload does not carry, so the page fetches `GET /api/radiators`
+once for the whole set, and the room's own series doubles as the room-temperature lookup. The join
+is **on the timestamp, not the array index**: all three kinds share one sampling interval, but
+`stride` is computed per file from that file's slot count, so a radiator whose file started mid-day
+buckets differently from the room's. Keep any new derivation on this side of the wire — see the note
+on `history_api.c` above.
 - **`react-use-websocket`** via `WSContext.jsx` for real-time data updates from the device
 - **Bootstrap** (icons) for styling
 

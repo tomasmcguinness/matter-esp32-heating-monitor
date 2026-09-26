@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 
 interface DeviceInfo {
   name: string;
-  host: string;
-  url: string;
+  url: string | null;
   ip: string | null;
 }
 
@@ -40,9 +39,16 @@ function Settings() {
       {info && <>
         <h2>Companion App</h2>
         <p>
-          The Matter Controller Companion app adds this controller by address. Enter the URL
-          below, or the IP address if the hostname doesn't resolve on your phone. There is no
-          pairing step and no code to scan.
+          The Matter Controller Companion app adds this controller by address. Type the address
+          below into the app exactly as it appears &mdash; scheme and IP, no trailing slash. There
+          is no pairing step and no code to scan.
+        </p>
+
+        <p className="text-muted">
+          It has to be the IP address. This device does not answer to{' '}
+          <code>heating-monitor.local</code> &mdash; the Matter stack owns the mDNS port, so
+          nothing advertises that name, and a phone asked to resolve it will reach some other
+          machine on your network instead. The address changes if the DHCP lease does.
         </p>
 
         <table className="table table-bordered" style={{ maxWidth: '520px' }}>
@@ -52,16 +58,12 @@ function Settings() {
               <td>{info.name}</td>
             </tr>
             <tr>
-              <th>URL</th>
-              <td><code>{info.url}</code></td>
-            </tr>
-            <tr>
-              <th>Hostname</th>
-              <td>{info.host}</td>
-            </tr>
-            <tr>
-              <th>IP Address</th>
-              <td>{info.ip ? <code>http://{info.ip}</code> : <em>Not available</em>}</td>
+              <th>Address</th>
+              <td>
+                {info.url
+                  ? <code>{info.url}</code>
+                  : <em>No network address yet</em>}
+              </td>
             </tr>
           </tbody>
         </table>

@@ -104,7 +104,7 @@ static const char *field_names_for(uint8_t kind)
     switch (kind) {
     case KIND_HOME: return "\"heatPowerW\",\"elecPowerW\",\"flowTempC100\","
                            "\"returnTempC100\",\"flowLph\",\"outdoorTempC100\","
-                           "\"internalTempC100\",\"copX100\",\"dhwRunning\","
+                           "\"averageInternalTempC100\",\"copX100\",\"dhwRunning\","
                            "\"elecVoltageDv\",\"elecCurrentCa\","
                            "\"reserved0\",\"reserved1\",\"reserved2\"";
     case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"reserved1\",\"reserved2\"";

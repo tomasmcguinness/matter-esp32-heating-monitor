@@ -229,10 +229,24 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
     home_manager->total_measured_heat_loss_at_target_temperature = 0;
     home_manager->total_measured_heat_loss_at_current_temperature = 0;
 
+    // Average indoor temperature: a simple mean of every room with a reading, each room counting
+    // equally. A room is left out when no sensor is bound to it, or while its sensor has not
+    // reported -- current_temperature is 0 until then, and an exact 0.00 degC indoors is that
+    // placeholder in practice rather than a real reading. Absent, not zero, when no room qualifies.
+    //
+    int32_t indoor_sum = 0;
+    uint8_t indoor_count = 0;
+
     room_t *room = room_manager->room_list;
 
     while (room)
     {
+        if (room->room_temperature_node_id != 0 && room->current_temperature != 0)
+        {
+            indoor_sum += room->current_temperature;
+            indoor_count++;
+        }
+
         home_manager->total_predicted_heat_loss_per_degree += room->predicted_heat_loss_per_degree;
         if (room->measured_heat_loss_per_degree > 0)
         {
@@ -245,6 +259,9 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
         room = room->next;
     }
+
+    home_manager->has_average_internal_temperature = indoor_count > 0;
+    home_manager->average_internal_temperature = indoor_count ? (int16_t)(indoor_sum / indoor_count) : 0;
 
     // Compute total radiator output across all rooms.
     radiator_t *radiator = radiator_manager->radiator_list;
@@ -318,8 +335,8 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     add_reading_or_null(root, "outdoor_temperature", home_manager->has_outdoor_temperature,
                         (double)home_manager->outdoor_temperature / 100.0);
-    add_reading_or_null(root, "internal_temperature", home_manager->has_internal_temperature,
-                        (double)home_manager->internal_temperature / 100.0);
+    add_reading_or_null(root, "average_internal_temperature", home_manager->has_average_internal_temperature,
+                        (double)home_manager->average_internal_temperature / 100.0);
     add_reading_or_null(root, "cop", home_manager->has_cop,
                         (double)home_manager->cop_x100 / 100.0);
     add_reading_or_null(root, "electrical_voltage", home_manager->has_electrical_voltage,

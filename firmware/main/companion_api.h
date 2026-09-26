@@ -3,6 +3,8 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 
+#include "managers/node_manager.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,9 +18,12 @@ extern "C" {
 // bodies and status codes here follow that repo's README and must not be changed to suit this
 // firmware -- change the app first.
 //
-// Every operation is shared with the web app's /api/nodes endpoints through node_api.h, so the
-// two can never drift.
-esp_err_t companion_api_register(httpd_handle_t server);
+// The Matter *operations* are shared with the web UI's /api/nodes endpoints through node_api.h,
+// so both drive the same commissioning, unpair and rename code. The **payloads are not shared**:
+// this file builds its own node array against the contract above, and /api/nodes builds its own
+// for the web UI. That separation is the reason for the /companion/ namespace -- neither side's
+// needs may leak into the other's response.
+esp_err_t companion_api_register(httpd_handle_t server, node_manager_t *node_manager);
 
 #ifdef __cplusplus
 }

@@ -5,12 +5,13 @@ status: Done
 assignee:
   - tomas@tomasmcguinness.com
 created_date: '2026-09-15 14:19'
-updated_date: '2026-09-15 18:40'
+updated_date: '2026-09-25 05:27'
 labels:
   - firmware
   - web-app
 dependencies: []
 priority: medium
+ordinal: 2000
 ---
 
 ## Description

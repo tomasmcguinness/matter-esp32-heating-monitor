@@ -98,7 +98,7 @@ typedef struct __attribute__((packed)) {
     int16_t  return_temp_c100;    // 0.01 degC
     uint16_t flow_lph;            // Heat Meter flow, l/h
     int16_t  outdoor_temp_c100;   // 0.01 degC
-    int16_t  internal_temp_c100;  // 0.01 degC -- no source bound yet
+    int16_t  average_internal_temp_c100; // 0.01 degC, mean of room temps, derived by update_home()
     int16_t  cop_x100;            // derived by update_home(), 0.01
     int16_t  dhw_running;         // 0 or 1 -- no source bound yet
     uint16_t elec_voltage_dv;     // Voltage,       mV -> 0.1 V

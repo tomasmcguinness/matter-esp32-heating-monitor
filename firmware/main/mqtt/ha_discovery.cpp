@@ -17,10 +17,10 @@ static const char *TAG = "ha_discovery";
 // See the cJSON_Add* calls at the end of update_home() in managers/calculations_manager.cpp --
 // the `key` column must match those key names exactly.
 //
-// Deliberately absent: internal_temperature and dhw_running. Nothing sets has_internal_temperature
-// or has_dhw_running anywhere, so both would be permanently unknown entities, which in HA cannot
-// be told apart from a sensor that has broken. Adding either later is one row here, picked up on
-// the next reconnect -- note dhw_running needs "binary_sensor" rather than "sensor".
+// Deliberately absent: dhw_running. Nothing sets has_dhw_running anywhere, so it would be a
+// permanently unknown entity, which in HA cannot be told apart from a sensor that has broken.
+// Adding it later is one row here, picked up on the next reconnect -- note it needs
+// "binary_sensor" rather than "sensor".
 struct ha_sensor_t {
     const char *key;          // key in the home JSON payload, and the component id
     const char *name;         // entity name shown in Home Assistant
@@ -35,6 +35,7 @@ static const ha_sensor_t HOME_SENSORS[] = {
     {"return_temperature",                   "Return temperature",  "temperature",      "°C"},
     {"flow_rate",                            "Flow rate",           "volume_flow_rate", "L/h"},
     {"outdoor_temperature",                  "Outdoor temperature", "temperature",      "°C"},
+    {"average_internal_temperature",         "Average indoor temperature", "temperature", "°C"},
     {"cop",                                  "COP",                 NULL,               NULL},
     {"electrical_voltage",                   "Voltage",             "voltage",          "V"},
     {"electrical_current",                   "Current",             "current",          "A"},

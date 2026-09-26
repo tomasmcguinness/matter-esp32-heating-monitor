@@ -1,5 +1,5 @@
 import { useContext, useEffect, useState } from "react"
-import { NavLink, useNavigate } from "react-router"
+import { useNavigate } from "react-router"
 import Temperature from "./Temperature.tsx";
 import { WebSocketContext } from './WSContext.jsx';
 import Power from "./Power.tsx";
@@ -70,7 +70,7 @@ function Radiators() {
 
   return (
     <>
-      <h1>Radiators <NavLink className="btn btn-primary action-button" to="/radiators/add">Add Radiator</NavLink> </h1>
+      <h1>Radiators</h1>
       <hr />
       {radiators.length === 0 && <div className="alert alert-info">There are no radiators. Add one!</div>}
       {radiators.length > 0 && <table className="table table-striped table-bordered">

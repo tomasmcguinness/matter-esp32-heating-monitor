@@ -19,7 +19,7 @@ const FIELDS = [
   "returnTempC100",
   "flowLph",
   "outdoorTempC100",
-  "internalTempC100",
+  "averageInternalTempC100",
   "copX100",
   "dhwRunning",
   "elecVoltageDv",
@@ -37,7 +37,7 @@ const COL = {
   flowTemp: 3,
   returnTemp: 4,
   outdoorTemp: 6,
-  internalTemp: 7,
+  averageInternalTemp: 7,
   cop: 8,
 } as const;
 
@@ -50,7 +50,7 @@ const TEMP_SERIES = [
   { label: "Flow", stroke: "#d9534f" },
   { label: "Return", stroke: "#5bc0de" },
   { label: "Outdoor", stroke: "#5cb85c" },
-  { label: "Indoor", stroke: "#f0ad4e" },
+  { label: "Average Indoor", stroke: "#f0ad4e" },
 ];
 
 const COP_SERIES = [{ label: "COP", stroke: "#9354d9" }];
@@ -103,7 +103,7 @@ function History() {
   const tempData = hasPoints
     ? toPlotData(
         points,
-        [COL.flowTemp, COL.returnTemp, COL.outdoorTemp, COL.internalTemp],
+        [COL.flowTemp, COL.returnTemp, COL.outdoorTemp, COL.averageInternalTemp],
         [0.01, 0.01, 0.01, 0.01]
       )
     : null;

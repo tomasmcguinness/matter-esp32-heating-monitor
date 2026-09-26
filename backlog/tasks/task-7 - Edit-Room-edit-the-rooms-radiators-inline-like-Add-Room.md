@@ -1,13 +1,14 @@
 ---
 id: TASK-7
 title: 'Edit Room: edit the room''s radiators inline, like Add Room'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-17 05:40'
-updated_date: '2026-09-17 05:42'
+updated_date: '2026-09-25 05:27'
 labels:
   - web-app
 dependencies: []
+ordinal: 4000
 ---
 
 ## Description

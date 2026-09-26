@@ -3,16 +3,54 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { shiftDate, todayISO } from "./historyData";
 
+export type ChartSeries = {
+  label: string;
+  stroke: string;
+  // Series on the right-hand axis, for a quantity that cannot share the left one's scale --
+  // watts against degrees, say. Everything else shares the left axis.
+  axis?: "right";
+};
+
+// Every chart joins this group, so hovering one draws the cursor at the same time on the others
+// and they can be read against each other. Only one page is mounted at a time, so a single
+// app-wide key is enough. uPlot syncs on the x value rather than the pixel, so charts whose data
+// starts at different times still line up.
+const CURSOR_SYNC_KEY = "history";
+
 export type ChartProps = {
   title: string;
   data: uPlot.AlignedData | null;
   // Compared by identity in the effect below, so keep this a module-level constant or memoise it.
-  series: { label: string; stroke: string }[];
+  series: ChartSeries[];
   unit: string;
   decimals?: number;
+  // Supply these only when some series sets axis: "right".
+  rightUnit?: string;
+  rightDecimals?: number;
 };
 
-export function Chart({ title, data, series, unit, decimals = 1 }: ChartProps) {
+// Every chart sits in a card with its title as the header, so a page of charts reads as a stack of
+// panels rather than a run of loose plots. Exported because a chart's empty and error states need
+// the same box -- a radiator with no readings should still occupy its panel rather than collapsing
+// the page around it.
+export function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="card" style={{ marginBottom: "20px" }}>
+      <div className="card-header">{title}</div>
+      <div className="card-body">{children}</div>
+    </div>
+  );
+}
+
+export function Chart({
+  title,
+  data,
+  series,
+  unit,
+  decimals = 1,
+  rightUnit,
+  rightDecimals = 0,
+}: ChartProps) {
   const holder = useRef<HTMLDivElement>(null);
   const plot = useRef<uPlot | null>(null);
 
@@ -27,23 +65,44 @@ export function Chart({ title, data, series, unit, decimals = 1 }: ChartProps) {
       plot.current?.destroy();
       plot.current = new uPlot(
         {
-          title,
+          // No `title` here: ChartCard's header carries it, and uPlot would draw a second one.
           width: holder.current!.clientWidth,
           height: 260,
+          // setSeries is off because the charts on a page carry different series: toggling one in
+          // a legend must not hide whatever happens to sit at the same index in the others.
+          cursor: { sync: { key: CURSOR_SYNC_KEY, setSeries: false } },
           // Gaps: the API sends null for slots with no reading, and this keeps uPlot from
           // drawing a line across an outage.
           series: [
             { label: "Time" },
-            ...series.map((s) => ({
-              label: s.label,
-              stroke: s.stroke,
-              width: 1.5,
-              spanGaps: false,
-              value: (_u: uPlot, v: number | null) =>
-                v === null ? "--" : `${v.toFixed(decimals)} ${unit}`,
-            })),
+            ...series.map((s) => {
+              const right = s.axis === "right";
+              const seriesUnit = right ? rightUnit ?? "" : unit;
+              const seriesDecimals = right ? rightDecimals : decimals;
+
+              return {
+                label: s.label,
+                stroke: s.stroke,
+                width: 1.5,
+                spanGaps: false,
+                scale: right ? "y2" : "y",
+                value: (_u: uPlot, v: number | null) =>
+                  v === null ? "--" : `${v.toFixed(seriesDecimals)} ${seriesUnit}`,
+              };
+            }),
           ],
-          axes: [{}, { label: unit }],
+          // uPlot creates a scale on demand from a series or axis that names one, but declaring it
+          // keeps that an explicit part of the config rather than a behaviour to rely on.
+          scales: rightUnit ? { y2: {} } : undefined,
+          axes: [
+            {},
+            { label: unit },
+            // Only drawn when something is on it. Its grid is off so the two axes' gridlines
+            // don't overlay each other at unrelated values.
+            ...(rightUnit
+              ? [{ label: rightUnit, scale: "y2", side: 1, grid: { show: false } }]
+              : []),
+          ],
         },
         data,
         holder.current!
@@ -57,9 +116,13 @@ export function Chart({ title, data, series, unit, decimals = 1 }: ChartProps) {
       plot.current?.destroy();
       plot.current = null;
     };
-  }, [data, title, series, unit, decimals]);
+  }, [data, series, unit, decimals, rightUnit, rightDecimals]);
 
-  return <div ref={holder} style={{ marginBottom: "20px" }} />;
+  return (
+    <ChartCard title={title}>
+      <div ref={holder} />
+    </ChartCard>
+  );
 }
 
 type DateToolbarProps = {

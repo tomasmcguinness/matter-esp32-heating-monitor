@@ -49,7 +49,9 @@ function Rooms() {
   let totalPredictedHeatLoss = homeData.totalPredictedHeatLoss ?? 0;
   let totalMeasuredHeatLoss = homeData.totalMeasuredHeatLoss ?? 0;
 
-  let rooms = roomList.sort((a: any, b: any) => a.name.localeCompare(b.name)).map((n: any) => {
+  // GET /api/rooms already returns these in name order; sorted again here so the view does not
+  // depend on that, on a copy because .sort() would otherwise reorder the state array in place.
+  let rooms = [...roomList].sort((a: any, b: any) => a.name.localeCompare(b.name)).map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
       <td><Temperature>{n.currentTemperature}</Temperature></td>

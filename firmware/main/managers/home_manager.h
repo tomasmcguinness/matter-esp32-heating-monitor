@@ -44,10 +44,10 @@ typedef struct {
     bool has_heat_meter_power;
     int64_t heat_meter_power_mw;
 
-    // Indoor temperature representative of the home as a whole. No sensor is bound to this
-    // yet, so it stays absent and the history logs it as "no reading".
-    bool has_internal_temperature;
-    int16_t internal_temperature;
+    // Indoor temperature representative of the home as a whole, 0.01 degC: the mean of the
+    // rooms' temperatures, derived by update_home(). Absent while no room has a reading.
+    bool has_average_internal_temperature;
+    int16_t average_internal_temperature;
 
     // True while the heat source is producing domestic hot water rather than space heating.
     // No source is bound to this yet.

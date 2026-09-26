@@ -1,12 +1,13 @@
 ---
 id: TASK-8
 title: Add a Layout tab showing the heating circuit as a live schematic
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-19 05:45'
-updated_date: '2026-09-19 05:57'
+updated_date: '2026-09-25 05:27'
 labels: []
 dependencies: []
+ordinal: 5000
 ---
 
 ## Description
