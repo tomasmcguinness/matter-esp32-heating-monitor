@@ -100,7 +100,15 @@ static void ra_recv_handler(struct netif * netif, const uint8_t * icmp_payload, 
                 route.prefix           = prefix;
                 route.preference       = preference;
                 route.lifetime_seconds = lwip_ntohl(route_option.route_lifetime);
-                ESP_LOGI(TAG, "prefix %s lifetime %" PRIu32, ip6addr_ntoa(&prefix), route.lifetime_seconds);
+                // Which router sent it: several border routers can advertise the same prefix, and
+                // lwip_hook_nd6_get_gw sends everything through only one of them.
+                // ip6addr_ntoa shares one static buffer, so each address gets its own.
+                char prefix_str[IP6ADDR_STRLEN_MAX];
+                char router_str[IP6ADDR_STRLEN_MAX];
+                ip6addr_ntoa_r(&prefix, prefix_str, sizeof(prefix_str));
+                ip6addr_ntoa_r(src_addr, router_str, sizeof(router_str));
+                ESP_LOGI(TAG, "prefix %s/%u lifetime %" PRIu32 " preference %d from router %s", prefix_str,
+                         route.prefix_length, route.lifetime_seconds, preference, router_str);
                 if (esp_route_table_add_route_entry(&route) == NULL)
                 {
                     ESP_LOGI(TAG, "Failed to add route table entry");

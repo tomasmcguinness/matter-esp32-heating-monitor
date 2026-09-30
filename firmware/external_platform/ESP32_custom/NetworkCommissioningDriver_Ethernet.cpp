@@ -35,7 +35,9 @@
 #include "lwip/mld6.h"
 #include "lwip/netif.h"
 #include <platform/ESP32_custom/NetworkCommissioningDriver.h>
+#ifdef CONFIG_ENABLE_ROUTE_HOOK
 #include <platform/ESP32_custom/route_hook/ESP32RouteHook.h>
+#endif
 
 // Waveshare ESP32-S3-ETH W5500 wiring.
 #define ETH_SPI_HOST SPI2_HOST
@@ -107,11 +109,16 @@ static void on_eth_event(void * esp_netif, esp_event_base_t event_base, int32_t 
             netif_set_flags(lwip_netif, NETIF_FLAG_MLD6);
         }
         ESP_ERROR_CHECK(esp_netif_create_ip6_linklocal(eth_netif));
+#ifdef CONFIG_ENABLE_ROUTE_HOOK
         // Install the lwIP route hook so that route information options in the border
         // router's RAs are honoured. On Wi-Fi builds ConnectivityManagerImpl_WiFi does
         // this for us; on Ethernet nothing else will, and without it the controller has
         // no route to the Thread sensors' off-mesh addresses.
+        //
+        // Not needed, and not built, when CONFIG_LWIP_IPV6_ND6_ROUTE_INFO_OPTION_SUPPORT
+        // is on: lwIP then processes the RIOs itself.
         esp_route_hook_init(eth_netif);
+#endif
     }
     break;
     case ETHERNET_EVENT_DISCONNECTED:

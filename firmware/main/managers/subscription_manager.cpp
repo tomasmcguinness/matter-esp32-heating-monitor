@@ -22,8 +22,8 @@ static const char *TAG = "subscription_manager";
 #define SUBSCRIPTION_TASK_STACK 4096
 #define SUBSCRIPTION_TASK_PRIORITY 5
 
-// Minimum interval between subscription attempts. A node that keeps failing re-queues itself
-// immediately, so without this the worker would spin on an unreachable sensor.
+// Minimum interval between subscription attempts, so a burst of triggers (a restart, the sweep)
+// is spread out rather than started all at once.
 #define SUBSCRIBE_PACING_MS 1000
 
 // How often to look for nodes that ought to have a subscription but don't.
@@ -44,6 +44,19 @@ static const char *TAG = "subscription_manager";
 // How often the worker rechecks for a free slot while all of them are in use.
 #define SLOT_POLL_MS 250
 
+// How long a node that failed to subscribe waits before it is tried again. Retrying at once only
+// makes sense if the cause has gone, and the usual causes -- the node is asleep or unreachable, or
+// CHIP is out of sessions -- have not gone a second later. Retrying straight away cycled every
+// blocked node through a fresh mDNS lookup and an instant failure every few seconds.
+#define RETRY_DELAY_MS 30000
+
+// Nodes that can wait for a delayed retry at once. More than there are nodes on the network; if it
+// ever fills, a node is queued straight away instead, as before.
+#define MAX_DEFERRED_RETRIES 32
+
+// How often the worker wakes to release retries that have come due, while the queue is empty.
+#define RETRY_POLL_MS 1000
+
 // Subscription reporting intervals, unchanged from the call sites this replaces.
 #define SUBSCRIBE_MIN_INTERVAL 0
 #define SUBSCRIBE_MAX_INTERVAL 60
@@ -60,6 +73,15 @@ struct attempt_slot_t {
 
 static SemaphoreHandle_t s_slots_mutex = NULL;
 static attempt_slot_t s_slots[MAX_ATTEMPTS_IN_FLIGHT];
+
+// Nodes waiting out RETRY_DELAY_MS before they go back on the queue. Written from the CHIP task
+// (failure callbacks) and read by the worker, so it is also only touched under s_slots_mutex.
+struct deferred_retry_t {
+    uint64_t node_id; // 0 when the entry is free
+    TickType_t due;
+};
+
+static deferred_retry_t s_deferred[MAX_DEFERRED_RETRIES];
 
 // Frees any slot held longer than ATTEMPT_TIMEOUT_MS. Caller holds s_slots_mutex.
 static void reclaim_expired_slots_locked(void)
@@ -135,6 +157,47 @@ void subscription_attempt_finished(uint64_t node_id)
     }
 
     xSemaphoreGive(s_slots_mutex);
+}
+
+// Drops any delayed retry waiting for node_id. Caller holds s_slots_mutex.
+static void cancel_deferred_retry_locked(uint64_t node_id)
+{
+    for (size_t i = 0; i < MAX_DEFERRED_RETRIES; i++)
+    {
+        if (s_deferred[i].node_id == node_id)
+        {
+            s_deferred[i].node_id = 0;
+        }
+    }
+}
+
+// Puts every node whose retry delay has run out back on the queue.
+static void release_due_retries(void)
+{
+    uint64_t due[MAX_DEFERRED_RETRIES];
+    size_t count = 0;
+
+    xSemaphoreTake(s_slots_mutex, portMAX_DELAY);
+
+    TickType_t now = xTaskGetTickCount();
+
+    for (size_t i = 0; i < MAX_DEFERRED_RETRIES; i++)
+    {
+        // Signed difference, so a due time the tick count has wrapped past still counts as due.
+        if (s_deferred[i].node_id != 0 && (int32_t)(now - s_deferred[i].due) >= 0)
+        {
+            due[count++] = s_deferred[i].node_id;
+            s_deferred[i].node_id = 0;
+        }
+    }
+
+    xSemaphoreGive(s_slots_mutex);
+
+    // Outside the lock: enqueue_subscription takes it again.
+    for (size_t i = 0; i < count; i++)
+    {
+        enqueue_subscription(due[i]);
+    }
 }
 
 /**
@@ -296,12 +359,20 @@ static void subscription_task(void *arg)
 {
     ESP_LOGI(TAG, "Subscription worker started");
 
+    // The sweep runs once the queue has been quiet for SWEEP_INTERVAL_MS. The worker wakes more
+    // often than that to release delayed retries, so the quiet time is tracked here.
+    TickType_t last_activity = xTaskGetTickCount();
+
     while (true)
     {
         uint64_t node_id = 0;
 
-        if (xQueueReceive(s_queue, &node_id, pdMS_TO_TICKS(SWEEP_INTERVAL_MS)) == pdTRUE)
+        release_due_retries();
+
+        if (xQueueReceive(s_queue, &node_id, pdMS_TO_TICKS(RETRY_POLL_MS)) == pdTRUE)
         {
+            last_activity = xTaskGetTickCount();
+
             // State may have moved on while the request sat in the queue.
             matter_node_t *node = find_node(s_node_manager, node_id);
 
@@ -334,9 +405,10 @@ static void subscription_task(void *arg)
 
             vTaskDelay(pdMS_TO_TICKS(SUBSCRIBE_PACING_MS));
         }
-        else
+        else if ((xTaskGetTickCount() - last_activity) >= pdMS_TO_TICKS(SWEEP_INTERVAL_MS))
         {
             sweep_for_unsubscribed_nodes();
+            last_activity = xTaskGetTickCount();
         }
     }
 }
@@ -388,6 +460,11 @@ esp_err_t enqueue_subscription(uint64_t node_id)
     // Marking it pending is also what stops the sweep queueing the same node again.
     mark_node_subscription_pending(s_node_manager, node_id);
 
+    // Asked for now (a check-in, say), so a delayed retry still waiting would only be a duplicate.
+    xSemaphoreTake(s_slots_mutex, portMAX_DELAY);
+    cancel_deferred_retry_locked(node_id);
+    xSemaphoreGive(s_slots_mutex);
+
     if (xQueueSend(s_queue, &node_id, 0) != pdTRUE)
     {
         // Clear the flag again, otherwise the node would look permanently in-flight and the sweep
@@ -400,6 +477,47 @@ esp_err_t enqueue_subscription(uint64_t node_id)
     }
 
     ESP_LOGI(TAG, "Queued subscription for node 0x%016llX", node_id);
+
+    return ESP_OK;
+}
+
+esp_err_t enqueue_subscription_after_failure(uint64_t node_id)
+{
+    if (!s_queue)
+    {
+        ESP_LOGE(TAG, "Subscription manager not initialised");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Pending while it waits, so the sweep leaves it alone.
+    mark_node_subscription_pending(s_node_manager, node_id);
+
+    xSemaphoreTake(s_slots_mutex, portMAX_DELAY);
+
+    cancel_deferred_retry_locked(node_id);
+
+    bool deferred = false;
+
+    for (size_t i = 0; i < MAX_DEFERRED_RETRIES; i++)
+    {
+        if (s_deferred[i].node_id == 0)
+        {
+            s_deferred[i].node_id = node_id;
+            s_deferred[i].due = xTaskGetTickCount() + pdMS_TO_TICKS(RETRY_DELAY_MS);
+            deferred = true;
+            break;
+        }
+    }
+
+    xSemaphoreGive(s_slots_mutex);
+
+    if (!deferred)
+    {
+        ESP_LOGW(TAG, "No room to delay the retry for node 0x%016llX; queueing it now", node_id);
+        return enqueue_subscription(node_id);
+    }
+
+    ESP_LOGI(TAG, "Retrying subscription for node 0x%016llX in %d s", node_id, RETRY_DELAY_MS / 1000);
 
     return ESP_OK;
 }

@@ -168,6 +168,23 @@ const ip6_addr_t * lwip_hook_nd6_get_gw(struct netif * netif, const ip6_addr_t *
         }
     }
 
+    // Log only when the chosen gateway changes: this runs for every packet sent off-link. With
+    // several border routers advertising one prefix, this shows which one we actually send through.
+    static ip6_addr_t s_last_gateway;
+    static bool s_have_last_gateway = false;
+
+    if (route && (!s_have_last_gateway || !ip6_addr_cmp_zoneless(&s_last_gateway, &route->gateway)))
+    {
+        char dest_str[IP6ADDR_STRLEN_MAX];
+        char gateway_str[IP6ADDR_STRLEN_MAX];
+        ip6addr_ntoa_r(dest, dest_str, sizeof(dest_str));
+        ip6addr_ntoa_r(&route->gateway, gateway_str, sizeof(gateway_str));
+        ESP_LOGI(TAG, "Routing to %s via gateway %s", dest_str, gateway_str);
+
+        s_last_gateway      = route->gateway;
+        s_have_last_gateway = true;
+    }
+
     if (route)
     {
         return &route->gateway;

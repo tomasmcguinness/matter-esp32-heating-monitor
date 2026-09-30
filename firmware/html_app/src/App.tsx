@@ -1,4 +1,4 @@
-import { NavLink, Routes, Route } from "react-router";
+import { NavLink, Routes, Route, useLocation } from "react-router";
 import './App.css'
 import Home from './Home.tsx'
 import EditHome from './EditHome.tsx'
@@ -27,6 +27,11 @@ import Settings from "./Settings.tsx";
 import Status from "./Status.tsx";
 
 function App() {
+
+  // The layout schematic widens with the radiator count, so it gets the whole screen rather than
+  // Bootstrap's fixed-width container. Every other page keeps the container.
+  const { pathname } = useLocation();
+  const containerClass = pathname === "/layout" ? "container-fluid" : "container";
 
   return (
     <>
@@ -67,7 +72,7 @@ function App() {
         </div>
       </nav>
       <WebSocketProvider>
-        <div className="container">
+        <div className={containerClass}>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/edit" element={<EditHome />} />

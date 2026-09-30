@@ -46,6 +46,8 @@
 #include <esp_matter.h>
 #include <lib/dnssd/Types.h>
 #include <platform/ESP32/NetworkCommissioningDriver.h>
+#include <platform/ESP32/ESP32EndpointQueueFilter.h>
+#include <inet/UDPEndPointImpl.h>
 
 #include "cJSON.h"
 
@@ -300,10 +302,12 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
     matter_node_t *node = find_node(&g_node_manager, node_id);
 
     // A sleepy device is not worth chasing - it will get a subscription when it next checks in.
+    // Anything else is retried, but not at once: whatever stopped this attempt is unlikely to have
+    // cleared a second later.
     //
     if (node && !node->is_icd)
     {
-        enqueue_subscription(node_id);
+        enqueue_subscription_after_failure(node_id);
     }
 }
 
@@ -1177,7 +1181,13 @@ static void ws_async_send(void *arg)
 
             if (err != ESP_OK)
             {
-                ESP_LOGW(TAG, "Failed to send websocket frame to fd %d: %s", client_fds[i], esp_err_to_name(err));
+                ESP_LOGW(TAG, "Failed to send websocket frame to fd %d: %s; closing it", client_fds[i], esp_err_to_name(err));
+
+                // A tab that went away without a close frame (sleep, network drop) leaves its socket
+                // in the client list, and every later broadcast would fail on it again. The browser
+                // reconnects if it is in fact still there.
+                //
+                httpd_sess_trigger_close(server, client_fds[i]);
             }
         }
     }
@@ -3782,6 +3792,44 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     }
 }
 
+// Every UDP packet CHIP receives is posted to its event queue from the lwIP thread, and a full
+// queue aborts (ScheduleLambda returns a CriticalFailure). CHIP's ESP32 platform only installs
+// its mDNS filter from the Wi-Fi IPv6 handler, so on Ethernet every multicast mDNS packet on the
+// LAN was queued and a busy network could fill the queue while the CHIP task was tied up in CASE
+// crypto. Install the same filter ourselves: it drops mDNS packets that mention neither "matter"
+// nor our hostname. It has to be set before the netif is up, as lwIP reads it from its own thread.
+static void install_mdns_queue_filter()
+{
+#ifdef CONFIG_ENABLE_ENDPOINT_QUEUE_FILTER
+    static chip::Inet::ESP32EndpointQueueFilter s_endpoint_queue_filter;
+
+    // Same MAC CHIP's minimal mDNS derives the hostname from (the Ethernet MAC on this board).
+    uint8_t mac[chip::DeviceLayer::ConfigurationManager::kPrimaryMACAddressLength];
+    chip::MutableByteSpan mac_span(mac);
+
+    if (chip::DeviceLayer::ConfigurationMgr().GetPrimaryMACAddress(mac_span) != CHIP_NO_ERROR || mac_span.size() != 6)
+    {
+        ESP_LOGE(TAG, "Failed to read the primary MAC; mDNS queue filter not installed");
+        return;
+    }
+
+    char hostname[13]; // 12 hex digits plus the terminator snprintf writes
+    for (size_t i = 0; i < 6; i++)
+    {
+        snprintf(&hostname[2 * i], 3, "%02X", mac_span.data()[i]);
+    }
+
+    if (s_endpoint_queue_filter.SetMdnsHostName(chip::CharSpan(hostname, 12)) != CHIP_NO_ERROR)
+    {
+        ESP_LOGE(TAG, "Failed to set the mDNS queue filter hostname");
+        return;
+    }
+
+    chip::Inet::UDPEndPointImpl::SetQueueFilter(&s_endpoint_queue_filter);
+    ESP_LOGI(TAG, "mDNS queue filter installed for host %.12s", hostname);
+#endif
+}
+
 extern "C" void app_main()
 {
     ESP_LOGI(TAG, "app_main()");
@@ -3812,6 +3860,8 @@ extern "C" void app_main()
     // so there is no Network Commissioning cluster to instantiate the driver for us. It has to
     // run after esp_matter::start() so that esp_netif_init() has happened and CHIP's IP_EVENT
     // handler is registered before DHCP completes.
+    install_mdns_queue_filter();
+
     CHIP_ERROR eth_err = chip::DeviceLayer::NetworkCommissioning::ESPEthernetDriver::GetInstance().Init(nullptr);
     ABORT_APP_ON_FAILURE(eth_err == CHIP_NO_ERROR, ESP_LOGE(TAG, "Failed to start Ethernet"));
 

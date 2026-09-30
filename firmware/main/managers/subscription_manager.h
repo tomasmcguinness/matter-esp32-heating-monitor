@@ -34,3 +34,10 @@ void subscription_attempt_finished(uint64_t node_id);
  * is already queued or in flight will not be queued twice.
  */
 esp_err_t enqueue_subscription(uint64_t node_id);
+
+/**
+ * Queue a subscription attempt for a node that has just failed one, after RETRY_DELAY_MS rather than
+ * straight away. The node is marked pending meanwhile. A later enqueue_subscription() for the same
+ * node -- an ICD check-in, say -- supersedes the delayed retry.
+ */
+esp_err_t enqueue_subscription_after_failure(uint64_t node_id);
