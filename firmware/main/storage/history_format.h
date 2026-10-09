@@ -100,10 +100,10 @@ typedef struct __attribute__((packed)) {
     int16_t  outdoor_temp_c100;   // 0.01 degC
     int16_t  average_internal_temp_c100; // 0.01 degC, mean of room temps, derived by update_home()
     int16_t  cop_x100;            // derived by update_home(), 0.01
-    int16_t  dhw_running;         // 0 or 1 -- no source bound yet
+    int16_t  dhw_running;         // 0 or 1, heat pump producing hot water
     uint16_t elec_voltage_dv;     // Voltage,       mV -> 0.1 V
     uint16_t elec_current_ca;     // ActiveCurrent, mA -> 0.01 A
-    int16_t  reserved0;
+    int16_t  heating_running;     // 0 or 1, heat pump space heating
     int16_t  reserved1;
     int16_t  reserved2;
 } rec_home_t;
@@ -206,6 +206,10 @@ static inline void history_fill_sentinel(uint8_t kind, void *out)
 }
 
 // True when field `index` of a record holds the sentinel rather than a reading.
+//
+// Only the sentinel is null, for every kind: 0 is a real temperature and a real 0 W. Room and
+// radiator files written before 2026-10-01 recorded a sensor that had not reported yet as 0, and
+// those slots read back as 0.00 degC.
 static inline bool history_field_is_null(uint8_t kind, size_t index, uint16_t raw)
 {
     if ((history_unsigned_mask(kind) >> index) & 1u) {

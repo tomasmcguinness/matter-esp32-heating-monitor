@@ -27,9 +27,15 @@ typedef struct radiator
     uint8_t room_id;
 
     // Transient data
+    bool has_flow_temperature;
     int16_t flow_temperature;
+    bool has_return_temperature;
     int16_t return_temperature;
+    // Derived by update_radiator_outputs(). The mean needs flow and return; the output needs the
+    // room's temperature as well.
+    bool has_mean_water_temperature;
     int16_t mean_water_temperature;
+    bool has_heat_output;
     uint16_t heat_output;
 
     struct radiator *next;

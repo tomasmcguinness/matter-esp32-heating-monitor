@@ -71,7 +71,7 @@ The project has two distinct parts that must both be built:
 - Handles Matter attribute callbacks (`attribute_data_cb`) — the main data ingestion point
 - Calls into managers to update state and trigger recalculation
 
-**Managers** (`main/managers/`) are plain C structs with associated functions. All state is held in four global manager instances in `app_main.cpp`:
+**Managers** (`main/managers/`) are plain C structs with associated functions. All state is held in five global manager instances in `app_main.cpp`:
 
 | Manager | Global | Responsibility |
 |---|---|---|
@@ -79,9 +79,65 @@ The project has two distinct parts that must both be built:
 | `room_manager` | `g_room_manager` | Rooms, their assigned radiators and temperature sensor endpoint mapping |
 | `radiator_manager` | `g_radiator_manager` | Radiators, their flow/return temperature sensor mapping and heat output |
 | `home_manager` | `g_home_manager` | Home-level sensors (outdoor temp, heat source flow/return/flow-rate) |
+| `heat_pump_manager` | `g_heat_pump_manager` | Latest readings from heat pump nodes: power, heating loops, hot water. Transient, not in NVS |
 | `calculations_manager` | (no global) | Derives heat loss and radiator output from the other managers |
 
-All manager state is persisted to **NVS (Non-Volatile Storage)** via `save_*_to_nvs` / `load_*_from_nvs` functions.
+Other directories under `main/`: `storage/` (SD card history), `mqtt/` (Home Assistant), `mcp/`
+(the read-only MCP server), `commands/` and `utilities/`. `test_host/`, beside `main/`, holds
+desktop tests for the parts of `mcp/` that need no board.
+
+All manager state bar the heat pump's is persisted to **NVS (Non-Volatile Storage)** via `save_*_to_nvs` / `load_*_from_nvs` functions.
+
+**Heat pump (`managers/heat_pump_manager.{h,cpp}`):**
+
+Edit Home has a Heat Pump picker (device type 777), stored as `heat_pump_node_id` /
+`heat_pump_endpoint_id` at the **end** of the `home_manager` NVS blob — `load_home_from_nvs()`
+checks the blob's size first, because one saved by older firmware stops before them. Once one is
+picked, `GET /api/home` and the `home` WebSocket channel carry a `heatPump` object and the Home
+page renders `HeatPump.tsx`. With none picked the object is null and the section is absent, rather
+than showing a "configure one" alert like the other sections.
+
+It is **read only**: nothing is written to the device, and none of it reaches COP or the companion
+API. COP still comes from the Electricity Meter picker — point that at the heat pump's endpoint,
+which is an Electrical Sensor too, to use its power.
+
+One thing does reach history: **whether the heat pump is heating or making hot water**.
+`update_heat_pump_running()` in `app_main.cpp` sets `home_manager`'s `heating_running` and
+`dhw_running` from the Heat bit of `ThermostatRunningState` — on a Water Heater endpoint that is
+hot water, on any other Thermostat endpoint it is heating, ORed across endpoints of a kind.
+`HeatDemand` is not used. Both are absent until such an endpoint reports and again when the node's
+readings are dropped, so the record holds the sentinel rather than a stale mode. It runs after
+every heat pump report, when the readings are forgotten, and when the pick changes. `dhw_running`
+is also in the MQTT home state, though not in HA discovery; `heating_running` is in history only.
+
+The section is built from **everything on the heat pump's node**, not from the heat pump endpoint's
+`PartsList`, which is never read:
+
+| Endpoint device type | Shown as | Source |
+|---|---|---|
+| Heat Pump (777), the picked endpoint | Power | `ElectricalPowerMeasurement::ActivePower` |
+| Temperature Sensor (770) | One card each | `endpoint_entry_t::measured_value`, as for any sensor |
+| Thermostat (769) | A zone: temperature, target, mode, state | `Thermostat` cluster |
+| Water Heater (1295) | A zone, plus operation mode, boost and heat demand | `Thermostat` + `WaterHeaterManagement` + `WaterHeaterMode` |
+
+`send_subscription()` adds the Thermostat, Water Heater Management and Water Heater Mode paths for any node with the
+Heat Pump device type. `attribute_data_cb` stores those reports — and the node's `ActivePower` — in
+`g_heat_pump_manager` for **every** heat pump node, picked or not: a subscription only reports a
+value again when it changes, so readings taken only after the pick would leave the section dashed
+until each one next moved. A node's readings are dropped when its subscription ends
+(`forget_heat_pump_if_unsubscribed()`), so the section dashes instead of showing a stale mode.
+
+`WaterHeaterMode::CurrentMode` values are device-defined, so the zone's Operation card shows the
+label the device's own `SupportedModes` gives the current one. `SupportedModes` is in the
+subscription rather than a one-off read: it never changes, so it costs one entry in the priming
+report, and it arrives alongside the `CurrentMode` it labels. Up to `HEAT_PUMP_MAX_MODES` (8) are
+kept, value and label only — the mode tags are dropped. A mode missing from the list shows as
+"Mode N".
+
+The sensors are told apart by **semantic tags**, since a composed device's sub-parts carry no
+FixedLabel. The node interview reads `Descriptor::TagList` and the first tag with a label names the
+endpoint, unless a FixedLabel or bridged NodeLabel already has. That happens at commissioning only,
+so a node paired before this was added shows "Endpoint N" until it is re-paired.
 
 **CHIP external platform (`external_platform/ESP32_custom/`):**
 
@@ -136,10 +192,24 @@ silently. Write a per-day config sidecar if that matters.
 Do the deriving off the device (web app, ML pipeline), not in `history_api.c`: `pow()` per
 radiator per slot over 17280 slots does not belong on the httpd task.
 
-**Freshness is still a gap in the history, but no longer in the UI.** Sensors are subscribed
+**A reading does not outlive its subscription.** When a node's subscription ends or fails to
+establish, `forget_readings_if_unsubscribed()` in `app_main.cpp` clears `has_measured_value` on
+every endpoint of the node and drops whatever was fed from it — a room's temperature, a
+radiator's flow and return (and the output derived from them), the home's heat meter and
+electrical meter readings. History then records the sentinel, MQTT publishes null and the UI
+dashes; the priming report of the next subscription sets everything again. Readings are nullable
+throughout: `endpoint_entry_t::has_measured_value`, `room_t::has_current_temperature`,
+`radiator_t::has_flow_temperature` / `has_return_temperature` / `has_mean_water_temperature` /
+`has_heat_output`, and `get_endpoint_measured_value()` returns whether there was one. 0 is a
+reading, not a placeholder. `calculations_manager` works nothing out from a missing input: a
+room's heat loss figures are zeroed and flagged absent (`has_predicted_heat_loss`,
+`has_measured_heat_loss`) without an outdoor temperature, and the measured ones without a room
+temperature and a radiator output as well.
+
+**Freshness within a live subscription is still a gap in the history.** Sensors are subscribed
 min 0 / max 60 (`subscription_manager.cpp`), so a 5 s sampler writes a mix of fresh and held
-readings, and a steady column on a chart still looks identical to a sensor that died an hour
-ago. `attribute_data_cb` now stamps `matter_node_t::last_seen` on every report, which
+readings, and a steady column on a chart still looks identical to a sensor that has gone quiet
+without its subscription having been torn down yet. `attribute_data_cb` now stamps `matter_node_t::last_seen` on every report, which
 `GET /api/nodes` exposes as `lastSeen` and `Devices.tsx` shows as the subscription icon's
 tooltip — so the device list distinguishes a live subscription from a silent one. That is
 **per node, not per endpoint**: `endpoint_entry_t` still carries no timestamp, and the records
@@ -164,9 +234,15 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   holds `base_ts`, `interval_s` and `record_size`, so slot `i` is `base_ts + i*interval_s`
   and `offset = 16 + slot*record_size`. Lookup is O(1) arithmetic, with no index and no
   scan. `rec_home_t` is 28 bytes of 16-bit fields. `INT16_MIN`/`UINT16_MAX` mean "no
-  reading" — zero cannot, because 0 W is a real reading.
+  reading" — zero cannot, because 0 W is a real reading and 0.00 °C a real temperature. That
+  holds for every kind: rooms and radiators carry `has_*` flags, the logger writes the sentinel
+  when one is false, and `history_field_is_null()` treats only the sentinel as null. Room and
+  radiator files written before 2026-10-01 recorded "no reading yet" as 0, and those slots chart
+  as 0.00 °C.
 
-  The record ends with **three reserved fields**, and they are the point of the design.
+  The record ends with **reserved fields**, and they are the point of the design. There were
+  three; `heating_running` took the first, which is why it sits after the electrical columns
+  rather than next to `dhw_running`.
   `record_size` is what makes the offset arithmetic correct, so widening the record is a
   breaking change — the reader rejects a file whose `record_size` disagrees with its kind.
   A quantity added later fills a reserved field instead: `record_size` never moves, days
@@ -199,9 +275,41 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   `READ_CHUNK_RECORDS × HISTORY_MAX_RECORD_SIZE`; scale the first down if the record ever
   widens.
 
+  The home response's tail also carries `modes`: the same energy over only the slots recorded as
+  heating and as hot water, each with its own `cop`. `GET /api/history/totals` gives the same
+  three figures -- `overall`, `heating`, `hotWater` -- summed over every day on the card, with
+  `from`, `to` and `days`. It is routed inside the `/api/history/*` wildcard, so it costs no URI
+  handler.
+
   **The API is a chart endpoint and is lossy**: buckets average across `stride` slots and
-  `MAX_POINTS` is 2000 against 17280 slots in a 5 s day. For ML, read the raw files off the
-  card rather than training on bucket means.
+  `MAX_POINTS` is 2000 against 17280 slots in a 5 s day. The exception is **`points=0`, which
+  returns every slot unaveraged** (stride 1). That is what the off-device Node server in
+  `mcp_server/` reads; the MCP server in the firmware reads the day files directly and does not
+  use it. It is about 2 MB for a 5 s day and blocks the single httpd task while it streams, so it
+  is for a caller that fetches a completed day once and keeps it -- never for a chart. For ML, the raw files off the card are still the better source.
+
+- `history_totals.{h,c}` — heat and electrical energy split by heat pump mode, behind the three
+  COPs on the History page: heating, hot water and overall (SCOP). Every COP is **energy out over
+  energy in for the slots covered**, never a mean of the `cop_x100` column. A slot is hot water if
+  `dhw_running` is 1, else heating if `heating_running` is 1, else neither; `overall` takes every
+  slot, so standby lowers the overall figure only. A day recorded before `heating_running` existed
+  contributes to `overall` alone.
+
+  `history_totals_add()` is the one place that arithmetic lives: `stream_file()` calls it per slot
+  for the day view, and `history_totals_scan_file()` runs it over a whole day.
+
+  A season cannot be re-read per request, so completed days are summarised once into
+  **`/sdcard/cop-totals`** — an 8-byte header and one 64-byte record per day, appended oldest
+  first. This is a **cache, not part of the archive**: everything in it is derived from the day
+  files, so deleting it loses nothing and it refills (from the next restart or midnight, if it had
+  already caught up), and bumping `HISTORY_TOTALS_VERSION` when
+  the arithmetic changes discards it the same way. That is how it sits alongside the
+  measurements-only rule above. The logger's flush task calls `history_totals_backfill_one()`
+  after each flush, which summarises **one day a minute**, so a year of backlog takes about six
+  hours and never stalls sampling; once caught up it walks the directory once a day. Today is
+  never cached — `totals_handler` scans today's file on each request. The file is deliberately
+  not named `home-*`, because `dates_handler` picks out home days by that prefix. The flush
+  task's stack went from 4096 to 6144 for this.
 
 Files are per local day. This needs `CONFIG_FATFS_LFN_HEAP=y` — the default 8.3 names cannot
 hold them. Rooms and radiators get a directory each rather than a flat name, because the date
@@ -278,7 +386,87 @@ it, and on `/api/nodes` because the web UI does. Neither is a reason to add it t
 
 `companion_api_register()` must run **before** the `/*` wildcard, like `history_api_register()` and
 `status_api_register()`. `config.max_uri_handlers` is a hard cap — it was raised to 34 for these
-five; count the registrations before adding more.
+five, and to 36 for the MCP server's two; count the registrations before adding more.
+
+**The MCP server (`mcp/`):**
+
+`POST /mcp` is a read-only [MCP](https://modelcontextprotocol.io) server over the home history,
+so an AI assistant can analyse cycling, COP and the effect of heating-curve changes. Add it to
+Claude Code with `claude mcp add --transport http heating-monitor http://<board-ip>/mcp`.
+
+| Tool | Returns |
+|---|---|
+| `list_series` | Every series: id, name, unit, native interval, earliest and latest timestamps |
+| `get_series` | Series over a range as `{ interval_seconds, timestamps, series }`; at most 1000 points each unless an interval is named, never more than 5000 |
+| `summarise_cycles` | Each compressor run in a range, plus a period summary |
+| `compare_periods` | Two period summaries side by side, each with its mean outdoor temperature |
+
+Every tool only reads `/sdcard/home-*`. Nothing in `mcp/` writes to the card, touches a manager or
+can reach the heat pump, and that is the property to keep: a tool that changes anything does not
+belong here. There is **no authentication**, like the rest of the HTTP API.
+
+- `mcp_server.c` — the transport and the tools. Streamable HTTP, **stateless**: one JSON response
+  per POST, no session id, no SSE. `GET /mcp` is registered only to answer 405; without it the
+  request falls through to the web app's wildcard and an MCP client is handed `index.html`. A
+  tool's result is JSON inside a JSON string, so `mcp_out_t` has an `escape` mode and the tool
+  code writes its JSON plainly. **Everything is validated and computed before the first byte is
+  sent**, because once the chunked response has started an error can no longer be reported.
+  Buckets and runs are held in PSRAM for the length of a call (`big_alloc`).
+- `mcp_tools.json` — the tool definitions, embedded with `target_add_binary_data(... TEXT)` so the
+  schemas are JSON rather than an escaped C string. Descriptions carry the units and tell the
+  model to prefer `summarise_cycles` for cycling questions.
+- `mcp_cycles.{h,c}` — run detection. A run is electrical input at or above a threshold (300 W);
+  runs under 120 s apart are merged, runs under 60 s dropped, and a run is split where the mode
+  changes. It is fed one slot at a time and keeps **sums, not samples**, so a month costs the same
+  memory as a night. Heat samples above 3x the rated output, or implying an instantaneous COP
+  above 10, are left out of heat averages, energy and COP and counted per run. A run's COP divides
+  energies over only the samples whose heat was kept.
+- `mcp_series.{h,c}` — the series table (ids, units, `rec_home_t` field positions) and the point
+  caps. `mcp_time.{h,c}` — ISO 8601 in and out.
+
+Things that are deliberately so:
+
+- **Timezones are Europe/London and UTC only.** The board has one zone in `TZ` and no tz database.
+  A caller elsewhere passes timestamps with an explicit offset.
+- **A call covers at most 31 days** (`MCP_MAX_RANGE_DAYS`). Each day is a 484 KB read on the httpd
+  task, and everything else the web server does waits behind it.
+- **The rated output is a tool argument**, `rated_output_w`, defaulting to a placeholder 8000 W.
+- **No target flow temperature and no defrost state** -- neither is recorded. Mode is the
+  `heating_running` / `dhw_running` flags; a run on a day from before they were logged is `unknown`.
+- A mode change shorter than `min_run_seconds` is folded into its neighbour, and a sample in
+  neither mode takes the mode around it: the flags are thermostat demand and can drop a moment
+  before the compressor does. A changeover from hot water into heating is not a compressor start.
+
+`mcp_cycles`, `mcp_series` and `mcp_time` have no ESP-IDF in them, so **`test_host/run.sh` tests
+them on a desktop** against a synthetic night. It also builds the real `mcp_server.c` against
+stand-in headers (`test_host/stubs/`) and a day file in a temporary directory, and parses every
+response back as JSON. Run it after any change under `mcp/`. `test_server --serve` answers
+requests from stdin, for putting that build behind an HTTP shim and a real MCP client.
+
+`mcp_server_register()` must run **before** the `/*` wildcard, and takes two of the
+`max_uri_handlers`, now 36.
+
+**MQTT / Home Assistant (`mqtt/ha_discovery.{h,cpp}`):**
+
+The home, every room and every radiator are announced to Home Assistant with retained
+device-based discovery on `homeassistant/device/<id>/config`. The home's id is
+`heating_monitor_<eth-mac>`. Rooms and radiators append `_room_<mqtt_name>` /
+`_radiator_<mqtt_name>` (the id when there is no MQTT name) and link back with `via_device`. The
+MQTT name also sets each entity's `default_entity_id` (`sensor.master_bedroom_current_temperature`,
+`sensor.master_bedroom_radiator_flow_temperature`), slugified to what HA accepts. Since the key
+can change, the PUT handlers copy the old MQTT name before updating, and on a rename remove the
+device under the old name before announcing the new one. HA drops that device's history with
+it. State goes to `heating_monitor/home`,
+`heating_monitor/rooms/<mqtt_name>` and `heating_monitor/radiators/<mqtt_name>`, falling back to
+`room_<id>` / `radiator_<id>` when the MQTT name is empty. Build these topics with
+`ha_room_state_topic()` / `ha_radiator_state_topic()` so discovery and publishing agree. A reading
+that isn't there is published as JSON `null`, never 0.
+
+On connect, the MQTT event handler announces only the home. Rooms and radiators are flagged and
+sent by `ha_discovery_announce_pending()` from `update_home()`, for the same reason the history
+logger snapshots: the room and radiator lists must not be walked from another task. The HTTP
+handlers announce or remove single rooms and radiators directly when they change. Adding an
+entity is one row in the `*_SENSORS` tables, plus the matching key in `calculations_manager.cpp`.
 
 **Other components:**
 - `commands/` — Matter pairing and identify command wrappers
@@ -305,7 +493,23 @@ React 19 + TypeScript, built with Vite. Uses:
 uPlot is given no `title` of its own. A chart's empty and error states have to render their own
 `ChartCard` — otherwise the panel disappears when there is nothing to draw and the page shifts
 under it. `Chart` has one y axis by default; a series with `axis: "right"` moves to a second one,
-which is how a radiator's output in watts sits alongside its flow and return in °C. Mixing units on
+which is how a radiator's output in watts sits alongside its flow and return in °C.
+
+`Chart` also takes `modes`: the spans of the day the heat pump spent heating and making hot water,
+drawn by a uPlot `draw` hook as an 8px strip along the bottom of the plot, with a key under it.
+Idle and unrecorded time is blank. `modeSpans()` in `historyData.ts` builds them from the home
+series' `heatingRunning` and `dhwRunning` columns, found by name; hot water wins when both are on.
+`History.tsx` derives them from the response it already has, and the room and radiator charts get
+them from `useHeatPumpModes()`, which fetches the home series for the day. The spans are absolute
+times, so nothing is joined against the chart's own points. A bucket is an integer mean, so it
+reads as on only when the mode held throughout — a run is drawn up to one bucket short at each end.
+
+`History.tsx` shows three COP cards for the day being viewed (Heating, Hot water, Overall, from the
+response's `modes` and `cop`) and three across every recorded day (Heating, Hot water, SCOP, from
+`GET /api/history/totals`, fetched once and independent of the date picker). A dash is "no
+electricity to divide by", which is also what a day from before the mode was recorded shows for
+heating and hot water. Unlike the mode bar, these are integrated on the device over every slot,
+so the bucket trimming above does not affect them. Mixing units on
 the *same* axis is still not possible, so `History.tsx` keeps one chart per unit.
 
 **Recorded quantities are charted; derived ones are computed in the browser.** A radiator's heat

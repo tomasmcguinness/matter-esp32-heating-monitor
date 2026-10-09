@@ -388,7 +388,7 @@ esp_err_t set_node_ext_address(matter_node_t *node, uint64_t ext_address)
     return ESP_OK;
 }
 
-esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value)
+esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, int16_t measured_value)
 {
     matter_node_t *node = find_node(manager, node_id);
 
@@ -398,6 +398,7 @@ esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
 
         if (endpoint)
         {
+            endpoint->has_measured_value = has_value;
             endpoint->measured_value = measured_value;
         }
     }
@@ -405,7 +406,23 @@ esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
     return ESP_OK;
 }
 
-esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value)
+esp_err_t clear_node_measured_values(node_manager_t *manager, uint64_t node_id)
+{
+    matter_node_t *node = find_node(manager, node_id);
+
+    if (node)
+    {
+        for (uint16_t i = 0; i < node->endpoints_count; i++)
+        {
+            node->endpoints[i].has_measured_value = false;
+            node->endpoints[i].measured_value = 0;
+        }
+    }
+
+    return ESP_OK;
+}
+
+bool get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value)
 {
     matter_node_t *node = find_node(manager, node_id);
 
@@ -413,13 +430,14 @@ esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id,
     {
         endpoint_entry_t *endpoint = find_endpoint(node, endpoint_id);
 
-        if (endpoint)
+        if (endpoint && endpoint->has_measured_value)
         {
             *measured_value = endpoint->measured_value;
+            return true;
         }
     }
 
-    return ESP_OK;
+    return false;
 }
 
 esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t *measured_value)

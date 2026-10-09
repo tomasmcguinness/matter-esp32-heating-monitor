@@ -11,6 +11,7 @@ function EditRoom() {
   const navigate = useNavigate();
 
   const [name, setName] = useState<string>('');
+  const [mqttName, setMqttName] = useState<string>('');
   const [targetTemperature, setTargetTemperature] = useState<number>(0);
   const [heatLossPerDegree, setHeatLossPerDegree] = useState<number>(0);
   const [temperatureSensor, setTemperatureSensor] = useState<string>('0|0');
@@ -34,6 +35,7 @@ function EditRoom() {
 
       const data = await response.json();
       setName(data.name);
+      setMqttName(data.mqttName ?? '');
       setTargetTemperature(data.targetTemperature / 100);
       setHeatLossPerDegree(data.heatLossPerDegree);
       setTemperatureSensor(`${data.temperatureSensorNodeId}|${data.temperatureSensorEndpointId}`);
@@ -133,6 +135,7 @@ function EditRoom() {
 
       const roomJson = JSON.stringify({
         name,
+        mqttName: mqttName.toLowerCase(),
         targetTemperature: targetTemperature * 100,
         heatLossPerDegree,
         radiatorIds,
@@ -176,6 +179,10 @@ function EditRoom() {
         <div className="mb-3">
           <label htmlFor="name" className="form-label">Name<span style={{ 'color': 'red' }}>*</span></label>
           <input type="string" name="name" maxLength={20} className="form-control" id="name" placeholder="Room Name e.g. Office" required={true} value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div className="mb-3">
+          <label htmlFor="mqttName" className="form-label">MQTT Name</label>
+          <input type="text" name="mqttName" maxLength={20} className="form-control" id="mqttName" placeholder="office" required={false} value={mqttName} onChange={(e) => setMqttName(e.target.value)} />
         </div>
         <div className="mb-3">
           <label htmlFor="targetTemperature" className="form-label">Target Temperature <span style={{ 'color': 'red' }}>*</span></label>

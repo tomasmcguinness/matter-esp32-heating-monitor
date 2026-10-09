@@ -24,10 +24,18 @@ function Radiators() {
 
       if (radiator) {
 
+        // Either or both, and null when the reading has gone -- a sensor that loses its
+        // subscription clears whichever of the two it supplied.
         if (message.hasOwnProperty("flowTemp")) {
           radiator.flowTemp = message.flowTemp;
-        } else {
+        }
+
+        if (message.hasOwnProperty("returnTemp")) {
           radiator.returnTemp = message.returnTemp;
+        }
+
+        if (message.hasOwnProperty("currentOutput")) {
+          radiator.currentOutput = message.currentOutput;
         }
 
         setRadiatorList(updatedRadiatorList);
@@ -62,7 +70,7 @@ function Radiators() {
       <td><Power>{n.output}</Power></td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
-      <td><Temperature>{Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>
+      <td><Temperature>{n.flowTemp == null || n.returnTemp == null ? null : Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>
       <td><Temperature>{n.meanWaterTemperature}</Temperature></td>
       <td><Power>{n.currentOutput}</Power></td>
     </tr>);

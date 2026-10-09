@@ -4,7 +4,7 @@ title: Show a radiator's current status and today's readings on the Radiator pag
 status: In Progress
 assignee: []
 created_date: '2026-09-26 05:40'
-updated_date: '2026-09-26 06:17'
+updated_date: '2026-10-01 06:00'
 labels: []
 dependencies: []
 ---
@@ -41,4 +41,6 @@ Verified: eslint clean on the changed files; app_main.cpp compiles on its own. T
 Flagged, not fixed: radiator_get_handler and room_get_handler dereference a missing radiator/room (crash on an unknown id).
 
 Update: the Radiators.tsx edit has since been finished, and the full idf build (firmware and web app) now passes.
+
+Smoothed the radiator chart's lines: Chart (HistoryChart.tsx) takes an opt-in `smooth` prop that draws each series through a centred 5-point moving average (nulls preserved as gaps) with uPlot's spline paths. The legend still shows the recorded values, not the averaged ones. Enabled in RadiatorChart only, so it applies on the radiator page and the room history page's radiator charts.
 <!-- SECTION:NOTES:END -->

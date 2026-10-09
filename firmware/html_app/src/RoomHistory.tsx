@@ -14,6 +14,7 @@ import {
   type Radiator,
   type RadiatorSeries,
 } from "./historyData";
+import { useHeatPumpModes } from "./useHeatPumpModes";
 
 // GET /api/history/room returns one local day of a room's recorded air temperature, and
 // GET /api/history/radiator one day of a radiator's flow and return.
@@ -74,6 +75,8 @@ function RoomHistory() {
   const [ratedOutputs, setRatedOutputs] = useState<Map<number, number>>(new Map());
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+
+  const modes = useHeatPumpModes(date);
 
   const load = useCallback(
     async (forRoom: number, forDate: string) => {
@@ -282,7 +285,13 @@ function RoomHistory() {
 
           {/* Gaps are slots with no reading -- the sensor unbound, unreachable, or the device
               off -- rather than a temperature of zero. */}
-          <Chart title="Temperature" data={tempData} series={TEMP_SERIES} unit="&deg;C" />
+          <Chart
+            title="Temperature"
+            data={tempData}
+            series={TEMP_SERIES}
+            unit="&deg;C"
+            modes={modes}
+          />
         </>
       )}
 
@@ -301,6 +310,7 @@ function RoomHistory() {
               date={date}
               ratedW={ratedOutputs.get(series.radiatorId)}
               roomTempByTs={roomTemps}
+              modes={modes}
             />
           ))}
 

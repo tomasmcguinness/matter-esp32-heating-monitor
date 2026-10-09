@@ -8,6 +8,7 @@ import Current from "./Current";
 import ElectricalPower from "./ElectricalPower";
 import Cop from "./Cop";
 import SubscriptionPill from "./SubscriptionPill";
+import HeatPump, { type HeatPumpData } from "./HeatPump";
 import { WebSocketContext } from "./WSContext.jsx";
 
 function Home() {
@@ -27,6 +28,9 @@ function Home() {
   // let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
   let [radiatorCount, setRadiatorCount] = useState<number | undefined>(undefined);
   let [totalRadiatorOutput, setTotalRadiatorOutput] = useState<number | undefined>(undefined);
+  let [heatPumpNodeId, setHeatPumpNodeId] = useState<number | undefined>(undefined);
+  let [heatPumpSubscription, setHeatPumpSubscription] = useState<string | undefined>(undefined);
+  let [heatPump, setHeatPump] = useState<HeatPumpData | null | undefined>(undefined);
   let [electricalMeterNodeId, setElectricalMeterNodeId] = useState<number | undefined>(undefined);
   let [electricalMeterSubscription, setElectricalMeterSubscription] = useState<string | undefined>(undefined);
   let [electricalVoltage, setElectricalVoltage] = useState<number | null | undefined>(undefined);
@@ -57,6 +61,10 @@ function Home() {
     // setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
     setRadiatorCount(data.radiatorCount);
     setTotalRadiatorOutput(data.totalRadiatorOutput);
+
+    setHeatPumpNodeId(data.heatPumpNodeId);
+    setHeatPumpSubscription(data.heatPumpSubscription);
+    setHeatPump(data.heatPump);
 
     setElectricalMeterNodeId(data.electricalMeterNodeId);
     setElectricalMeterSubscription(data.electricalMeterSubscription);
@@ -195,6 +203,9 @@ function Home() {
           </div>
         </div>
       </div>}
+      {/* Unlike the other sections this one has no "configure one" alert: a heat pump is optional,
+          so the section is only there once one has been picked. */}
+      {!!heatPumpNodeId && <HeatPump heatPump={heatPump} subscription={heatPumpSubscription} />}
       <h4 style={{marginTop: '20px'}}>Distribution</h4>
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <div className="card">

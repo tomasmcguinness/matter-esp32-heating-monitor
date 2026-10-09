@@ -10,6 +10,7 @@
 
 #include "history_format.h"
 #include "history_paths.h"
+#include "history_totals.h"
 #include "sd_card.h"
 #include "time_sync.h"
 
@@ -81,6 +82,26 @@ static esp_err_t send_unavailable(httpd_req_t *req)
     return ESP_OK;
 }
 
+// Writes `"name":{"heatWh":..,"electricalWh":..,"cop":..}` for one energy pair. The COP is the
+// ratio of the two energies, and null when no electricity was recorded to divide by. Returns the
+// length written, or 0 if it did not fit.
+static size_t format_energy(char *buf, size_t len, const char *name, const energy_pair_t *pair)
+{
+    double heat_wh = (double)pair->heat_ws / 3600.0;
+    double elec_wh = (double)pair->elec_ws / 3600.0;
+    int    w;
+
+    if (elec_wh > 0.0) {
+        w = snprintf(buf, len, "\"%s\":{\"heatWh\":%.1f,\"electricalWh\":%.1f,\"cop\":%.2f}",
+                     name, heat_wh, elec_wh, heat_wh / elec_wh);
+    } else {
+        w = snprintf(buf, len, "\"%s\":{\"heatWh\":%.1f,\"electricalWh\":%.1f,\"cop\":null}",
+                     name, heat_wh, elec_wh);
+    }
+
+    return (w > 0 && (size_t)w < len) ? (size_t)w : 0;
+}
+
 // Pulls one query parameter out of the request. Returns false if absent.
 static bool query_param(httpd_req_t *req, const char *key, char *out, size_t out_len)
 {
@@ -106,7 +127,7 @@ static const char *field_names_for(uint8_t kind)
                            "\"returnTempC100\",\"flowLph\",\"outdoorTempC100\","
                            "\"averageInternalTempC100\",\"copX100\",\"dhwRunning\","
                            "\"elecVoltageDv\",\"elecCurrentCa\","
-                           "\"reserved0\",\"reserved1\",\"reserved2\"";
+                           "\"heatingRunning\",\"reserved1\",\"reserved2\"";
     case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"reserved1\",\"reserved2\"";
     case KIND_RADIATOR: return "\"flowTempC100\",\"returnTempC100\","
                                "\"reserved0\",\"reserved1\"";
@@ -199,6 +220,9 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     uint32_t bucket_n[HISTORY_MAX_RECORD_SIZE / 2]   = {0};
     int64_t  energy_sum[HISTORY_MAX_RECORD_SIZE / 2] = {0}; // watt-seconds
 
+    // The same energy split by what the heat pump was doing. Home series only.
+    history_totals_t totals = {0};
+
     size_t slot        = 0;
     size_t in_bucket   = 0;
     size_t bucket_base = 0;
@@ -235,6 +259,10 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
                 bucket_sum[fi] += v;
                 bucket_n[fi]++;
                 energy_sum[fi] += (int64_t)v * hdr.interval_s;
+            }
+
+            if (hdr.sensor_kind == KIND_HOME) {
+                history_totals_add(&totals, rec, hdr.interval_s);
             }
 
             slot++;
@@ -280,19 +308,31 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     // see the field-order note in history_format.h. This COP is the day's integrated figure,
     // which is the honest headline number; the per-slot copX100 column is the instantaneous
     // one, and the two will not agree.
-    char tail[224];
+    //
+    // "modes" splits the same energy into the slots recorded as heating and as hot water -- see
+    // history_totals.h. Slots in neither mode are in the figures above and in neither of these.
+    char tail[448];
     if (hdr.sensor_kind == KIND_HOME) {
         double heat_wh = (double)energy_sum[0] / 3600.0;
         double elec_wh = (double)energy_sum[1] / 3600.0;
+        int    w;
         if (elec_wh > 0.0) {
-            snprintf(tail, sizeof(tail),
-                     "],\"energyWh\":{\"heat\":%.1f,\"electrical\":%.1f},\"cop\":%.2f}",
-                     heat_wh, elec_wh, heat_wh / elec_wh);
+            w = snprintf(tail, sizeof(tail),
+                         "],\"energyWh\":{\"heat\":%.1f,\"electrical\":%.1f},\"cop\":%.2f,"
+                         "\"modes\":{",
+                         heat_wh, elec_wh, heat_wh / elec_wh);
         } else {
-            snprintf(tail, sizeof(tail),
-                     "],\"energyWh\":{\"heat\":%.1f,\"electrical\":%.1f},\"cop\":null}",
-                     heat_wh, elec_wh);
+            w = snprintf(tail, sizeof(tail),
+                         "],\"energyWh\":{\"heat\":%.1f,\"electrical\":%.1f},\"cop\":null,"
+                         "\"modes\":{",
+                         heat_wh, elec_wh);
         }
+
+        size_t n = (w > 0 && (size_t)w < sizeof(tail)) ? (size_t)w : 0;
+        n += format_energy(tail + n, sizeof(tail) - n, "heating", &totals.heating);
+        n += strlcpy(tail + n, ",", sizeof(tail) - n);
+        n += format_energy(tail + n, sizeof(tail) - n, "hotWater", &totals.hot_water);
+        strlcpy(tail + n, "}}", sizeof(tail) - n);
     } else {
         snprintf(tail, sizeof(tail), "]}");
     }
@@ -302,11 +342,22 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
+// How many points the caller wants the day reduced to. points=0 asks for every slot, unaveraged,
+// which stream_file() takes as a stride of 1.
+//
+// That is for analysis off the device -- cycle detection needs the samples themselves, and a
+// bucket mean hides a single bad one. It is not for charts: a 5 s day is 17280 points and about
+// 2 MB of JSON, and the web server is one task, so every other request waits while it streams.
+// A caller should fetch a completed day once and keep it.
 static int requested_points(httpd_req_t *req)
 {
     char buf[16];
     if (!query_param(req, "points", buf, sizeof(buf))) {
         return DEFAULT_POINTS;
+    }
+
+    if (strcmp(buf, "0") == 0) {
+        return 0;
     }
 
     int p = atoi(buf);
@@ -471,9 +522,62 @@ static esp_err_t instance_series_handler(httpd_req_t *req, uint8_t kind, uint8_t
     return stream_file(req, path, requested_points(req));
 }
 
+// GET /api/history/totals -- heat and electrical energy, and the COP they give, across every day
+// on the card: overall, while heating and while making hot water.
+//
+// Completed days come from the cache the flush task keeps (see history_totals.h) and today is
+// scanned here, so the figure is current without the cache holding a day that is still growing.
+// While the cache is still filling after a first flash, `days` and `from` show how far it has got.
+static esp_err_t totals_handler(httpd_req_t *req)
+{
+    history_totals_t sum;
+    char             from[16];
+    uint32_t         days = history_totals_sum_cached(&sum, from, sizeof(from));
+
+    char to[16] = "";
+    if (clock_is_valid()) {
+        local_date_string((uint32_t)time(NULL), to, sizeof(to));
+
+        char             path[HISTORY_PATH_MAX];
+        history_totals_t today;
+        if (history_path_for_date(KIND_HOME, 0, to, path, sizeof(path)) &&
+            history_totals_scan_file(path, &today)) {
+            history_totals_accumulate(&sum, &today);
+            if (days == 0) {
+                strlcpy(from, to, sizeof(from));
+            }
+            days++;
+        }
+    }
+
+    httpd_resp_set_type(req, "application/json");
+
+    if (days == 0) {
+        httpd_resp_sendstr(req, "{\"storage\":\"ok\",\"days\":0}");
+        return ESP_OK;
+    }
+
+    char   body[512];
+    int    w = snprintf(body, sizeof(body),
+                        "{\"storage\":\"ok\",\"from\":\"%s\",\"to\":\"%s\",\"days\":%lu,",
+                        from, to[0] ? to : from, (unsigned long)days);
+    size_t n = (w > 0 && (size_t)w < sizeof(body)) ? (size_t)w : 0;
+
+    n += format_energy(body + n, sizeof(body) - n, "overall", &sum.overall);
+    n += strlcpy(body + n, ",", sizeof(body) - n);
+    n += format_energy(body + n, sizeof(body) - n, "heating", &sum.heating);
+    n += strlcpy(body + n, ",", sizeof(body) - n);
+    n += format_energy(body + n, sizeof(body) - n, "hotWater", &sum.hot_water);
+    strlcpy(body + n, "}", sizeof(body) - n);
+
+    httpd_resp_sendstr(req, body);
+    return ESP_OK;
+}
+
 // GET /api/history/* -- routes to the sub-resources above.
 //
 //   /api/history/dates
+//   /api/history/totals
 //   /api/history/room?id=N[&date=&points=]        /api/history/room/dates?id=N
 //   /api/history/radiator?id=N[&date=&points=]    /api/history/radiator/dates?id=N
 static esp_err_t history_sub_handler(httpd_req_t *req)
@@ -484,6 +588,10 @@ static esp_err_t history_sub_handler(httpd_req_t *req)
 
     if (strncmp(req->uri, "/api/history/dates", 18) == 0) {
         return dates_handler(req, KIND_HOME, 0);
+    }
+
+    if (strncmp(req->uri, "/api/history/totals", 19) == 0) {
+        return totals_handler(req);
     }
 
     uint8_t     kind = 0;

@@ -1,4 +1,4 @@
-idf_component_register(SRC_DIRS          "." "managers" "commands" "utilities" "storage" "mqtt"
+idf_component_register(SRC_DIRS          "." "managers" "commands" "utilities" "storage" "mqtt" "mcp"
                        INCLUDE_DIRS      "."
                        PRIV_INCLUDE_DIRS  "." "${ESP_MATTER_PATH}/examples/common/utils"
                        LDFRAGMENTS "linker.lf")
@@ -33,6 +33,10 @@ add_custom_target(react_build DEPENDS ${WEB_APP_FILES})
 foreach(web_app_file ${WEB_APP_FILES})
     target_add_binary_data(${COMPONENT_LIB} "${web_app_file}" BINARY)
 endforeach()
+
+# The MCP server's tool definitions, kept as JSON rather than as an escaped C string. TEXT adds
+# the NUL that lets mcp_server.c send it as one.
+target_add_binary_data(${COMPONENT_LIB} "mcp/mcp_tools.json" TEXT)
 
 if(CONFIG_SPIFFS_ATTESTATION_TRUST_STORE)
     spiffs_create_partition_image(paa_cert ${CMAKE_SOURCE_DIR}/paa_cert FLASH_IN_PROJECT)

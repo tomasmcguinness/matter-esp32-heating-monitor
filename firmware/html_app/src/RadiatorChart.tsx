@@ -1,7 +1,13 @@
 import { useMemo } from "react";
 import type uPlot from "uplot";
 import { Chart, ChartCard } from "./HistoryChart";
-import { RADIATOR_COL, radiatorOutputW, type RadiatorSeries, type RoomTempByTs } from "./historyData";
+import {
+  RADIATOR_COL,
+  radiatorOutputW,
+  type ModeSpan,
+  type RadiatorSeries,
+  type RoomTempByTs,
+} from "./historyData";
 
 // Module-level, because Chart compares its series prop by identity. The radiator colours are the
 // ones History.tsx already uses for the heat meter's flow and return, and the room's is the one
@@ -34,6 +40,7 @@ function RadiatorChart({
   roomTempByTs,
   showRoomTemp = false,
   title,
+  modes,
 }: {
   series: RadiatorSeries;
   date: string;
@@ -41,6 +48,7 @@ function RadiatorChart({
   roomTempByTs: RoomTempByTs;
   showRoomTemp?: boolean;
   title?: string;
+  modes?: ModeSpan[];
 }) {
   const chartTitle = title ?? series.name;
 
@@ -110,6 +118,8 @@ function RadiatorChart({
         data={plotData}
         series={withRoom ? RADIATOR_SERIES_WITH_ROOM : RADIATOR_SERIES}
         unit="&deg;C"
+        smooth
+        modes={modes}
       />
     );
   }
@@ -121,6 +131,8 @@ function RadiatorChart({
       series={withRoom ? RADIATOR_SERIES_WITH_ROOM_AND_OUTPUT : RADIATOR_SERIES_WITH_OUTPUT}
       unit="&deg;C"
       rightUnit="W"
+      smooth
+      modes={modes}
     />
   );
 }

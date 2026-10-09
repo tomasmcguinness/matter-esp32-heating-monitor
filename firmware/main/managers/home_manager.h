@@ -14,6 +14,11 @@ typedef struct {
     uint64_t heat_meter_node_id;
     uint16_t heat_meter_endpoint_id;
 
+    // The endpoint carrying the Heat Pump device type. Its readings, and those of the other
+    // endpoints on the same node, are held by heat_pump_manager.
+    uint64_t heat_pump_node_id;
+    uint16_t heat_pump_endpoint_id;
+
     // How often the SD card history logger samples, in seconds. 0 means "never saved",
     // which history_logger_init() reads as "use the default".
     uint16_t logging_interval_s;
@@ -49,10 +54,14 @@ typedef struct {
     bool has_average_internal_temperature;
     int16_t average_internal_temperature;
 
-    // True while the heat source is producing domestic hot water rather than space heating.
-    // No source is bound to this yet.
+    // True while the heat pump is producing domestic hot water, and while it is space heating.
+    // Both come from the picked heat pump node's ThermostatRunningState -- see
+    // update_heat_pump_running() in app_main.cpp. Absent until an endpoint of that kind reports.
     bool has_dhw_running;
     bool dhw_running;
+
+    bool has_heating_running;
+    bool heating_running;
 
     // Instantaneous coefficient of performance, 0.01 units, derived by update_home().
     bool has_cop;

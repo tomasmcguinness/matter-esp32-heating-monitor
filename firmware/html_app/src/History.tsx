@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Chart, DateToolbar } from "./HistoryChart";
-import { toPlotData, todayISO, type HistoryResponse } from "./historyData";
+import {
+  modeSpans,
+  toPlotData,
+  todayISO,
+  type HistoryResponse,
+  type TotalsResponse,
+} from "./historyData";
 
 // GET /api/history returns one local day of the home's recorded values: fixed-cadence slots
 // with nulls where no reading was recorded, plus the day's integrated energy.
@@ -24,7 +30,7 @@ const FIELDS = [
   "dhwRunning",
   "elecVoltageDv",
   "elecCurrentCa",
-  "reserved0",
+  "heatingRunning",
   "reserved1",
   "reserved2",
 ];
@@ -55,11 +61,28 @@ const TEMP_SERIES = [
 
 const COP_SERIES = [{ label: "COP", stroke: "#9354d9" }];
 
+// A COP is energy out over energy in for the slots it covers. A dash means there was no
+// electricity to divide by -- a day with no hot water run, or one recorded before the heat pump's
+// mode was.
+function CopCard({ title, cop }: { title: string; cop: number | null | undefined }) {
+  return (
+    <div className="card">
+      <div className="card-header">{title}</div>
+      <div className="card-body">
+        <p className="card-title">
+          <h3>{cop != null ? cop.toFixed(2) : "-"}</h3>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function History() {
   const [date, setDate] = useState<string>(todayISO());
   const [data, setData] = useState<HistoryResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [totals, setTotals] = useState<TotalsResponse | null>(null);
 
   const load = useCallback(async (forDate: string) => {
     setLoading(true);
@@ -93,6 +116,25 @@ function History() {
     load(date);
   }, [date, load]);
 
+  // Every recorded day summed, so independent of the date being viewed and fetched once. A
+  // failure costs only those cards.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/history/totals")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body: TotalsResponse | null) => {
+        if (!cancelled) {
+          setTotals(body);
+        }
+      })
+      .catch(() => {
+        /* the all-days cards are simply absent */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const points = data?.points ?? [];
   const hasPoints = points.length > 0;
 
@@ -108,6 +150,9 @@ function History() {
       )
     : null;
   const copData = hasPoints ? toPlotData(points, [COL.cop], [0.01]) : null;
+
+  // Memoised because Chart rebuilds the plot whenever this array changes identity.
+  const modes = useMemo(() => modeSpans(data), [data]);
 
   const heatKwh = (data?.energyWh?.heat ?? 0) / 1000;
   const elecKwh = (data?.energyWh?.electrical ?? 0) / 1000;
@@ -134,6 +179,19 @@ function History() {
         <div className="alert alert-info">No readings recorded on {date}.</div>
       )}
 
+      {totals?.storage === "ok" && !!totals.days && (
+        <>
+          <div className="card-group" style={{ marginBottom: "5px" }}>
+            <CopCard title="Heating COP, all days" cop={totals.heating?.cop} />
+            <CopCard title="Hot water COP, all days" cop={totals.hotWater?.cop} />
+            <CopCard title="SCOP" cop={totals.overall?.cop} />
+          </div>
+          <p className="text-muted small" style={{ marginBottom: "20px" }}>
+            {totals.days} {totals.days === 1 ? "day" : "days"} recorded since {totals.from}.
+          </p>
+        </>
+      )}
+
       {!loading && !error && hasPoints && (
         <>
           <div className="card-group" style={{ marginBottom: "20px" }}>
@@ -154,14 +212,6 @@ function History() {
               </div>
             </div>
             <div className="card">
-              <div className="card-header">COP</div>
-              <div className="card-body">
-                <p className="card-title">
-                  <h3>{data?.cop != null ? data.cop.toFixed(2) : "-"}</h3>
-                </p>
-              </div>
-            </div>
-            <div className="card">
               <div className="card-header">Sampled every</div>
               <div className="card-body">
                 <p className="card-title">
@@ -171,11 +221,20 @@ function History() {
             </div>
           </div>
 
-          <Chart title="Power" data={powerData} series={POWER_SERIES} unit="W" />
-          <Chart title="Temperatures" data={tempData} series={TEMP_SERIES} unit="&deg;C" />
+          {/* The day's energy out over energy in: for the slots recorded as heating, for those
+              recorded as hot water, and for every slot. Standby and anything else in neither mode
+              counts toward the overall figure only. */}
+          <div className="card-group" style={{ marginBottom: "20px" }}>
+            <CopCard title="Heating COP" cop={data?.modes?.heating?.cop} />
+            <CopCard title="Hot water COP" cop={data?.modes?.hotWater?.cop} />
+            <CopCard title="Overall COP" cop={data?.cop} />
+          </div>
+
+          <Chart title="Power" data={powerData} series={POWER_SERIES} unit="W" modes={modes} />
+          <Chart title="Temperatures" data={tempData} series={TEMP_SERIES} unit="&deg;C" modes={modes} />
           {/* Instantaneous COP, unlike the card above, which is the day's integrated figure.
               Gaps are the heat source being off rather than missing data. */}
-          <Chart title="COP" data={copData} series={COP_SERIES} unit="" decimals={2} />
+          <Chart title="COP" data={copData} series={COP_SERIES} unit="" decimals={2} modes={modes} />
         </>
       )}
     </>

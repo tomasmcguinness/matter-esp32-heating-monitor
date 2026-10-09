@@ -12,6 +12,7 @@ function EditHome() {
   const [flowRateSensor, setFlowRateSensor] = useState<string | undefined>(undefined);
   const [electricalMeter, setElectricalMeter] = useState<string | undefined>(undefined);
   const [heatMeter, setHeatMeter] = useState<string | undefined>(undefined);
+  const [heatPump, setHeatPump] = useState<string | undefined>(undefined);
   const [loggingInterval, setLoggingInterval] = useState<number>(5);
   const [activeInterval, setActiveInterval] = useState<number | undefined>(undefined);
 
@@ -23,6 +24,7 @@ function EditHome() {
       setFlowRateSensor(`${data.heatSourceFlowRateSensorNodeId}|${data.heatSourceFlowRateSensorEndpointId}`);
       setElectricalMeter(`${data.electricalMeterNodeId}|${data.electricalMeterEndpointId}`);
       setHeatMeter(`${data.heatMeterNodeId}|${data.heatMeterEndpointId}`);
+      setHeatPump(`${data.heatPumpNodeId}|${data.heatPumpEndpointId}`);
       setLoggingInterval(data.loggingIntervalSeconds ?? 5);
       setActiveInterval(data.loggingIntervalActiveSeconds);
     });
@@ -56,6 +58,9 @@ function EditHome() {
     var heatMeterNodeId = nodeId(heatMeter);
     var heatMeterEndpointId = endpointId(heatMeter);
 
+    var heatPumpNodeId = nodeId(heatPump);
+    var heatPumpEndpointId = endpointId(heatPump);
+
     var object: any = {
       outdoorTemperatureSensorNodeId,
       outdoorTemperatureSensorEndpointId,
@@ -69,6 +74,8 @@ function EditHome() {
       electricalMeterEndpointId,
       heatMeterNodeId,
       heatMeterEndpointId,
+      heatPumpNodeId,
+      heatPumpEndpointId,
       loggingIntervalSeconds: loggingInterval
     };
     var json = JSON.stringify(object);
@@ -102,6 +109,11 @@ function EditHome() {
         {/* The M-Bus adapter's manufacturer-specific heat meter device type. Selecting one makes it
             the source for the whole Heat Meter section, in place of the three sensors above. */}
         <SensorSelect deviceType={0xFFF10001} title="Heat Meter" required={false} id="heatMeter" selectedSensor={heatMeter} onSelectedSensorChange={(e: string) => setHeatMeter(e)} />
+      </div>
+      <div className="mb-3">
+        {/* Selecting one adds a read-only Heat Pump section to the Home page, showing the heat pump's
+            power along with the temperature sensors, heating loops and hot water tank on its node. */}
+        <SensorSelect deviceType={777} title="Heat Pump" required={false} id="heatPump" selectedSensor={heatPump} onSelectedSensorChange={(e: string) => setHeatPump(e)} />
       </div>
       <div className="mb-3">
         <SensorSelect deviceType={1296} title="Electricity Meter" required={false} id="electricalMeter" selectedSensor={electricalMeter} onSelectedSensorChange={(e: string) => setElectricalMeter(e)} />

@@ -10,6 +10,7 @@
 
 #include "subscription_manager.h"
 #include "node_manager.h"
+#include "heat_pump_manager.h"
 #include "heat_meter_cluster.h"
 #include "app_main.h"
 
@@ -221,11 +222,12 @@ static void send_subscription(intptr_t arg)
     bool wants_flow = node_has_device_type(node, DEVICE_TYPE_FLOW_SENSOR);
     bool wants_electrical = node_has_device_type(node, DEVICE_TYPE_ELECTRICAL_SENSOR);
     bool wants_heat_meter = node_has_device_type(node, HEAT_METER_DEVICE_TYPE_ID);
+    bool wants_heat_pump = node_has_device_type(node, DEVICE_TYPE_HEAT_PUMP);
     bool wants_battery = node_is_battery_powered(node);
 
-    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_battery)
+    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_heat_pump && !wants_battery)
     {
-        ESP_LOGW(TAG, "Node 0x%016llX has no temperature, flow, electrical or heat meter device types and is not on battery; nothing to subscribe to", node_id);
+        ESP_LOGW(TAG, "Node 0x%016llX has no temperature, flow, electrical, heat meter or heat pump device types and is not on battery; nothing to subscribe to", node_id);
 
         bool create_new_subscription = false;
         mark_node_has_no_subscription(s_node_manager, node_id, 0, &create_new_subscription);
@@ -234,7 +236,7 @@ static void send_subscription(intptr_t arg)
     }
 
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_battery ? 2 : 0));
+    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 8 : 0) + (wants_battery ? 2 : 0));
 
     if (!attr_paths.Get())
     {
@@ -284,6 +286,25 @@ static void send_subscription(intptr_t arg)
         attr_paths[path_index++] = AttributePathParams(kHeatMeterCluster, (chip::AttributeId)HM_ATTR_POWER_ID);
     }
 
+    if (wants_heat_pump)
+    {
+        // The heating loops (Thermostat) and hot water tank (Water Heater) that sit alongside the
+        // heat pump endpoint. Wildcard on the endpoint, so one path covers every loop, and the
+        // Water Heater paths are skipped by a node with no tank. SupportedModes never changes, so
+        // it costs one entry in the priming report and nothing after; it is here rather than in a
+        // one-off read so that it arrives with the CurrentMode it gives a label to. The heat pump's own
+        // power comes through the electrical paths above, since it is an Electrical Sensor too.
+        //
+        attr_paths[path_index++] = AttributePathParams(Thermostat::Id, Thermostat::Attributes::LocalTemperature::Id);
+        attr_paths[path_index++] = AttributePathParams(Thermostat::Id, Thermostat::Attributes::OccupiedHeatingSetpoint::Id);
+        attr_paths[path_index++] = AttributePathParams(Thermostat::Id, Thermostat::Attributes::SystemMode::Id);
+        attr_paths[path_index++] = AttributePathParams(Thermostat::Id, Thermostat::Attributes::ThermostatRunningState::Id);
+        attr_paths[path_index++] = AttributePathParams(WaterHeaterManagement::Id, WaterHeaterManagement::Attributes::HeatDemand::Id);
+        attr_paths[path_index++] = AttributePathParams(WaterHeaterManagement::Id, WaterHeaterManagement::Attributes::BoostState::Id);
+        attr_paths[path_index++] = AttributePathParams(WaterHeaterMode::Id, WaterHeaterMode::Attributes::SupportedModes::Id);
+        attr_paths[path_index++] = AttributePathParams(WaterHeaterMode::Id, WaterHeaterMode::Attributes::CurrentMode::Id);
+    }
+
     if (wants_battery)
     {
         // The endpoint is left wildcard because PowerSource does not have to be on the root, and a
@@ -297,10 +318,10 @@ static void send_subscription(intptr_t arg)
     ScopedMemoryBufferWithSize<EventPathParams> event_paths;
     event_paths.Alloc(0);
 
-    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s)", node_id, (unsigned)path_index,
+    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s%s)", node_id, (unsigned)path_index,
              wants_temperature ? "temperature " : "", wants_flow ? "flow " : "",
              wants_electrical ? "electrical " : "", wants_heat_meter ? "heat_meter " : "",
-             wants_battery ? "battery" : "");
+             wants_heat_pump ? "heat_pump " : "", wants_battery ? "battery" : "");
 
     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(node_id,
                                                                               std::move(attr_paths),

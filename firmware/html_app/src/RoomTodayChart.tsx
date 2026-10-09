@@ -7,6 +7,7 @@ import {
   toPlotData,
   type HistoryResponse,
 } from "./historyData";
+import { useHeatPumpModes } from "./useHeatPumpModes";
 
 // Module-level, because Chart compares its series prop by identity.
 const TODAY_SERIES = [{ label: "Temperature", stroke: "#0275d8" }];
@@ -34,6 +35,8 @@ function RoomTodayChart({ roomId }: { roomId: number }) {
   const [data, setData] = useState<HistoryResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [notRecording, setNotRecording] = useState<string | null>(null);
+
+  const modes = useHeatPumpModes(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,7 +144,13 @@ function RoomTodayChart({ roomId }: { roomId: number }) {
         }
       }}
     >
-      <Chart title={CARD_TITLE} data={plotData} series={TODAY_SERIES} unit="&deg;C" />
+      <Chart
+        title={CARD_TITLE}
+        data={plotData}
+        series={TODAY_SERIES}
+        unit="&deg;C"
+        modes={modes}
+      />
     </div>
   );
 }

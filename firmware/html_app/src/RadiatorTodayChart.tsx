@@ -9,6 +9,7 @@ import {
   type HistoryResponse,
   type RadiatorSeries,
 } from "./historyData";
+import { useHeatPumpModes } from "./useHeatPumpModes";
 
 // RadiatorChart supplies the card, so every state here has to supply its own to match -- otherwise
 // the panel vanishes when there is nothing to draw and the page shifts under it.
@@ -37,6 +38,8 @@ function RadiatorTodayChart({
   const [radiator, setRadiator] = useState<RadiatorSeries | null>(null);
   const [roomPoints, setRoomPoints] = useState<(number | null)[][]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  const modes = useHeatPumpModes(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +126,7 @@ function RadiatorTodayChart({
       roomTempByTs={roomTemps}
       showRoomTemp
       title={CARD_TITLE}
+      modes={modes}
     />
   );
 }

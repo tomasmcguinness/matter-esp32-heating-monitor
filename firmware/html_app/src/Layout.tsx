@@ -12,15 +12,15 @@ type Radiator = {
   radiatorId: number;
   name: string;
   type: number;
-  flowTemp: number;
-  returnTemp: number;
-  currentOutput: number;
+  flowTemp: number | null;
+  returnTemp: number | null;
+  currentOutput: number | null;
 };
 
 type Room = {
   roomId: number;
   name: string;
-  currentTemperature: number;
+  currentTemperature: number | null;
   targetTemperature: number;
   radiators: Radiator[];
 };
@@ -34,19 +34,20 @@ type HomeSnapshot = {
   heatMeterReturnTemperature?: number | null;
 };
 
-// The "radiator" push carries whichever of the two temperatures the sensor reported, never both,
-// plus the output recalculated from it. The "room" push carries only the temperature.
+// The "radiator" push carries whichever of the two temperatures the sensor reported, plus the
+// output recalculated from it. The "room" push carries only the temperature. Any of them is null
+// when the reading has gone, as when the sensor loses its subscription.
 //
 type RadiatorPush = {
   radiatorId: number;
-  flowTemp?: number;
-  returnTemp?: number;
-  currentOutput?: number;
+  flowTemp?: number | null;
+  returnTemp?: number | null;
+  currentOutput?: number | null;
 };
 
 type RoomPush = {
   roomId: number;
-  temperature: number;
+  temperature: number | null;
 };
 
 // Mock-up geometry. The trunks, the elbows and the heat meter are fixed; everything to the right of

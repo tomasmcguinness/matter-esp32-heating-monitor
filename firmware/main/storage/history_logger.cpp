@@ -15,6 +15,7 @@
 
 #include "history_format.h"
 #include "history_paths.h"
+#include "history_totals.h"
 #include "sd_card.h"
 #include "time_sync.h"
 
@@ -23,8 +24,11 @@ static const char *TAG = "history_logger";
 // The flush does file I/O, so it gets its own task rather than running on the esp_timer
 // task: that task's stack is CONFIG_ESP_TIMER_TASK_STACK_SIZE (3584 bytes here), which is
 // not enough for FATFS, and a slow card would otherwise delay the sample timer too.
+//
+// 6144 rather than the 4096 the flush alone ran on: the task also summarises a completed day for
+// the COP totals, which walks the card's directory and opens two more files.
 #define FLUSH_INTERVAL_MS   60000
-#define FLUSH_TASK_STACK    4096
+#define FLUSH_TASK_STACK    6144
 #define FLUSH_TASK_PRIORITY 3
 
 // Cap on buffered samples between flushes. Every series samples on the same tick, so at the
@@ -57,14 +61,14 @@ static home_manager_t *s_home_manager;
 // chasing pointers that can vanish mid-walk. Plain values keyed on id, no pointers, fixed size.
 struct room_snap_t {
     uint8_t id;
-    bool    bound;        // a temperature sensor is assigned to this room
+    bool    has_temp;     // false with no sensor assigned, or while the sensor has no reading
     int16_t temp_c100;
 };
 
 struct rad_snap_t {
     uint8_t id;
-    bool    flow_bound;
-    bool    return_bound;
+    bool    has_flow;
+    bool    has_return;
     int16_t flow_c100;
     int16_t return_c100;
 };
@@ -163,6 +167,10 @@ static size_t build_record(uint8_t *out)
         r.dhw_running = h->dhw_running ? 1 : 0;
     }
 
+    if (h->has_heating_running) {
+        r.heating_running = h->heating_running ? 1 : 0;
+    }
+
     if (h->has_electrical_voltage) {
         int64_t mv = h->electrical_voltage_mv;
         r.elec_voltage_dv = clamp_u16(mv / 100);
@@ -185,9 +193,9 @@ static size_t build_room_record(const room_snap_t *snap, uint8_t *out)
     rec_room_t r;
     history_fill_sentinel(KIND_ROOM, &r);
 
-    // An unbound room records the sentinel rather than the zero its struct was initialised to:
-    // 0.00 degC is a reading a room could genuinely have.
-    if (snap->bound) {
+    // A room records the sentinel when it has no sensor, and when its sensor has no reading:
+    // before the first report, after a null or implausible one, and once its subscription is lost.
+    if (snap->has_temp) {
         r.current_temp_c100 = clamp_i16(snap->temp_c100);
     }
 
@@ -200,10 +208,11 @@ static size_t build_radiator_record(const rad_snap_t *snap, uint8_t *out)
     rec_radiator_t r;
     history_fill_sentinel(KIND_RADIATOR, &r);
 
-    if (snap->flow_bound) {
+    // As for a room -- see build_room_record.
+    if (snap->has_flow) {
         r.flow_temp_c100 = clamp_i16(snap->flow_c100);
     }
-    if (snap->return_bound) {
+    if (snap->has_return) {
         r.return_temp_c100 = clamp_i16(snap->return_c100);
     }
 
@@ -232,7 +241,7 @@ void history_logger_snapshot(room_manager_t *room_manager, radiator_manager_t *r
                 break;
             }
             s_rooms[s_room_count].id        = r->room_id;
-            s_rooms[s_room_count].bound     = r->room_temperature_node_id != 0;
+            s_rooms[s_room_count].has_temp  = r->room_temperature_node_id != 0 && r->has_current_temperature;
             s_rooms[s_room_count].temp_c100 = r->current_temperature;
             s_room_count++;
         }
@@ -245,8 +254,8 @@ void history_logger_snapshot(room_manager_t *room_manager, radiator_manager_t *r
                 break;
             }
             s_rads[s_rad_count].id           = a->radiator_id;
-            s_rads[s_rad_count].flow_bound   = a->flow_temp_node_id != 0;
-            s_rads[s_rad_count].return_bound = a->return_temp_node_id != 0;
+            s_rads[s_rad_count].has_flow     = a->flow_temp_node_id != 0 && a->has_flow_temperature;
+            s_rads[s_rad_count].has_return   = a->return_temp_node_id != 0 && a->has_return_temperature;
             s_rads[s_rad_count].flow_c100    = a->flow_temperature;
             s_rads[s_rad_count].return_c100  = a->return_temperature;
             s_rad_count++;
@@ -519,6 +528,10 @@ static void flush_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(FLUSH_INTERVAL_MS));
         flush_once();
+
+        // After the flush, so a day that ended since the last cycle has its final samples on
+        // the card before it is summarised.
+        history_totals_backfill_one();
     }
 }
 

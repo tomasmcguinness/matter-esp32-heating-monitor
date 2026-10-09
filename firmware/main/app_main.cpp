@@ -58,6 +58,7 @@
 #include "managers/radiator_manager.h"
 #include "managers/room_manager.h"
 #include "managers/home_manager.h"
+#include "managers/heat_pump_manager.h"
 
 #include "heat_meter_cluster.h"
 #include "commands/pairing_command.h"
@@ -82,6 +83,7 @@
 #include "device_identity.h"
 #include "node_api.h"
 #include "companion_api.h"
+#include "mcp/mcp_server.h"
 
 #include "mqtt_client.h"
 
@@ -105,6 +107,7 @@ node_manager_t g_node_manager = {0};
 radiator_manager_t g_radiator_manager = {0};
 room_manager_t g_room_manager = {0};
 home_manager_t g_home_manager = {0};
+heat_pump_manager_t g_heat_pump_manager = {0};
 
 esp_mqtt_client_handle_t _mqtt_client;
 static bool is_mqtt_connected = false;
@@ -118,6 +121,10 @@ static void broadcast_home_state(void);
 static void broadcast_home_if_home_sensor(uint64_t node_id);
 static bool node_is_subscribed(uint64_t node_id);
 static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
+static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
+static void update_heat_pump_running(void);
+static void forget_readings_if_unsubscribed(uint64_t node_id);
+static void add_number_or_null(cJSON *object, const char *name, bool has_value, double value);
 
 // Commissioning runs on the Matter task, but POST /api/nodes holds its connection open until
 // the outcome is known: the companion app's Matter extension has no other way to learn whether
@@ -127,6 +134,12 @@ static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
 //
 // The companion app gives the request 90 seconds, so time out comfortably inside that.
 #define COMMISSIONING_TIMEOUT_MS (75 * 1000)
+
+// TemperatureMeasurement readings outside this range, in hundredths of a degree, are treated as
+// no reading. Nothing a heating system measures gets near either end; a disconnected probe
+// reads around -80°C.
+#define MIN_PLAUSIBLE_TEMPERATURE (-5000)
+#define MAX_PLAUSIBLE_TEMPERATURE (10000)
 
 static SemaphoreHandle_t s_commissioning_lock = NULL; // serialises POST /api/nodes
 static SemaphoreHandle_t s_commissioning_done = NULL; // given by the pairing callbacks
@@ -206,7 +219,7 @@ static void process_parts_list_attribute_response(uint64_t node_id,
                                                                 // We want to read a few attributes from the Basic Information cluster.
                                                                 //
                                                                 ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-                                                                attr_paths.Alloc(4);
+                                                                attr_paths.Alloc(5);
 
                                                                 if (!attr_paths.Get())
                                                                 {
@@ -221,6 +234,9 @@ static void process_parts_list_attribute_response(uint64_t node_id,
 
                                                                 // TODO We should only ask for this if we know there were briged nodes.
                                                                 attr_paths[3] = AttributePathParams(BridgedDeviceBasicInformation::Id, BridgedDeviceBasicInformation::Attributes::NodeLabel::Id);
+
+                                                                // Semantic tags, for the endpoints of a composed device that have no label of their own.
+                                                                attr_paths[4] = AttributePathParams(Descriptor::Id, Descriptor::Attributes::TagList::Id);
                                                                 
                                                                 ScopedMemoryBufferWithSize<EventPathParams> event_paths;
                                                                 event_paths.Alloc(0);
@@ -266,6 +282,8 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     subscription_attempt_finished(remote_node_id);
 
     forget_outdoor_temperature_if_unsubscribed(remote_node_id);
+    forget_heat_pump_if_unsubscribed(remote_node_id);
+    forget_readings_if_unsubscribed(remote_node_id);
 
     broadcast_home_if_home_sensor(remote_node_id);
 
@@ -296,6 +314,8 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
     subscription_attempt_finished(node_id);
 
     forget_outdoor_temperature_if_unsubscribed(node_id);
+    forget_heat_pump_if_unsubscribed(node_id);
+    forget_readings_if_unsubscribed(node_id);
 
     broadcast_home_if_home_sensor(node_id);
 
@@ -450,6 +470,59 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             ESP_LOGI(TAG, "Endpoint [%d] FixedLabel: %s", path.mEndpointId, name);
 
             matter_node_t *node = find_node(&g_node_manager, remote_node_id);
+
+            set_endpoint_name(node, path.mEndpointId, name);
+
+            free(name);
+
+            break;
+        }
+    }
+    else if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::TagList::Id)
+    {
+        // The sub-parts of a composed device carry their meaning in semantic tags rather than a
+        // FixedLabel -- it is how a heat pump tells its outdoor, flow and return sensors apart. The
+        // first tag with a label names the endpoint, unless it has been given a name already.
+        //
+        chip::app::DataModel::DecodableList<Descriptor::Structs::SemanticTagStruct::DecodableType> value;
+
+        if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to decode Descriptor->TagList");
+            return;
+        }
+
+        matter_node_t *node = find_node(&g_node_manager, remote_node_id);
+
+        if (node == NULL)
+        {
+            return;
+        }
+
+        for (uint16_t i = 0; i < node->endpoints_count; i++)
+        {
+            if (node->endpoints[i].endpoint_id == path.mEndpointId && node->endpoints[i].name)
+            {
+                return;
+            }
+        }
+
+        auto iter = value.begin();
+        while (iter.Next())
+        {
+            auto &item = iter.GetValue();
+
+            if (!item.label.HasValue() || item.label.Value().IsNull() || item.label.Value().Value().empty())
+            {
+                continue;
+            }
+
+            chip::CharSpan label = item.label.Value().Value();
+
+            char *name = (char *)calloc(label.size() + 1, sizeof(char));
+            memcpy(name, label.data(), label.size());
+
+            ESP_LOGI(TAG, "Endpoint [%d] tag label: %s", path.mEndpointId, name);
 
             set_endpoint_name(node, path.mEndpointId, name);
 
@@ -662,17 +735,41 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             return;
         }
 
-        // Only the endpoint the user picked as the home's electrical meter is of interest:
-        // history records the home's quantities, not each device's, so an unbound endpoint
-        // has nowhere to go.
+        bool has_value = !value.IsNull();
+        int64_t reading = has_value ? value.Value() : 0;
+
+        bool is_home_meter = (g_home_manager.electrical_meter_node_id == remote_node_id &&
+                              g_home_manager.electrical_meter_endpoint_id == path.mEndpointId);
+
+        // A heat pump is an Electrical Sensor as well, reporting the power it draws. That is kept
+        // whether or not the heat pump has been picked for the home, so the Heat Pump section has a
+        // figure as soon as one is: a subscription only reports a value again when it changes.
         //
-        if (g_home_manager.electrical_meter_node_id != remote_node_id || g_home_manager.electrical_meter_endpoint_id != path.mEndpointId)
+        if (path.mAttributeId == ElectricalPowerMeasurement::Attributes::ActivePower::Id &&
+            node_has_device_type(find_node(&g_node_manager, remote_node_id), DEVICE_TYPE_HEAT_PUMP))
+        {
+            heat_pump_endpoint_t *heat_pump = heat_pump_get_endpoint(&g_heat_pump_manager, remote_node_id, path.mEndpointId);
+
+            if (heat_pump)
+            {
+                heat_pump->has_active_power = has_value;
+                heat_pump->active_power_mw = reading;
+            }
+
+            if (!is_home_meter && g_home_manager.heat_pump_node_id == remote_node_id && g_home_manager.heat_pump_endpoint_id == path.mEndpointId)
+            {
+                broadcast_home_state();
+            }
+        }
+
+        // Beyond that, only the endpoint the user picked as the home's electrical meter is of
+        // interest: history records the home's quantities, not each device's, so an unbound
+        // endpoint has nowhere to go.
+        //
+        if (!is_home_meter)
         {
             return;
         }
-
-        bool has_value = !value.IsNull();
-        int64_t reading = has_value ? value.Value() : 0;
 
         switch (path.mAttributeId)
         {
@@ -837,16 +934,224 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             broadcast_home_state();
         }
     }
+    else if (path.mClusterId == Thermostat::Id || path.mClusterId == WaterHeaterManagement::Id || path.mClusterId == WaterHeaterMode::Id)
+    {
+        // Only heat pump nodes are subscribed to these: a heating loop is a Thermostat, and the hot
+        // water tank a Water Heater, which is a Thermostat plus Water Heater Management and Water
+        // Heater Mode. Kept for
+        // every such node rather than only the one picked for the home, for the same reason as the
+        // heat pump's power above.
+        //
+        heat_pump_endpoint_t *heat_pump = heat_pump_get_endpoint(&g_heat_pump_manager, remote_node_id, path.mEndpointId);
+
+        if (heat_pump == NULL)
+        {
+            return;
+        }
+
+        if (path.mClusterId == Thermostat::Id)
+        {
+            switch (path.mAttributeId)
+            {
+            case Thermostat::Attributes::LocalTemperature::Id:
+            {
+                // Null when the loop has no room thermostat fitted.
+                chip::app::DataModel::Nullable<int16_t> value;
+
+                if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to decode Thermostat LocalTemperature");
+                    return;
+                }
+
+                heat_pump->has_local_temperature = !value.IsNull();
+                heat_pump->local_temperature = value.IsNull() ? 0 : value.Value();
+                break;
+            }
+
+            case Thermostat::Attributes::OccupiedHeatingSetpoint::Id:
+            {
+                int16_t value;
+
+                if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to decode Thermostat OccupiedHeatingSetpoint");
+                    return;
+                }
+
+                heat_pump->has_heating_setpoint = true;
+                heat_pump->heating_setpoint = value;
+                break;
+            }
+
+            case Thermostat::Attributes::SystemMode::Id:
+            {
+                uint8_t value;
+
+                if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to decode Thermostat SystemMode");
+                    return;
+                }
+
+                heat_pump->has_system_mode = true;
+                heat_pump->system_mode = value;
+                break;
+            }
+
+            case Thermostat::Attributes::ThermostatRunningState::Id:
+            {
+                uint16_t value;
+
+                if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to decode Thermostat ThermostatRunningState");
+                    return;
+                }
+
+                heat_pump->has_running_state = true;
+                heat_pump->running_state = value;
+                break;
+            }
+
+            default:
+                ESP_LOGI(TAG, "Unhandled Thermostat attribute 0x%08lX", (unsigned long)path.mAttributeId);
+                return;
+            }
+        }
+        else if (path.mClusterId == WaterHeaterMode::Id)
+        {
+            switch (path.mAttributeId)
+            {
+            case WaterHeaterMode::Attributes::SupportedModes::Id:
+            {
+                // The mode values are the device's own, so this is what turns CurrentMode into
+                // something to show. Only the value and label are kept; the mode tags are not.
+                chip::app::DataModel::DecodableList<WaterHeaterMode::Structs::ModeOptionStruct::DecodableType> value;
+
+                if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to decode WaterHeaterMode SupportedModes");
+                    return;
+                }
+
+                heat_pump->supported_mode_count = 0;
+
+                auto iter = value.begin();
+                while (iter.Next() && heat_pump->supported_mode_count < HEAT_PUMP_MAX_MODES)
+                {
+                    auto &item = iter.GetValue();
+
+                    heat_pump_mode_t *mode = &heat_pump->supported_modes[heat_pump->supported_mode_count];
+
+                    size_t length = item.label.size() < HEAT_PUMP_MODE_LABEL_LENGTH ? item.label.size() : HEAT_PUMP_MODE_LABEL_LENGTH;
+
+                    mode->mode = item.mode;
+                    memcpy(mode->label, item.label.data(), length);
+                    mode->label[length] = '\0';
+
+                    ESP_LOGI(TAG, "Water heater mode %u: %s", mode->mode, mode->label);
+
+                    heat_pump->supported_mode_count++;
+                }
+                break;
+            }
+
+            case WaterHeaterMode::Attributes::CurrentMode::Id:
+            {
+                uint8_t value;
+
+                if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+                {
+                    ESP_LOGE(TAG, "Failed to decode WaterHeaterMode CurrentMode");
+                    return;
+                }
+
+                heat_pump->has_water_heater_mode = true;
+                heat_pump->water_heater_mode = value;
+                break;
+            }
+
+            default:
+                ESP_LOGI(TAG, "Unhandled WaterHeaterMode attribute 0x%08lX", (unsigned long)path.mAttributeId);
+                return;
+            }
+        }
+        else
+        {
+            // HeatDemand is a bitmap8 and BoostState an enum8.
+            uint8_t value;
+
+            if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+            {
+                ESP_LOGE(TAG, "Failed to decode WaterHeaterManagement attribute 0x%08lX", (unsigned long)path.mAttributeId);
+                return;
+            }
+
+            switch (path.mAttributeId)
+            {
+            case WaterHeaterManagement::Attributes::HeatDemand::Id:
+                heat_pump->has_heat_demand = true;
+                heat_pump->heat_demand = value;
+                break;
+
+            case WaterHeaterManagement::Attributes::BoostState::Id:
+                heat_pump->has_boost_state = true;
+                heat_pump->boost_state = value;
+                break;
+
+            default:
+                ESP_LOGI(TAG, "Unhandled WaterHeaterManagement attribute 0x%08lX", (unsigned long)path.mAttributeId);
+                return;
+            }
+        }
+
+        ESP_LOGI(TAG, "Heat pump endpoint %u: cluster 0x%04lX attribute 0x%04lX updated", path.mEndpointId,
+                 (unsigned long)path.mClusterId, (unsigned long)path.mAttributeId);
+
+        if (g_home_manager.heat_pump_node_id == remote_node_id)
+        {
+            update_heat_pump_running();
+            broadcast_home_state();
+        }
+    }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
 
-        int16_t temperature;
-        chip::app::DataModel::Decode(*data, temperature);
+        // Nullable: a sensor reports null when it has no reading, e.g. a probe that isn't connected.
+        //
+        chip::app::DataModel::Nullable<int16_t> measured_value;
 
-        ESP_LOGI(TAG, "Temperature Value: %d", temperature);
+        if (chip::app::DataModel::Decode(*data, measured_value) != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to decode MeasuredValue");
+            return;
+        }
 
-        set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, temperature);
+        bool has_value = !measured_value.IsNull();
+
+        if (has_value && (measured_value.Value() < MIN_PLAUSIBLE_TEMPERATURE || measured_value.Value() > MAX_PLAUSIBLE_TEMPERATURE))
+        {
+            ESP_LOGW(TAG, "Ignoring implausible Temperature Value: %d", measured_value.Value());
+            has_value = false;
+        }
+
+        // A probe that has stopped reporting clears its last value rather than leaving it to feed
+        // the calculations.
+        //
+        int16_t temperature = has_value ? measured_value.Value() : 0;
+
+        if (has_value)
+        {
+            ESP_LOGI(TAG, "Temperature Value: %d", temperature);
+        }
+        else
+        {
+            ESP_LOGI(TAG, "Temperature Value is unknown");
+        }
+
+        set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, has_value, temperature);
 
         bool hasMatched = false;
 
@@ -856,7 +1161,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         {
             ESP_LOGI(TAG, "Device is assigned to the outdoor temperature sensor");
 
-            g_home_manager.has_outdoor_temperature = true;
+            g_home_manager.has_outdoor_temperature = has_value;
             g_home_manager.outdoor_temperature = temperature;
 
             // A change in outside temperature impacts all the rooms.
@@ -889,14 +1194,16 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 if (radiator->flow_temp_endpoint_id == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Flow Temperature value");
+                    radiator->has_flow_temperature = has_value;
                     radiator->flow_temperature = temperature;
-                    cJSON_AddNumberToObject(root, "flowTemp", temperature);
+                    add_number_or_null(root, "flowTemp", has_value, temperature);
                 }
                 else if (radiator->return_temp_endpoint_id == path.mEndpointId)
                 {
                     ESP_LOGI(TAG, "Reading Return Temperature value");
+                    radiator->has_return_temperature = has_value;
                     radiator->return_temperature = temperature;
-                    cJSON_AddNumberToObject(root, "returnTemp", temperature);
+                    add_number_or_null(root, "returnTemp", has_value, temperature);
                 }
 
                 update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
@@ -905,7 +1212,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 // the output from the previous reading. The Layout schematic shows watts per radiator
                 // and only ever sees this channel, so a stale figure would sit there until a reload.
                 //
-                cJSON_AddNumberToObject(root, "currentOutput", radiator->heat_output);
+                add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
 
                 ws_broadcast_json(root);
 
@@ -937,7 +1244,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 cJSON *root = cJSON_CreateObject();
                 cJSON_AddStringToObject(root, "channel", "room");
                 cJSON_AddNumberToObject(root, "roomId", room->room_id);
-                cJSON_AddNumberToObject(root, "temperature", room->current_temperature);
+                add_number_or_null(root, "temperature", room->has_current_temperature, room->current_temperature);
 
                 ws_broadcast_json(root);
 
@@ -952,6 +1259,14 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             }
 
             room = room->next;
+        }
+
+        // One of the heat pump's own sensors, which the Heat Pump section shows. Anything matched
+        // above has pushed the home already.
+        //
+        if (!hasMatched && g_home_manager.heat_pump_node_id == remote_node_id)
+        {
+            broadcast_home_state();
         }
     }
     else
@@ -1627,7 +1942,7 @@ static cJSON *build_nodes_json(void)
                 cJSON_AddItemToObject(endpointJSON, "batteryVoltage", cJSON_CreateNull());
             }
 
-            cJSON_AddNumberToObject(endpointJSON, "measuredValue", endpoint.measured_value);
+            add_number_or_null(endpointJSON, "measuredValue", endpoint.has_measured_value, endpoint.measured_value);
 
             cJSON *device_type_array = cJSON_CreateArray();
 
@@ -1746,6 +2061,7 @@ esp_err_t unpair_node(uint64_t node_id)
     }
 
     remove_node(&g_node_manager, node_id);
+    heat_pump_forget_node(&g_heat_pump_manager, node_id);
 
     return ESP_OK;
 }
@@ -2030,97 +2346,16 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
 
     save_radiators_to_nvs(&g_radiator_manager);
 
-    get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
-    get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
+    new_radiator->has_flow_temperature = get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
+    new_radiator->has_return_temperature = get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
 
     broadcast_home_state();
 
     ESP_LOGI(TAG, "Radiator saved");
 
-    if (is_mqtt_connected && mqttNameJSON)
+    if (is_mqtt_connected)
     {
-        // Announce this radiator via MQTT.
-        //
-        cJSON *root = cJSON_CreateObject();
-
-        char device_name[32];
-        snprintf(device_name, sizeof(device_name), "%s Radiator", nameJSON->valuestring);
-
-        ESP_LOGI(TAG, "Announcing device `%s` via MQTT", device_name);
-
-        cJSON *device = cJSON_CreateObject();
-        cJSON_AddStringToObject(device, "name", device_name);
-        cJSON_AddItemToObject(root, "device", device);
-
-        cJSON *origin = cJSON_CreateObject();
-        cJSON_AddStringToObject(device, "name", "Heating Monitor");
-        cJSON_AddStringToObject(device, "url", "https://github.com/tomasmcguinness/matter-esp32-heating-monitor");
-        cJSON_AddItemToObject(root, "origin", origin);
-
-        cJSON *flow_sensor_component = cJSON_CreateObject();
-        cJSON_AddStringToObject(flow_sensor_component, "p", "sensor");
-        cJSON_AddStringToObject(flow_sensor_component, "device_class", "temperature");
-        cJSON_AddStringToObject(flow_sensor_component, "unit_of_measurement", "°C");
-        cJSON_AddStringToObject(flow_sensor_component, "value_template", "{{ value_json.flow_temperature}}");
-
-        char flow_unique_id[50];
-        snprintf(flow_unique_id, sizeof(flow_unique_id), "%s_radiator_flow_temperature", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(flow_sensor_component, "unique_id", flow_unique_id);
-
-        char flow_default_entity_id[60];
-        snprintf(flow_default_entity_id, sizeof(flow_default_entity_id), "sensor.%s_radiator_flow_temperature", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(flow_sensor_component, "default_entity_id", flow_default_entity_id);
-
-        cJSON *return_sensor_component = cJSON_CreateObject();
-        cJSON_AddStringToObject(return_sensor_component, "p", "sensor");
-        cJSON_AddStringToObject(return_sensor_component, "device_class", "temperature");
-        cJSON_AddStringToObject(return_sensor_component, "unit_of_measurement", "°C");
-        cJSON_AddStringToObject(return_sensor_component, "value_template", "{{ value_json.return_temperature}}");
-
-        char return_unique_id[50];
-        snprintf(return_unique_id, sizeof(return_unique_id), "%s_radiator_return_temperature", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(return_sensor_component, "unique_id", return_unique_id);
-
-        char return_default_entity_id[60];
-        snprintf(return_default_entity_id, sizeof(return_default_entity_id), "sensor.%s_radiator_return_temperature", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(return_sensor_component, "default_entity_id", return_default_entity_id);
-
-        cJSON *output_sensor_component = cJSON_CreateObject();
-        cJSON_AddStringToObject(output_sensor_component, "p", "sensor");
-        cJSON_AddStringToObject(output_sensor_component, "device_class", "temperature");
-        cJSON_AddStringToObject(output_sensor_component, "unit_of_measurement", "°C");
-        cJSON_AddStringToObject(output_sensor_component, "value_template", "{{ value_json.output}}");
-
-        char output_unique_id[50];
-        snprintf(output_unique_id, sizeof(output_unique_id), "%s_radiator_output_temperature", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(output_sensor_component, "unique_id", output_unique_id);
-
-        char output_default_entity_id[60];
-        snprintf(output_default_entity_id, sizeof(output_default_entity_id), "sensor.%s_output", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(output_sensor_component, "default_entity_id", output_default_entity_id);
-
-        cJSON *components = cJSON_CreateObject();
-
-        cJSON_AddItemToObject(components, "flow_temperature", flow_sensor_component);
-        cJSON_AddItemToObject(components, "return_temperature", return_sensor_component);
-        cJSON_AddItemToObject(components, "output", output_sensor_component);
-
-        cJSON_AddItemToObject(root, "cmps", components);
-
-        char state_topic[60];
-        snprintf(state_topic, sizeof(state_topic), "heating_monitor/radiators/%s", mqttNameJSON->valuestring);
-        cJSON_AddStringToObject(root, "state_topic", state_topic);
-
-        char *payload = cJSON_PrintUnformatted(root);
-
-        char config_topic[80];
-        snprintf(config_topic, sizeof(config_topic), "homeassistant/device/radiators/%s/config", mqttNameJSON->valuestring);
-        esp_mqtt_client_publish(_mqtt_client, config_topic, payload, 0, 0, 0);
-
-        ESP_LOGI(TAG, "Announced radiator via MQTT");
-
-        cJSON_free(payload);
-        cJSON_Delete(root);
+        ha_discovery_announce_radiator(_mqtt_client, new_radiator);
     }
 
     cJSON *response = cJSON_CreateObject();
@@ -2157,10 +2392,10 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "type", radiator->type);
         cJSON_AddNumberToObject(jNode, "output", radiator->output_dt_50);
 
-        cJSON_AddNumberToObject(jNode, "flowTemp", radiator->flow_temperature);
-        cJSON_AddNumberToObject(jNode, "returnTemp", radiator->return_temperature);
-        cJSON_AddNumberToObject(jNode, "meanWaterTemperature", radiator->mean_water_temperature);
-        cJSON_AddNumberToObject(jNode, "currentOutput", radiator->heat_output);
+        add_number_or_null(jNode, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
+        add_number_or_null(jNode, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
+        add_number_or_null(jNode, "meanWaterTemperature", radiator->has_mean_water_temperature, radiator->mean_water_temperature);
+        add_number_or_null(jNode, "currentOutput", radiator->has_heat_output, radiator->heat_output);
 
         cJSON_AddItemToArray(root, jNode);
 
@@ -2209,10 +2444,10 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "returnSensorNodeId", radiator->return_temp_node_id);
     cJSON_AddNumberToObject(root, "returnSensorEndpointId", radiator->return_temp_endpoint_id);
 
-    cJSON_AddNumberToObject(root, "flowTemp", radiator->flow_temperature);
-    cJSON_AddNumberToObject(root, "returnTemp", radiator->return_temperature);
-    cJSON_AddNumberToObject(root, "meanWaterTemperature", radiator->mean_water_temperature);
-    cJSON_AddNumberToObject(root, "currentOutput", radiator->heat_output);
+    add_number_or_null(root, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
+    add_number_or_null(root, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
+    add_number_or_null(root, "meanWaterTemperature", radiator->has_mean_water_temperature, radiator->mean_water_temperature);
+    add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
 
     // The room this radiator is in. radiator_t::room_id is never assigned, so room->radiators[]
     // is the only real link -- the same walk update_radiator_outputs() does. Null when the
@@ -2235,7 +2470,7 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
     {
         cJSON_AddNumberToObject(root, "roomId", owning_room->room_id);
         cJSON_AddStringToObject(root, "roomName", owning_room->name);
-        cJSON_AddNumberToObject(root, "roomTemperature", owning_room->current_temperature);
+        add_number_or_null(root, "roomTemperature", owning_room->has_current_temperature, owning_room->current_temperature);
     }
     else
     {
@@ -2293,6 +2528,14 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
     const cJSON *returnSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorNodeId");
     const cJSON *returnSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorEndpointId");
 
+    // The HA device is keyed on the MQTT name, so a rename has to remove the one under the old
+    // name. Copied now, before update_radiator() frees it.
+    std::string previous_mqtt_name;
+    if (radiator_t *existing = find_radiator(&g_radiator_manager, radiator_id))
+    {
+        previous_mqtt_name = existing->mqtt_name ? existing->mqtt_name : "";
+    }
+
     radiator_t *updated_radiator = update_radiator(&g_radiator_manager,
                                                    radiator_id,
                                                    nameJSON->valuestring,
@@ -2306,8 +2549,18 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
 
     save_radiators_to_nvs(&g_radiator_manager);
 
-    get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &updated_radiator->flow_temperature);
-    get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &updated_radiator->return_temperature);
+    updated_radiator->has_flow_temperature = get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &updated_radiator->flow_temperature);
+    updated_radiator->has_return_temperature = get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &updated_radiator->return_temperature);
+
+    if (is_mqtt_connected && updated_radiator)
+    {
+        if (previous_mqtt_name != updated_radiator->mqtt_name)
+        {
+            ha_discovery_remove_radiator(_mqtt_client, radiator_id, previous_mqtt_name.c_str());
+        }
+
+        ha_discovery_announce_radiator(_mqtt_client, updated_radiator);
+    }
 
     httpd_resp_set_status(req, "201 NoContent");
     httpd_resp_send(req, "", HTTPD_RESP_USE_STRLEN);
@@ -2344,11 +2597,7 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
     {
         if (is_mqtt_connected)
         {
-            char config_topic[80];
-            snprintf(config_topic, sizeof(config_topic), "homeassistant/device/radiators/%s/config", mqtt_name);
-            esp_mqtt_client_publish(_mqtt_client, config_topic, "", 0, 0, 0);
-
-            ESP_LOGI(TAG, "Announced radiator removal via MQTT");
+            ha_discovery_remove_radiator(_mqtt_client, id, mqtt_name);
         }
 
         broadcast_home_state();
@@ -2462,6 +2711,12 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
 
     save_rooms_to_nvs(&g_room_manager);
 
+    // Before update_room_heat_loss(), so the device exists by the time its state is published.
+    if (is_mqtt_connected)
+    {
+        ha_discovery_announce_room(_mqtt_client, new_room);
+    }
+
     update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, new_room);
 
     broadcast_home_state();
@@ -2528,11 +2783,11 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(jNode, "name", room->name);
 
         cJSON_AddNumberToObject(jNode, "targetTemperature", room->target_temperature);
-        cJSON_AddNumberToObject(jNode, "currentTemperature", room->current_temperature);
+        add_number_or_null(jNode, "currentTemperature", room->has_current_temperature, room->current_temperature);
 
         cJSON_AddNumberToObject(jNode, "predictedHeatLoss", room->predicted_heat_loss_per_degree);
-        cJSON_AddNumberToObject(jNode, "measuredHeatLoss", room->measured_heat_loss_per_degree);
-        cJSON_AddNumberToObject(jNode, "heatLossDifference", room->heat_loss_difference);
+        add_number_or_null(jNode, "measuredHeatLoss", room->has_measured_heat_loss, room->measured_heat_loss_per_degree);
+        add_number_or_null(jNode, "heatLossDifference", room->has_measured_heat_loss, room->heat_loss_difference);
 
         uint16_t total_radiator_output = 0;
 
@@ -2551,16 +2806,19 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
 
             if (radiator)
             {
-                total_radiator_output += radiator->heat_output;
+                if (radiator->has_heat_output)
+                {
+                    total_radiator_output += radiator->heat_output;
+                }
 
                 cJSON *radiatorNode = cJSON_CreateObject();
 
                 cJSON_AddNumberToObject(radiatorNode, "radiatorId", radiator->radiator_id);
                 cJSON_AddStringToObject(radiatorNode, "name", radiator->name);
                 cJSON_AddNumberToObject(radiatorNode, "type", radiator->type);
-                cJSON_AddNumberToObject(radiatorNode, "flowTemp", radiator->flow_temperature);
-                cJSON_AddNumberToObject(radiatorNode, "returnTemp", radiator->return_temperature);
-                cJSON_AddNumberToObject(radiatorNode, "currentOutput", radiator->heat_output);
+                add_number_or_null(radiatorNode, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
+                add_number_or_null(radiatorNode, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
+                add_number_or_null(radiatorNode, "currentOutput", radiator->has_heat_output, radiator->heat_output);
 
                 cJSON_AddItemToArray(radiators, radiatorNode);
             }
@@ -2620,18 +2878,19 @@ static esp_err_t room_get_handler(httpd_req_t *req)
 
     cJSON_AddNumberToObject(root, "roomId", room->room_id);
     cJSON_AddStringToObject(root, "name", room->name);
+    cJSON_AddStringToObject(root, "mqttName", room->mqtt_name ? room->mqtt_name : "");
 
     int16_t current_temperature = 0;
-    get_endpoint_measured_value(&g_node_manager, room->room_temperature_node_id, room->room_temperature_endpoint_id, &current_temperature);
-    cJSON_AddNumberToObject(root, "currentTemperature", current_temperature);
+    bool has_current_temperature = get_endpoint_measured_value(&g_node_manager, room->room_temperature_node_id, room->room_temperature_endpoint_id, &current_temperature);
+    add_number_or_null(root, "currentTemperature", has_current_temperature, current_temperature);
 
     cJSON_AddNumberToObject(root, "targetTemperature", room->target_temperature);
     cJSON_AddNumberToObject(root, "temperatureSensorNodeId", room->room_temperature_node_id);
     cJSON_AddNumberToObject(root, "temperatureSensorEndpointId", room->room_temperature_endpoint_id);
     cJSON_AddNumberToObject(root, "heatLossPerDegree", room->predicted_heat_loss_per_degree);
 
-    cJSON_AddNumberToObject(root, "predictedHeatLossAtTargetTemperature", room->predicted_heat_loss_at_target_temperature);
-    cJSON_AddNumberToObject(root, "measuredHeatLossAtTargetTemperature", room->measured_heat_loss_at_target_temperature);
+    add_number_or_null(root, "predictedHeatLossAtTargetTemperature", room->has_predicted_heat_loss, room->predicted_heat_loss_at_target_temperature);
+    add_number_or_null(root, "measuredHeatLossAtTargetTemperature", room->has_measured_heat_loss, room->measured_heat_loss_at_target_temperature);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -2651,9 +2910,9 @@ static esp_err_t room_get_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(radiatorNode, "radiatorId", radiator->radiator_id);
             cJSON_AddStringToObject(radiatorNode, "name", radiator->name);
             cJSON_AddNumberToObject(radiatorNode, "type", radiator->type);
-            cJSON_AddNumberToObject(radiatorNode, "flowTemp", radiator->flow_temperature);
-            cJSON_AddNumberToObject(radiatorNode, "returnTemp", radiator->return_temperature);
-            cJSON_AddNumberToObject(radiatorNode, "currentOutput", radiator->heat_output);
+            add_number_or_null(radiatorNode, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
+            add_number_or_null(radiatorNode, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
+            add_number_or_null(radiatorNode, "currentOutput", radiator->has_heat_output, radiator->heat_output);
 
             cJSON_AddItemToArray(radiators, radiatorNode);
         }
@@ -2723,8 +2982,21 @@ static esp_err_t room_put_handler(httpd_req_t *req)
         radiator_ids[i++] = (uint8_t)iterator->valueint;
     }
 
+    // Optional, so an older client that does not send it leaves the MQTT name alone.
+    const cJSON *mqttNameJSON = cJSON_GetObjectItemCaseSensitive(root, "mqttName");
+    const char *mqtt_name = cJSON_IsString(mqttNameJSON) ? mqttNameJSON->valuestring : NULL;
+
+    // The HA device is keyed on the MQTT name, so a rename has to remove the one under the old
+    // name. Copied now, before update_room() frees it.
+    std::string previous_mqtt_name;
+    if (room_t *existing = find_room(&g_room_manager, room_id))
+    {
+        previous_mqtt_name = existing->mqtt_name ? existing->mqtt_name : "";
+    }
+
     room_t *updated_room = update_room(&g_room_manager,
                                        room_id, nameJSON->valuestring,
+                                       mqtt_name,
                                        (int16_t)targetTemperatureJSON->valueint,
                                        (uint8_t)heatLossPerDegreeJSON->valueint,
                                        radiator_count,
@@ -2734,7 +3006,18 @@ static esp_err_t room_put_handler(httpd_req_t *req)
 
     save_rooms_to_nvs(&g_room_manager);
 
-    get_endpoint_measured_value(&g_node_manager, temperatureSensorNodeIdJSON->valueint, temperatureSensorEndpointIdJSON->valueint, &updated_room->current_temperature);
+    updated_room->has_current_temperature = get_endpoint_measured_value(&g_node_manager, temperatureSensorNodeIdJSON->valueint, temperatureSensorEndpointIdJSON->valueint, &updated_room->current_temperature);
+
+    // Before update_room_heat_loss(), so the device exists by the time its state is published.
+    if (is_mqtt_connected && updated_room)
+    {
+        if (previous_mqtt_name != updated_room->mqtt_name)
+        {
+            ha_discovery_remove_room(_mqtt_client, room_id, previous_mqtt_name.c_str());
+        }
+
+        ha_discovery_announce_room(_mqtt_client, updated_room);
+    }
 
     update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, updated_room);
 
@@ -2765,7 +3048,17 @@ static esp_err_t rooms_delete_handler(httpd_req_t *req)
 
     uint8_t room_id = (uint8_t)strtoul(node_id_str, NULL, 10);
 
-    remove_room(&g_room_manager, room_id);
+    // Copied before remove_room() frees it: the HA device is keyed on it.
+    std::string mqtt_name;
+    if (room_t *existing = find_room(&g_room_manager, room_id))
+    {
+        mqtt_name = existing->mqtt_name ? existing->mqtt_name : "";
+    }
+
+    if (remove_room(&g_room_manager, room_id) == ESP_OK && is_mqtt_connected)
+    {
+        ha_discovery_remove_room(_mqtt_client, room_id, mqtt_name.c_str());
+    }
 
     broadcast_home_state();
 
@@ -2779,6 +3072,11 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
 {
     radiator_manager_reset_and_reload(&g_radiator_manager);
     room_manager_reset_and_reload(&g_room_manager);
+
+    if (is_mqtt_connected)
+    {
+        ha_discovery_announce_rooms_and_radiators(_mqtt_client, &g_room_manager, &g_radiator_manager);
+    }
 
     httpd_resp_set_status(req, "200 Ok");
     httpd_resp_send(req, "Done", HTTPD_RESP_USE_STRLEN);
@@ -2876,6 +3174,130 @@ static const char *home_sensor_subscription_state(uint64_t node_id)
     return node->is_subscription_pending ? "pending" : "unsubscribed";
 }
 
+static void add_number_or_null(cJSON *object, const char *name, bool has_value, double value)
+{
+    if (has_value)
+    {
+        cJSON_AddNumberToObject(object, name, value);
+    }
+    else
+    {
+        cJSON_AddNullToObject(object, name);
+    }
+}
+
+static bool endpoint_has_device_type(const endpoint_entry_t *endpoint, uint32_t device_type_id)
+{
+    for (uint8_t i = 0; i < endpoint->device_type_count; i++)
+    {
+        if (endpoint->device_type_ids[i] == device_type_id)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The Home page's Heat Pump section: the power the heat pump draws, plus whatever sits on the same
+// node -- its temperature sensors, and a zone for each heating loop (Thermostat) and hot water
+// tank (Water Heater). Null while no heat pump is picked or the node is gone. Everything is in the
+// units the clusters report: mW and 0.01 degC, with enums and bitmaps left as numbers for the UI.
+//
+static void add_heat_pump_json(cJSON *root)
+{
+    matter_node_t *node = find_node(&g_node_manager, g_home_manager.heat_pump_node_id);
+
+    if (g_home_manager.heat_pump_node_id == 0 || node == NULL)
+    {
+        cJSON_AddNullToObject(root, "heatPump");
+        return;
+    }
+
+    cJSON *heat_pump = cJSON_AddObjectToObject(root, "heatPump");
+
+    heat_pump_endpoint_t *self = heat_pump_find_endpoint(&g_heat_pump_manager, node->node_id, g_home_manager.heat_pump_endpoint_id);
+
+    add_number_or_null(heat_pump, "power", self && self->has_active_power, self ? (double)self->active_power_mw : 0);
+
+    cJSON *temperatures = cJSON_AddArrayToObject(heat_pump, "temperatures");
+    cJSON *zones = cJSON_AddArrayToObject(heat_pump, "zones");
+
+    for (uint16_t i = 0; i < node->endpoints_count; i++)
+    {
+        const endpoint_entry_t *endpoint = &node->endpoints[i];
+
+        bool is_water_heater = endpoint_has_device_type(endpoint, DEVICE_TYPE_WATER_HEATER);
+
+        if (endpoint_has_device_type(endpoint, DEVICE_TYPE_TEMPERATURE_SENSOR))
+        {
+            cJSON *temperature = cJSON_CreateObject();
+            cJSON_AddNumberToObject(temperature, "endpointId", endpoint->endpoint_id);
+
+            if (endpoint->name)
+            {
+                cJSON_AddStringToObject(temperature, "name", endpoint->name);
+            }
+            else
+            {
+                cJSON_AddNullToObject(temperature, "name");
+            }
+
+            // The reading is dropped with the node's subscription -- see
+            // forget_readings_if_unsubscribed().
+            add_number_or_null(temperature, "temperature", endpoint->has_measured_value, endpoint->measured_value);
+
+            cJSON_AddItemToArray(temperatures, temperature);
+        }
+        else if (is_water_heater || endpoint_has_device_type(endpoint, DEVICE_TYPE_THERMOSTAT))
+        {
+            heat_pump_endpoint_t *state = heat_pump_find_endpoint(&g_heat_pump_manager, node->node_id, endpoint->endpoint_id);
+
+            cJSON *zone = cJSON_CreateObject();
+            cJSON_AddNumberToObject(zone, "endpointId", endpoint->endpoint_id);
+
+            if (endpoint->name)
+            {
+                cJSON_AddStringToObject(zone, "name", endpoint->name);
+            }
+            else
+            {
+                cJSON_AddNullToObject(zone, "name");
+            }
+
+            cJSON_AddBoolToObject(zone, "waterHeater", is_water_heater);
+
+            add_number_or_null(zone, "localTemperature", state && state->has_local_temperature, state ? state->local_temperature : 0);
+            add_number_or_null(zone, "heatingSetpoint", state && state->has_heating_setpoint, state ? state->heating_setpoint : 0);
+            add_number_or_null(zone, "systemMode", state && state->has_system_mode, state ? state->system_mode : 0);
+            add_number_or_null(zone, "runningState", state && state->has_running_state, state ? state->running_state : 0);
+
+            if (is_water_heater)
+            {
+                add_number_or_null(zone, "heatDemand", state && state->has_heat_demand, state ? state->heat_demand : 0);
+                add_number_or_null(zone, "boostState", state && state->has_boost_state, state ? state->boost_state : 0);
+
+                // The number is only any use to the UI as a fallback, for a mode the device reports
+                // but does not list in SupportedModes.
+                add_number_or_null(zone, "waterHeaterMode", state && state->has_water_heater_mode, state ? state->water_heater_mode : 0);
+
+                const char *mode_label = heat_pump_water_heater_mode_label(state);
+
+                if (mode_label)
+                {
+                    cJSON_AddStringToObject(zone, "waterHeaterModeLabel", mode_label);
+                }
+                else
+                {
+                    cJSON_AddNullToObject(zone, "waterHeaterModeLabel");
+                }
+            }
+
+            cJSON_AddItemToArray(zones, zone);
+        }
+    }
+}
+
 static cJSON *build_home_json(void)
 {
     cJSON *root = cJSON_CreateObject();
@@ -2903,6 +3325,11 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "heatMeterNodeId", g_home_manager.heat_meter_node_id);
     cJSON_AddNumberToObject(root, "heatMeterEndpointId", g_home_manager.heat_meter_endpoint_id);
     cJSON_AddStringToObject(root, "heatMeterSubscription", home_sensor_subscription_state(g_home_manager.heat_meter_node_id));
+
+    cJSON_AddNumberToObject(root, "heatPumpNodeId", g_home_manager.heat_pump_node_id);
+    cJSON_AddNumberToObject(root, "heatPumpEndpointId", g_home_manager.heat_pump_endpoint_id);
+    cJSON_AddStringToObject(root, "heatPumpSubscription", home_sensor_subscription_state(g_home_manager.heat_pump_node_id));
+    add_heat_pump_json(root);
     
     cJSON_AddNumberToObject(root, "loggingIntervalSeconds", history_logger_interval());
     cJSON_AddNumberToObject(root, "loggingIntervalActiveSeconds", history_logger_active_interval());
@@ -2992,9 +3419,8 @@ static cJSON *build_home_json(void)
     }
 
     // The average of the rooms' temperatures, derived by update_home(); null while no room
-    // has a reading. dhwRunning has no source bound yet, so it is always null for now -- it
-    // is here, and in the history record, so that wiring a source later is the only change
-    // needed.
+    // has a reading. dhwRunning comes from the picked heat pump -- see
+    // update_heat_pump_running() -- and is null while none is picked or it has not reported.
     //
     if (g_home_manager.has_average_internal_temperature)
     {
@@ -3086,6 +3512,194 @@ static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id)
     }
 }
 
+// The same for a heat pump: its readings are dropped with its subscription, so the Heat Pump section
+// dashes rather than showing a mode or setpoint from before the node went quiet. Its temperature
+// sensors are covered by add_heat_pump_json(), which checks the subscription itself.
+//
+static void forget_heat_pump_if_unsubscribed(uint64_t node_id)
+{
+    if (node_is_subscribed(node_id))
+    {
+        return;
+    }
+
+    heat_pump_forget_node(&g_heat_pump_manager, node_id);
+    update_heat_pump_running();
+}
+
+// Works out whether the picked heat pump is space heating or producing hot water, for the history
+// record and the bar the charts draw from it. Both come from the Heat bit of
+// ThermostatRunningState: on a Water Heater endpoint it means hot water, on any other Thermostat
+// endpoint it means heating. Several endpoints of one kind are ORed, so two heating loops read as
+// heating while either runs.
+//
+// A state is absent until an endpoint of its kind has reported, and again once the node's readings
+// are dropped with its subscription, so history records the sentinel rather than a stale mode.
+//
+static void update_heat_pump_running(void)
+{
+    bool has_heating = false;
+    bool heating = false;
+    bool has_dhw = false;
+    bool dhw = false;
+
+    matter_node_t *node = find_node(&g_node_manager, g_home_manager.heat_pump_node_id);
+
+    if (g_home_manager.heat_pump_node_id != 0 && node != NULL)
+    {
+        for (uint16_t i = 0; i < node->endpoints_count; i++)
+        {
+            const endpoint_entry_t *endpoint = &node->endpoints[i];
+
+            bool is_water_heater = endpoint_has_device_type(endpoint, DEVICE_TYPE_WATER_HEATER);
+
+            if (!is_water_heater && !endpoint_has_device_type(endpoint, DEVICE_TYPE_THERMOSTAT))
+            {
+                continue;
+            }
+
+            heat_pump_endpoint_t *state = heat_pump_find_endpoint(&g_heat_pump_manager, node->node_id, endpoint->endpoint_id);
+
+            if (state == NULL || !state->has_running_state)
+            {
+                continue;
+            }
+
+            // RelayStateBitmap bit 0, Heat.
+            bool running = (state->running_state & 0x0001) != 0;
+
+            if (is_water_heater)
+            {
+                has_dhw = true;
+                dhw = dhw || running;
+            }
+            else
+            {
+                has_heating = true;
+                heating = heating || running;
+            }
+        }
+    }
+
+    g_home_manager.dhw_running = dhw;
+    g_home_manager.has_dhw_running = has_dhw;
+    g_home_manager.heating_running = heating;
+    g_home_manager.has_heating_running = has_heating;
+}
+
+// And for everything else a node supplies. Its endpoints stop having a reading, and so does whatever
+// was fed from them: a room's temperature, a radiator's flow and return, the home's heat meter and
+// electrical meter. History records the sentinel, MQTT publishes null and the UI dashes, rather
+// than all three repeating the last value for as long as the node stays away. The priming report
+// of the next subscription sets them again.
+//
+static void forget_readings_if_unsubscribed(uint64_t node_id)
+{
+    if (node_id == 0 || node_is_subscribed(node_id))
+    {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Node 0x%016llX lost its subscription; its readings are no longer current", node_id);
+
+    clear_node_measured_values(&g_node_manager, node_id);
+
+    bool changed = false;
+
+    if (node_id == g_home_manager.heat_meter_node_id)
+    {
+        g_home_manager.has_heat_meter_flow = false;
+        g_home_manager.has_heat_meter_flow_temperature = false;
+        g_home_manager.has_heat_meter_return_temperature = false;
+        g_home_manager.has_heat_meter_power = false;
+        changed = true;
+    }
+
+    if (node_id == g_home_manager.electrical_meter_node_id)
+    {
+        g_home_manager.has_electrical_voltage = false;
+        g_home_manager.has_electrical_current = false;
+        g_home_manager.has_electrical_power = false;
+        changed = true;
+    }
+
+    for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
+    {
+        bool lost_flow = radiator->flow_temp_node_id == node_id;
+        bool lost_return = radiator->return_temp_node_id == node_id;
+
+        if (!lost_flow && !lost_return)
+        {
+            continue;
+        }
+
+        if (lost_flow)
+        {
+            radiator->has_flow_temperature = false;
+            radiator->flow_temperature = 0;
+        }
+
+        if (lost_return)
+        {
+            radiator->has_return_temperature = false;
+            radiator->return_temperature = 0;
+        }
+
+        // Drops the radiator's output with them and republishes its state.
+        update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "channel", "radiator");
+        cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
+        add_number_or_null(root, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
+        add_number_or_null(root, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
+        add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
+
+        ws_broadcast_json(root);
+
+        cJSON_Delete(root);
+
+        changed = true;
+    }
+
+    for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+    {
+        if (room->room_temperature_node_id == node_id)
+        {
+            changed = true;
+            break;
+        }
+    }
+
+    if (!changed)
+    {
+        return;
+    }
+
+    // Every room re-reads its temperature from its endpoint, so the ones this node fed lose theirs,
+    // and it ends in update_home(): the history snapshot, COP and the home's MQTT state.
+    update_all_rooms_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+
+    for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+    {
+        if (room->room_temperature_node_id != node_id)
+        {
+            continue;
+        }
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "channel", "room");
+        cJSON_AddNumberToObject(root, "roomId", room->room_id);
+        add_number_or_null(root, "temperature", room->has_current_temperature, room->current_temperature);
+
+        ws_broadcast_json(root);
+
+        cJSON_Delete(root);
+    }
+
+    broadcast_home_state();
+}
+
 static void broadcast_home_if_home_sensor(uint64_t node_id)
 {
     if (node_id == 0)
@@ -3095,6 +3709,7 @@ static void broadcast_home_if_home_sensor(uint64_t node_id)
 
     if (node_id == g_home_manager.outdoor_temp_node_id ||
         node_id == g_home_manager.heat_meter_node_id ||
+        node_id == g_home_manager.heat_pump_node_id ||
         node_id == g_home_manager.electrical_meter_node_id)
     {
         broadcast_home_state();
@@ -3191,6 +3806,19 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     g_home_manager.heat_meter_node_id = (uint64_t)heatMeterNodeIdJSON->valueint;
     g_home_manager.heat_meter_endpoint_id = (uint16_t)heatMeterEndpointIdJSON->valueint;
 
+    // Optional, like the logging interval below: a client that omits it leaves the selection alone.
+    //
+    const cJSON *heatPumpNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "heatPumpNodeId");
+    const cJSON *heatPumpEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "heatPumpEndpointId");
+
+    if (cJSON_IsNumber(heatPumpNodeIdJSON) && cJSON_IsNumber(heatPumpEndpointIdJSON))
+    {
+        g_home_manager.heat_pump_node_id = (uint64_t)heatPumpNodeIdJSON->valueint;
+        g_home_manager.heat_pump_endpoint_id = (uint16_t)heatPumpEndpointIdJSON->valueint;
+
+        update_heat_pump_running();
+    }
+
     // Optional: a client that omits it leaves the logger alone rather than resetting it.
     //
     const cJSON *loggingIntervalJSON = cJSON_GetObjectItemCaseSensitive(root, "loggingIntervalSeconds");
@@ -3205,18 +3833,10 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     save_home_to_nvs(&g_home_manager);
 
     // Copy the outdoor temperature from the sensor to the home manager so that it's available
-    // immediately -- but only from a node with a live subscription. get_endpoint_measured_value()
-    // returns ESP_OK whether or not it finds anything, so its result cannot be the test: an
-    // unbound sensor (node 0), or one that is not currently subscribed, leaves the reading absent
-    // rather than reporting a stale value or the initial 0.
+    // immediately. An unbound sensor (node 0), one that has not reported, or one whose subscription
+    // has been lost has no reading to copy, and leaves it absent.
     //
-    g_home_manager.has_outdoor_temperature = false;
-
-    if (node_is_subscribed(g_home_manager.outdoor_temp_node_id))
-    {
-        get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
-        g_home_manager.has_outdoor_temperature = true;
-    }
+    g_home_manager.has_outdoor_temperature = get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
 
     broadcast_home_state();
 
@@ -3402,7 +4022,7 @@ httpd_handle_t start_webserver(void)
         ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
     }
 
-    config.max_uri_handlers = 34;
+    config.max_uri_handlers = 36;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
@@ -3568,6 +4188,7 @@ httpd_handle_t start_webserver(void)
         history_api_register(server);
         status_api_register(server);
         companion_api_register(server, &g_node_manager);
+        mcp_server_register(server);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 
@@ -3597,7 +4218,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         // Republished on every connect as well as being retained at the broker. Home Assistant
         // replays retained discovery when its MQTT integration restarts, and this covers the case
-        // where the broker itself lost the retained copy.
+        // where the broker itself lost the retained copy. Rooms and radiators follow on the next
+        // update_home() -- see ha_discovery_announce_all().
         ha_discovery_publish_online(_mqtt_client);
         ha_discovery_announce_all(_mqtt_client);
 
@@ -3848,6 +4470,7 @@ extern "C" void app_main()
     radiator_manager_init(&g_radiator_manager);
     room_manager_init(&g_room_manager);
     home_manager_init(&g_home_manager);
+    heat_pump_manager_init(&g_heat_pump_manager);
 
     /* Matter start */
 

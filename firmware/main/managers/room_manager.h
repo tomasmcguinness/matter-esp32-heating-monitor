@@ -24,6 +24,7 @@ typedef struct room
     int16_t target_temperature;
 
     // Transient data
+    bool has_current_temperature;
     int16_t current_temperature;
     int16_t total_radiator_output;
 
@@ -36,6 +37,12 @@ typedef struct room
     int16_t predicted_heat_loss_at_current_temperature;
 
     double heat_loss_difference;
+
+    // Whether the figures above were worked out from real readings. The predicted ones need an
+    // outdoor temperature; the measured ones a room temperature and a radiator output as well.
+    // The fields hold 0 when they could not be.
+    bool has_predicted_heat_loss;
+    bool has_measured_heat_loss;
 
     struct room *next;
 
@@ -54,7 +61,8 @@ uint8_t get_next_room_id(room_manager_t *manager);
 room_t *find_room(room_manager_t *manager, uint8_t room_id);
 
 room_t *add_room(room_manager_t *manager, char *name, char *mqtt_name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
-room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_t target_temperature, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
+// mqtt_name may be NULL, which leaves the room's MQTT name as it is.
+room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, const char *mqtt_name, int16_t target_temperature, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id);
 
 esp_err_t set_room_radiators(room_t *room, uint8_t radiator_count, uint8_t *radiator_ids);
 

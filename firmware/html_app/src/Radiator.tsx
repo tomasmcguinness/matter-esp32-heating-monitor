@@ -10,10 +10,10 @@ type RadiatorDetail = {
   radiatorId: number;
   name: string;
   output: number;
-  flowTemp: number;
-  returnTemp: number;
-  meanWaterTemperature: number;
-  currentOutput: number;
+  flowTemp: number | null;
+  returnTemp: number | null;
+  meanWaterTemperature: number | null;
+  currentOutput: number | null;
   roomId: number | null;
   roomName: string | null;
   roomTemperature: number | null;

@@ -22,6 +22,9 @@ typedef struct matter_endpoint
 
     uint8_t power_source;
 
+    // TemperatureMeasurement::MeasuredValue, 0.01 degC. Absent before the first report, after a
+    // null or implausible one, and once the node's subscription is lost.
+    bool has_measured_value;
     int16_t measured_value;
 
     // PowerSource battery state. Both attributes are optional and nullable, so the has_* flags
@@ -114,7 +117,9 @@ esp_err_t set_endpoint_power_source(matter_node_t *node, uint16_t endpoint_id, u
 bool node_is_battery_powered(const matter_node_t *node);
 esp_err_t set_battery_percent(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, uint8_t percent);
 esp_err_t set_battery_voltage(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, uint32_t voltage_mv);
-esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t measured_value);
+esp_err_t set_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, bool has_value, int16_t measured_value);
+// Drops the reading of every endpoint on a node, for when its subscription is lost.
+esp_err_t clear_node_measured_values(node_manager_t *manager, uint64_t node_id);
 esp_err_t get_endpoint_measured_value_uint16(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, uint16_t *measured_value);
 
 esp_err_t mark_node_has_subscription(node_manager_t *manager, uint64_t node_id, uint32_t subscription_id);
@@ -127,7 +132,9 @@ esp_err_t mark_node_subscription_pending(node_manager_t *manager, uint64_t node_
 esp_err_t mark_node_seen(node_manager_t *manager, uint64_t node_id, uint32_t timestamp);
 bool node_needs_subscription(node_manager_t *manager, uint64_t node_id);
 
-esp_err_t get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value);
+// True when the endpoint has a reading, which is then written to measured_value. Otherwise
+// measured_value is left untouched.
+bool get_endpoint_measured_value(node_manager_t *manager, uint64_t node_id, uint16_t endpoint_id, int16_t *measured_value);
 
 esp_err_t clear_node_details(node_manager_t *manager, uint64_t node_id);
 

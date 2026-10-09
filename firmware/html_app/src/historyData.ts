@@ -20,7 +20,26 @@ export type HistoryResponse = {
   points?: (number | null)[][];
   energyWh?: { heat?: number; electrical?: number };
   cop?: number | null;
+  // KIND_HOME only: the same energy over just the slots recorded as heating and as hot water.
+  // Absent from firmware that predates the split.
+  modes?: { heating?: ModeEnergy; hotWater?: ModeEnergy };
   reason?: string;
+};
+
+// Energy over a set of slots, and the COP it gives: heat out / electricity in, null when no
+// electricity was recorded.
+export type ModeEnergy = { heatWh: number; electricalWh: number; cop: number | null };
+
+// The response from GET /api/history/totals: every recorded day summed. `from`, `to` and the
+// three figures are absent when `days` is 0.
+export type TotalsResponse = {
+  storage: string;
+  days?: number;
+  from?: string;
+  to?: string;
+  overall?: ModeEnergy;
+  heating?: ModeEnergy;
+  hotWater?: ModeEnergy;
 };
 
 // The leading columns each page charts, named as history_api.c's field_names_for() names them.
@@ -49,6 +68,57 @@ export function fieldsMatch(body: HistoryResponse, expected: string[]): boolean 
     return true;
   }
   return expected.every((name, i) => body.fields![i] === name);
+}
+
+// A stretch of the day the heat pump spent in one mode, as unix seconds. Idle time has no span.
+export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" };
+
+// The heat pump's mode over a day, from the home series' heatingRunning and dhwRunning columns.
+// Those are found by name rather than position, so this does not care where they sit in the
+// record, and a day recorded before either existed -- or by firmware without them -- is simply a
+// day with no spans.
+//
+// Consecutive buckets in the same mode are merged into one span. Hot water wins when both are on:
+// the heat pump can only be doing one, and a heating loop still calling for heat while the tank is
+// being reheated is not being served.
+//
+// A bucket is the integer mean of its slots, so a 0/1 column reads 1 only when the mode held for
+// the whole bucket. A run therefore starts and ends up to one bucket late and early.
+export function modeSpans(body: HistoryResponse | null): ModeSpan[] {
+  const points = body?.points ?? [];
+  const heatingCol = (body?.fields?.indexOf("heatingRunning") ?? -1) + 1;
+  const dhwCol = (body?.fields?.indexOf("dhwRunning") ?? -1) + 1;
+
+  if (points.length === 0 || (heatingCol === 0 && dhwCol === 0)) {
+    return [];
+  }
+
+  const bucketWidth = (body?.interval ?? 0) * (body?.stride ?? 1);
+  const spans: ModeSpan[] = [];
+
+  for (const point of points) {
+    const ts = point[0] as number;
+    const mode =
+      dhwCol !== 0 && (point[dhwCol] ?? 0) > 0
+        ? "hotWater"
+        : heatingCol !== 0 && (point[heatingCol] ?? 0) > 0
+          ? "heating"
+          : null;
+
+    if (mode === null) {
+      continue;
+    }
+
+    const last = spans[spans.length - 1];
+
+    if (last && last.mode === mode && ts <= last.to) {
+      last.to = ts + bucketWidth;
+    } else {
+      spans.push({ from: ts, to: ts + bucketWidth, mode });
+    }
+  }
+
+  return spans;
 }
 
 export function todayISO(): string {

@@ -1,0 +1,5 @@
+test_mcp
+test_server
+*.o
+*.gen.c
+fixture_sdcard/

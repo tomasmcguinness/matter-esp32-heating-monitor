@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { shiftDate, todayISO } from "./historyData";
+import { shiftDate, todayISO, type ModeSpan } from "./historyData";
 
 export type ChartSeries = {
   label: string;
@@ -27,7 +27,74 @@ export type ChartProps = {
   // Supply these only when some series sets axis: "right".
   rightUnit?: string;
   rightDecimals?: number;
+  // Draws each line through a moving average of its points, as a curve. For slow quantities like
+  // water and air temperature, where a probe's last-digit jitter otherwise hides the trend.
+  smooth?: boolean;
+  // When the heat pump was heating and when it was making hot water, drawn as a strip along the
+  // bottom of the plot. Compared by identity like `data`, so memoise it.
+  modes?: ModeSpan[];
 };
+
+// The strip's colours, and its height in CSS pixels. Idle time is left blank.
+const MODE_COLOURS = { heating: "#fd7e14", hotWater: "#6f42c1" } as const;
+const MODE_LABELS = { heating: "Heating", hotWater: "Hot water" } as const;
+const MODE_BAR_PX = 8;
+
+// Fills each span across the bottom edge of the plot area. Positions come from the x scale, so the
+// strip stays aligned with the lines and the synced cursor whatever the chart's own points are.
+function drawModes(u: uPlot, modes: ModeSpan[]) {
+  const { ctx, bbox } = u;
+  const barHeight = MODE_BAR_PX * devicePixelRatio;
+  const right = bbox.left + bbox.width;
+
+  ctx.save();
+
+  for (const span of modes) {
+    const x0 = Math.max(bbox.left, u.valToPos(span.from, "x", true));
+    const x1 = Math.min(right, u.valToPos(span.to, "x", true));
+
+    if (x1 > x0) {
+      ctx.fillStyle = MODE_COLOURS[span.mode];
+      ctx.fillRect(x0, bbox.top + bbox.height - barHeight, x1 - x0, barHeight);
+    }
+  }
+
+  ctx.restore();
+}
+
+// Points either side of each one in the moving average. At the 200 points a day the today charts
+// ask for, that is about half an hour of readings per point.
+const SMOOTH_RADIUS = 2;
+
+// Each value is replaced by the mean of the non-null values within SMOOTH_RADIUS of it. A null
+// stays null, so an outage is still drawn as a gap rather than bridged by its neighbours.
+function smoothData(data: uPlot.AlignedData): uPlot.AlignedData {
+  const [xs, ...ys] = data;
+
+  const smoothed = ys.map((column) =>
+    Array.from(column, (value, i) => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      let sum = 0;
+      let count = 0;
+
+      for (let j = Math.max(0, i - SMOOTH_RADIUS); j <= Math.min(column.length - 1, i + SMOOTH_RADIUS); j++) {
+        const neighbour = column[j];
+
+        if (neighbour !== null && neighbour !== undefined) {
+          sum += neighbour;
+          count++;
+        }
+      }
+
+      return sum / count;
+    })
+  );
+
+  return [xs, ...smoothed] as uPlot.AlignedData;
+}
 
 // Every chart sits in a card with its title as the header, so a page of charts reads as a stack of
 // panels rather than a run of loose plots. Exported because a chart's empty and error states need
@@ -50,6 +117,8 @@ export function Chart({
   decimals = 1,
   rightUnit,
   rightDecimals = 0,
+  smooth = false,
+  modes,
 }: ChartProps) {
   const holder = useRef<HTMLDivElement>(null);
   const plot = useRef<uPlot | null>(null);
@@ -58,6 +127,8 @@ export function Chart({
     if (!holder.current || !data) {
       return;
     }
+
+    const drawn = smooth ? smoothData(data) : data;
 
     // uPlot sizes itself once, so it is rebuilt on data change and on resize rather than
     // being asked to reflow.
@@ -86,14 +157,20 @@ export function Chart({
                 width: 1.5,
                 spanGaps: false,
                 scale: right ? "y2" : "y",
-                value: (_u: uPlot, v: number | null) =>
-                  v === null ? "--" : `${v.toFixed(seriesDecimals)} ${seriesUnit}`,
+                ...(smooth ? { paths: uPlot.paths.spline!() } : {}),
+                // The legend reads from the unsmoothed data, so hovering shows what was recorded
+                // rather than an average of it.
+                value: (_u: uPlot, _v: number | null, seriesIdx: number, idx: number | null) => {
+                  const v = idx === null ? null : data[seriesIdx][idx];
+                  return v === null || v === undefined ? "--" : `${v.toFixed(seriesDecimals)} ${seriesUnit}`;
+                },
               };
             }),
           ],
           // uPlot creates a scale on demand from a series or axis that names one, but declaring it
           // keeps that an explicit part of the config rather than a behaviour to rely on.
           scales: rightUnit ? { y2: {} } : undefined,
+          hooks: modes && modes.length > 0 ? { draw: [(u) => drawModes(u, modes)] } : undefined,
           axes: [
             {},
             { label: unit },
@@ -104,7 +181,7 @@ export function Chart({
               : []),
           ],
         },
-        data,
+        drawn,
         holder.current!
       );
     };
@@ -116,11 +193,29 @@ export function Chart({
       plot.current?.destroy();
       plot.current = null;
     };
-  }, [data, series, unit, decimals, rightUnit, rightDecimals]);
+  }, [data, series, unit, decimals, rightUnit, rightDecimals, smooth, modes]);
 
   return (
     <ChartCard title={title}>
       <div ref={holder} />
+      {modes && modes.length > 0 && (
+        <div className="text-muted small" style={{ textAlign: "center" }}>
+          {(["heating", "hotWater"] as const).map((mode) => (
+            <span key={mode} style={{ margin: "0 8px" }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "12px",
+                  height: `${MODE_BAR_PX}px`,
+                  marginRight: "4px",
+                  background: MODE_COLOURS[mode],
+                }}
+              />
+              {MODE_LABELS[mode]}
+            </span>
+          ))}
+        </div>
+      )}
     </ChartCard>
   );
 }

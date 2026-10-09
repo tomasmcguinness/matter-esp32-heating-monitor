@@ -117,13 +117,20 @@ room_t *find_room(room_manager_t *manager, uint8_t room_id)
     return NULL;
 }
 
-room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, int16_t target_temperature, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t temperature_node_id, uint16_t temperature_endpoint_id)
+room_t *update_room(room_manager_t *manager, uint8_t room_id, char *name, const char *mqtt_name, int16_t target_temperature, uint8_t heat_loss_per_degree, uint8_t radiator_count, uint8_t *radiator_ids, uint64_t temperature_node_id, uint16_t temperature_endpoint_id)
 {
     room_t *room = find_room(manager, room_id);
 
     free(room->name);
     room->name = (char *)malloc(strlen(name) + 1);
     strcpy(room->name, name);
+
+    if (mqtt_name)
+    {
+        free(room->mqtt_name);
+        room->mqtt_name = (char *)malloc(strlen(mqtt_name) + 1);
+        strcpy(room->mqtt_name, mqtt_name);
+    }
 
     room->target_temperature = target_temperature;
     room->predicted_heat_loss_per_degree = heat_loss_per_degree;
@@ -342,6 +349,7 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
             return ESP_ERR_NO_MEM;
         }
 
+        room->has_current_temperature = false;
         room->current_temperature = 0;
         room->measured_heat_loss_per_degree = 0;
         room->predicted_heat_loss_at_target_temperature = 0;

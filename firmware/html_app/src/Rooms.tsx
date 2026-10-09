@@ -58,7 +58,7 @@ function Rooms() {
       <td><Power>{n.heatInput}</Power></td>
       <td><Power>{n.predictedHeatLoss}</Power></td>      
       <td><Power>{n.measuredHeatLoss}</Power></td>
-      <td>{n.heatLossDifference === 0 ? '-' : `${Math.abs(n.heatLossDifference).toFixed(0)}%`}</td>
+      <td>{n.heatLossDifference == null || n.heatLossDifference === 0 ? '-' : `${Math.abs(n.heatLossDifference).toFixed(0)}%`}</td>
     </tr>);
   });
 
