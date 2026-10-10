@@ -107,8 +107,9 @@ One thing does reach history: **whether the heat pump is heating or making hot w
 hot water, on any other Thermostat endpoint it is heating, ORed across endpoints of a kind.
 `HeatDemand` is not used. Both are absent until such an endpoint reports and again when the node's
 readings are dropped, so the record holds the sentinel rather than a stale mode. It runs after
-every heat pump report, when the readings are forgotten, and when the pick changes. `dhw_running`
-is also in the MQTT home state, though not in HA discovery; `heating_running` is in history only.
+every heat pump report, when the readings are forgotten, and when the pick changes. Both are
+also in the MQTT home state (`heating_running`, `dhw_running`; true, false or null) and announced
+to Home Assistant as binary sensors.
 
 The section is built from **everything on the heat pump's node**, not from the heat pump endpoint's
 `PartsList`, which is never read:
@@ -467,6 +468,8 @@ sent by `ha_discovery_announce_pending()` from `update_home()`, for the same rea
 logger snapshots: the room and radiator lists must not be walked from another task. The HTTP
 handlers announce or remove single rooms and radiators directly when they change. Adding an
 entity is one row in the `*_SENSORS` tables, plus the matching key in `calculations_manager.cpp`.
+A row with `binary` set is a true/false in the payload and is announced as a `binary_sensor`,
+whose template maps it to `ON` / `OFF` and a null to `None` (unknown).
 
 **Other components:**
 - `commands/` — Matter pairing and identify command wrappers

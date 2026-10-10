@@ -23,14 +23,14 @@ struct ha_sensor_t {
     const char *name;         // entity name shown in Home Assistant
     const char *device_class; // NULL to omit
     const char *unit;         // NULL to omit
+    bool binary;              // a true/false in the payload, announced as a binary_sensor
 };
 
 // The quantities update_home() puts on HOME_STATE_TOPIC.
 //
-// Deliberately absent: dhw_running. It is only set once a heat pump is picked on Edit Home, so
-// without one it would be a permanently unknown entity, which in HA cannot be told apart from a
-// sensor that has broken. Adding it is one row here, picked up on the next reconnect -- note it
-// needs "binary_sensor" rather than "sensor".
+// heating_running and dhw_running are only set once a heat pump is picked on Edit Home. Without
+// one they are permanently unknown entities, which in HA cannot be told apart from a sensor that
+// has broken.
 static const ha_sensor_t HOME_SENSORS[] = {
     {"heat_power",                           "Heat output",         "power",            "W"},
     {"electrical_power",                     "Electricity input",   "power",            "W"},
@@ -44,6 +44,8 @@ static const ha_sensor_t HOME_SENSORS[] = {
     {"electrical_current",                   "Current",             "current",          "A"},
     {"total_predicted_heat_loss_per_degree", "Predicted heat loss", NULL,               "W/°C"},
     {"total_measured_heat_loss_per_degree",  "Measured heat loss",  NULL,               "W/°C"},
+    {"heating_running",                      "Heating running",     "running",          NULL, true},
+    {"dhw_running",                          "Hot water running",   "running",          NULL, true},
 };
 
 // The quantities update_room_heat_loss() puts on a room's state topic.
@@ -187,7 +189,9 @@ static cJSON *build_component(const ha_sensor_t *sensor, const char *device_id, 
 {
     cJSON *component = cJSON_CreateObject();
 
-    cJSON_AddStringToObject(component, "p", "sensor");
+    const char *platform = sensor->binary ? "binary_sensor" : "sensor";
+
+    cJSON_AddStringToObject(component, "p", platform);
     cJSON_AddStringToObject(component, "name", sensor->name);
 
     if (sensor->device_class) {
@@ -197,17 +201,28 @@ static cJSON *build_component(const ha_sensor_t *sensor, const char *device_id, 
         cJSON_AddStringToObject(component, "unit_of_measurement", sensor->unit);
     }
 
-    // Everything here is an instantaneous reading, so it belongs in HA's long-term statistics as
-    // a measurement rather than a total.
-    cJSON_AddStringToObject(component, "state_class", "measurement");
+    char value_template[224];
 
-    // add_reading_or_null() emits a real JSON null when a reading is absent, and a bare
-    // {{ value_json.x }} renders that as the string "None", which HA logs errors over. Yielding
-    // nothing instead leaves the entity unknown, which is what absent actually means.
-    char value_template[160];
-    snprintf(value_template, sizeof(value_template),
-             "{%% if value_json.%s is not none %%}{{ value_json.%s }}{%% endif %%}",
-             sensor->key, sensor->key);
+    if (sensor->binary) {
+        // A binary sensor takes ON and OFF, and "None" for unknown. An empty render would leave
+        // the last state showing instead, so an absent flag has to say None outright.
+        snprintf(value_template, sizeof(value_template),
+                 "{%% if value_json.%s is none %%}None{%% else %%}"
+                 "{{ 'ON' if value_json.%s else 'OFF' }}{%% endif %%}",
+                 sensor->key, sensor->key);
+    } else {
+        // Everything here is an instantaneous reading, so it belongs in HA's long-term statistics
+        // as a measurement rather than a total.
+        cJSON_AddStringToObject(component, "state_class", "measurement");
+
+        // add_reading_or_null() emits a real JSON null when a reading is absent, and a bare
+        // {{ value_json.x }} renders that as the string "None", which HA logs errors over. Yielding
+        // nothing instead leaves the entity unknown, which is what absent actually means.
+        snprintf(value_template, sizeof(value_template),
+                 "{%% if value_json.%s is not none %%}{{ value_json.%s }}{%% endif %%}",
+                 sensor->key, sensor->key);
+    }
+
     cJSON_AddStringToObject(component, "value_template", value_template);
 
     char unique_id[128];
@@ -218,7 +233,7 @@ static cJSON *build_component(const ha_sensor_t *sensor, const char *device_id, 
     // with the display name. HA only applies it when the entity is first created.
     if (entity_prefix) {
         char default_entity_id[128];
-        snprintf(default_entity_id, sizeof(default_entity_id), "sensor.%s_%s", entity_prefix, sensor->key);
+        snprintf(default_entity_id, sizeof(default_entity_id), "%s.%s_%s", platform, entity_prefix, sensor->key);
         cJSON_AddStringToObject(component, "default_entity_id", default_entity_id);
     }
 

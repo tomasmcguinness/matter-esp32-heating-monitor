@@ -420,6 +420,15 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
         cJSON_AddNullToObject(root, "dhw_running");
     }
 
+    if (home_manager->has_heating_running)
+    {
+        cJSON_AddBoolToObject(root, "heating_running", home_manager->heating_running);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "heating_running");
+    }
+
     cJSON_AddNumberToObject(root, "total_predicted_heat_loss_per_degree", home_manager->total_predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "total_measured_heat_loss_per_degree", home_manager->total_measured_heat_loss_per_degree);
 
