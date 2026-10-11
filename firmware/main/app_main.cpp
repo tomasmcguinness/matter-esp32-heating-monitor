@@ -84,6 +84,7 @@
 #include "node_api.h"
 #include "companion_api.h"
 #include "mcp/mcp_server.h"
+#include "emoncms/emoncms_uploader.h"
 
 #include "mqtt_client.h"
 
@@ -3999,6 +4000,210 @@ static esp_err_t on_socket_opened(httpd_handle_t hd, int sockfd)
     return ESP_OK;
 }
 
+// Sends `root` as the response body and frees it.
+static esp_err_t send_json_response(httpd_req_t *req, cJSON *root)
+{
+    char *json = cJSON_PrintUnformatted(root);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+
+    cJSON_free(json);
+    cJSON_Delete(root);
+
+    return ESP_OK;
+}
+
+// Copies a string field of a request body into a fixed buffer. A field that is absent leaves
+// `out` as it was, so a PUT only has to carry what it changes. False if it is there but is not
+// a string or does not fit.
+static bool copy_json_string(const cJSON *root, const char *name, char *out, size_t len)
+{
+    const cJSON *item = cJSON_GetObjectItem(root, name);
+
+    if (item == NULL)
+    {
+        return true;
+    }
+
+    if (!cJSON_IsString(item) || strlen(item->valuestring) >= len)
+    {
+        return false;
+    }
+
+    strlcpy(out, item->valuestring, len);
+
+    return true;
+}
+
+#pragma region emoncms API
+
+// The write API key never leaves the device: emoncms_uploader_get_config() hands it back blanked,
+// and the response says only whether one is stored.
+static esp_err_t emoncms_config_get_handler(httpd_req_t *req)
+{
+    emoncms_config_t config;
+    bool key_set = false;
+
+    emoncms_uploader_get_config(&config, &key_set);
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddBoolToObject(root, "enabled", config.enabled);
+    cJSON_AddStringToObject(root, "base_url", config.base_url);
+    cJSON_AddBoolToObject(root, "key_set", key_set);
+    cJSON_AddStringToObject(root, "node", config.node);
+    cJSON_AddNumberToObject(root, "interval_s", config.interval_s);
+
+    return send_json_response(req, root);
+}
+
+static esp_err_t emoncms_config_put_handler(httpd_req_t *req)
+{
+    cJSON *root = read_json_body(req);
+
+    if (root == NULL)
+    {
+        return ESP_OK;
+    }
+
+    // Start from what is saved, with the key blank -- which is what "keep the existing one" looks
+    // like to emoncms_uploader_set_config().
+    emoncms_config_t config;
+    emoncms_uploader_get_config(&config, NULL);
+
+    bool valid = copy_json_string(root, "base_url", config.base_url, sizeof(config.base_url)) &&
+                 copy_json_string(root, "api_key", config.api_key, sizeof(config.api_key)) &&
+                 copy_json_string(root, "node", config.node, sizeof(config.node));
+
+    const cJSON *enabled = cJSON_GetObjectItem(root, "enabled");
+
+    if (cJSON_IsBool(enabled))
+    {
+        config.enabled = cJSON_IsTrue(enabled);
+    }
+
+    const cJSON *interval = cJSON_GetObjectItem(root, "interval_s");
+
+    if (cJSON_IsNumber(interval))
+    {
+        // Out of range is left for set_config to reject, rather than wrapped into a uint16_t.
+        config.interval_s = interval->valuedouble >= 0 && interval->valuedouble <= UINT16_MAX ? (uint16_t)interval->valuedouble : 0;
+    }
+
+    cJSON_Delete(root);
+
+    esp_err_t err = valid ? emoncms_uploader_set_config(&config) : ESP_ERR_INVALID_ARG;
+
+    if (err == ESP_ERR_INVALID_ARG)
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "The URL must start with http:// or https://, the node must not be empty and the interval "
+                                "must be between 10 and 3600 seconds.");
+        return ESP_OK;
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save the emoncms configuration, err:%d", err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Could not save the configuration.");
+        return ESP_OK;
+    }
+
+    return emoncms_config_get_handler(req);
+}
+
+static void add_emoncms_result(cJSON *parent, const emoncms_result_t *result)
+{
+    cJSON_AddBoolToObject(parent, "success", result->ok);
+    cJSON_AddNumberToObject(parent, "http_status", result->http_status);
+    cJSON_AddStringToObject(parent, "response", result->response);
+}
+
+static void add_timestamp_or_null(cJSON *parent, const char *name, uint32_t ts)
+{
+    if (ts)
+    {
+        cJSON_AddNumberToObject(parent, name, ts);
+    }
+    else
+    {
+        cJSON_AddNullToObject(parent, name);
+    }
+}
+
+static esp_err_t emoncms_status_get_handler(httpd_req_t *req)
+{
+    emoncms_status_t status;
+    emoncms_uploader_get_status(&status);
+
+    cJSON *root = cJSON_CreateObject();
+
+    add_timestamp_or_null(root, "last_success", status.last_success_ts);
+
+    if (status.last_error_ts)
+    {
+        cJSON *error = cJSON_AddObjectToObject(root, "last_error");
+        cJSON_AddNumberToObject(error, "time", status.last_error_ts);
+        add_emoncms_result(error, &status.last_error);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "last_error");
+    }
+
+    cJSON_AddNumberToObject(root, "posts_ok", status.posts_ok);
+    cJSON_AddNumberToObject(root, "posts_failed", status.posts_failed);
+    cJSON_AddNumberToObject(root, "dropped", status.dropped);
+    cJSON_AddNumberToObject(root, "buffered", status.buffered);
+    cJSON_AddNumberToObject(root, "buffer_capacity", status.buffer_capacity);
+
+    // Every key a payload can carry, so the page can show which ones the last payload lacked.
+    cJSON *inputs = cJSON_AddArrayToObject(root, "inputs");
+
+    for (size_t i = 0; i < emoncms_uploader_input_count(); i++)
+    {
+        cJSON_AddItemToArray(inputs, cJSON_CreateString(emoncms_uploader_input_key(i)));
+    }
+
+    add_timestamp_or_null(root, "last_payload_time", status.last_payload_ts);
+
+    cJSON *payload = status.last_payload[0] ? cJSON_Parse(status.last_payload) : NULL;
+
+    if (payload)
+    {
+        cJSON_AddItemToObject(root, "last_payload", payload);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "last_payload");
+    }
+
+    return send_json_response(req, root);
+}
+
+// Parks the httpd task until emoncms answers or the request times out, like POST /api/nodes does
+// for commissioning. It is a button, not something a page polls.
+static esp_err_t emoncms_test_post_handler(httpd_req_t *req)
+{
+    emoncms_result_t result;
+    esp_err_t err = emoncms_uploader_test(&result);
+
+    if (err != ESP_OK)
+    {
+        // Nothing was sent, and `response` says why.
+        httpd_resp_set_status(req, err == ESP_ERR_TIMEOUT ? "504 Gateway Timeout" : "409 Conflict");
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    add_emoncms_result(root, &result);
+
+    return send_json_response(req, root);
+}
+
+#pragma endregion
+
 static const httpd_uri_t ws_uri = {
     .uri = "/ws",
     .method = HTTP_GET,
@@ -4022,7 +4227,10 @@ httpd_handle_t start_webserver(void)
         ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
     }
 
-    config.max_uri_handlers = 36;
+    // 36 are registered: 25 here, 2 for history, 1 for status, 5 for the companion API, 2 for MCP
+    // and the wildcard. Registration past the cap fails with only a log line, so count them
+    // before adding more.
+    config.max_uri_handlers = 44;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
@@ -4150,6 +4358,30 @@ httpd_handle_t start_webserver(void)
         .handler = icd_counter_delete_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t emoncms_config_get_uri = {
+        .uri = "/api/emoncms/config",
+        .method = HTTP_GET,
+        .handler = emoncms_config_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t emoncms_config_put_uri = {
+        .uri = "/api/emoncms/config",
+        .method = HTTP_PUT,
+        .handler = emoncms_config_put_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t emoncms_status_get_uri = {
+        .uri = "/api/emoncms/status",
+        .method = HTTP_GET,
+        .handler = emoncms_status_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t emoncms_test_post_uri = {
+        .uri = "/api/emoncms/test",
+        .method = HTTP_POST,
+        .handler = emoncms_test_post_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -4183,6 +4415,10 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &sensors_get_uri);
         httpd_register_uri_handler(server, &reset_post_uri);
         httpd_register_uri_handler(server, &icd_counter_delete_uri);
+        httpd_register_uri_handler(server, &emoncms_config_get_uri);
+        httpd_register_uri_handler(server, &emoncms_config_put_uri);
+        httpd_register_uri_handler(server, &emoncms_status_get_uri);
+        httpd_register_uri_handler(server, &emoncms_test_post_uri);
 
         // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
         history_api_register(server);
@@ -4513,6 +4749,13 @@ extern "C" void app_main()
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to start the history logger, err:%d", err);
+    }
+
+    // Not fatal either: without it nothing is posted to emoncms, and everything else carries on.
+    err = emoncms_uploader_init(&g_home_manager);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start the emoncms uploader, err:%d", err);
     }
 
     //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);

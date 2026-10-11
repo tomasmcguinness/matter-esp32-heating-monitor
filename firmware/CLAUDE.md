@@ -83,7 +83,7 @@ The project has two distinct parts that must both be built:
 | `calculations_manager` | (no global) | Derives heat loss and radiator output from the other managers |
 
 Other directories under `main/`: `storage/` (SD card history), `mqtt/` (Home Assistant), `mcp/`
-(the read-only MCP server), `commands/` and `utilities/`. `test_host/`, beside `main/`, holds
+(the read-only MCP server), `emoncms/` (the emoncms uploader), `commands/` and `utilities/`. `test_host/`, beside `main/`, holds
 desktop tests for the parts of `mcp/` that need no board.
 
 All manager state bar the heat pump's is persisted to **NVS (Non-Volatile Storage)** via `save_*_to_nvs` / `load_*_from_nvs` functions.
@@ -386,8 +386,9 @@ it, and on `/api/nodes` because the web UI does. Neither is a reason to add it t
 `app_main.cpp`'s `using namespace` block, so it cannot be included from anywhere else.
 
 `companion_api_register()` must run **before** the `/*` wildcard, like `history_api_register()` and
-`status_api_register()`. `config.max_uri_handlers` is a hard cap — it was raised to 34 for these
-five, and to 36 for the MCP server's two; count the registrations before adding more.
+`status_api_register()`. `config.max_uri_handlers` is a hard cap, now 44 with 36 registered — the
+breakdown is in the comment beside it in `start_webserver()`; count the registrations before adding
+more.
 
 **The MCP server (`mcp/`):**
 
@@ -445,7 +446,54 @@ response back as JSON. Run it after any change under `mcp/`. `test_server --serv
 requests from stdin, for putting that build behind an HTTP shim and a real MCP client.
 
 `mcp_server_register()` must run **before** the `/*` wildcard, and takes two of the
-`max_uri_handlers`, now 36.
+`max_uri_handlers`.
+
+**The emoncms uploader (`emoncms/emoncms_uploader.{h,cpp}`):**
+
+Posts nine home-level readings to an emoncms server — emoncms.org by default — as one node:
+`POST <base_url>/input/post` with `Authorization: Bearer <write key>` and a form body of `node`,
+`fulljson` and `time`. Only `{"success": true}` counts as accepted; emoncms answers some rejected
+posts with a 200.
+
+**The set of inputs is deliberately small and fixed**, because each one becomes a feed that
+emoncms.org charges for: no rooms, no radiators, no COP. It lives in one place, the `INPUTS` table
+— key, reader and decimals per input. The readers apply the same conversions as the MQTT home
+payload (0.01 °C, mW), except flow, which the heat meter reports in l/h and emoncms is sent in
+l/min. A reading whose `has_*` flag is false is **left out of the payload**, never sent as a
+placeholder, and a sample with no readings at all is not posted.
+
+Everything runs on the uploader's own task, woken by an `esp_timer` at the configured interval and
+by task notifications for a configuration change or a test. It reads `home_manager` unlocked, one
+read per field, exactly as `history_logger`'s `build_record()` does and for the same reason.
+Nothing is sampled until `clock_is_valid()`, and every post carries the `time` it was sampled at.
+
+Each sample is pushed onto a ring buffer in PSRAM and the buffer is sent **oldest first, one post
+per pass of the task loop**, so a fresh reading and a backlog take the same path. A failed post
+stays at the head and is retried after 5 s, doubling to 60 s; while that goes on new samples queue
+behind it, and when the buffer is full the oldest is dropped (counted as `dropped`). The buffer
+covers an hour — `3600 / interval_s` entries — so an outage shorter than that is backfilled with
+the original timestamps. It is RAM only: a restart loses it. The HTTP connection is kept open
+between posts and closed on any failure or configuration change.
+
+Configuration is in the NVS namespace `emoncms` (`enabled`, `base_url`, `api_key`, `node`,
+`interval_s`), separate from the manager blobs, and a change applies without a restart.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/emoncms/config` | `key_set` in place of the key |
+| `PUT` | `/api/emoncms/config` | Absent fields are kept; an empty `api_key` keeps the stored one |
+| `GET` | `/api/emoncms/status` | Counters, last error, buffer fill, `inputs` and `last_payload` |
+| `POST` | `/api/emoncms/test` | Sends the current readings once and returns emoncms's answer |
+
+**The write key never leaves the device.** `emoncms_uploader_get_config()` returns it blanked, it is
+never logged, and a failed post logs its HTTP status only — the response body goes to the status
+endpoint, not the log. `POST /api/emoncms/test` works while uploading is disabled, so a key can be
+checked before it is switched on; it parks the httpd task until emoncms answers or the 10 s timeout
+passes, like commissioning does.
+
+On the Settings page this is `EmoncmsSettings.tsx`. The last payload is listed against the
+`inputs` the status response names, so a reading that was not sent shows as "missing" rather than
+just being absent from the table.
 
 **MQTT / Home Assistant (`mqtt/ha_discovery.{h,cpp}`):**
 
