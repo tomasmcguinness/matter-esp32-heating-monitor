@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import EmoncmsSettings from "./EmoncmsSettings";
 
 interface DeviceInfo {
   name: string;
@@ -70,6 +71,8 @@ function Settings() {
       </>}
 
       {!info && !error && <div className="alert alert-info">Loading...</div>}
+
+      <EmoncmsSettings />
     </>
   )
 }
