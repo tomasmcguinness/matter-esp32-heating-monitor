@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import EmoncmsSettings from "./EmoncmsSettings";
+import MqttSettings from "./MqttSettings";
 
 interface DeviceInfo {
   name: string;
@@ -71,6 +72,8 @@ function Settings() {
       </>}
 
       {!info && !error && <div className="alert alert-info">Loading...</div>}
+
+      <MqttSettings />
 
       <EmoncmsSettings />
     </>

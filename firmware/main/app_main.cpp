@@ -74,6 +74,7 @@
 #include "utilities/UrlTokenBindings.h"
 
 #include "mqtt/ha_discovery.h"
+#include "mqtt/mqtt_settings.h"
 #include "storage/history_api.h"
 #include "storage/status_api.h"
 #include "storage/history_logger.h"
@@ -4204,6 +4205,71 @@ static esp_err_t emoncms_test_post_handler(httpd_req_t *req)
 
 #pragma endregion
 
+#pragma region MQTT settings API
+
+static void restart_mqtt_service(void);
+
+// The password never leaves the device; the response says only whether one is stored.
+static esp_err_t mqtt_config_get_handler(httpd_req_t *req)
+{
+    mqtt_settings_t settings;
+    mqtt_settings_load(&settings);
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "url", settings.url);
+    cJSON_AddStringToObject(root, "username", settings.username);
+    cJSON_AddBoolToObject(root, "password_set", settings.password[0] != '\0');
+    cJSON_AddBoolToObject(root, "connected", is_mqtt_connected);
+
+    return send_json_response(req, root);
+}
+
+static esp_err_t mqtt_config_put_handler(httpd_req_t *req)
+{
+    cJSON *root = read_json_body(req);
+
+    if (root == NULL)
+    {
+        return ESP_OK;
+    }
+
+    // Start from what is saved, with the password blank -- which is what "keep the existing one"
+    // looks like to mqtt_settings_save().
+    mqtt_settings_t settings;
+    mqtt_settings_load(&settings);
+    memset(settings.password, 0, sizeof(settings.password));
+
+    bool valid = copy_json_string(root, "url", settings.url, sizeof(settings.url)) &&
+                 copy_json_string(root, "username", settings.username, sizeof(settings.username)) &&
+                 copy_json_string(root, "password", settings.password, sizeof(settings.password));
+
+    cJSON_Delete(root);
+
+    esp_err_t err = valid ? mqtt_settings_save(&settings) : ESP_ERR_INVALID_ARG;
+
+    if (err == ESP_ERR_INVALID_ARG)
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "The URL must be empty or start with mqtt://, and must not contain a username or password.");
+        return ESP_OK;
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save the MQTT settings, err:%d", err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Could not save the settings.");
+        return ESP_OK;
+    }
+
+    restart_mqtt_service();
+
+    return mqtt_config_get_handler(req);
+}
+
+#pragma endregion
+
 static const httpd_uri_t ws_uri = {
     .uri = "/ws",
     .method = HTTP_GET,
@@ -4227,7 +4293,7 @@ httpd_handle_t start_webserver(void)
         ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
     }
 
-    // 36 are registered: 25 here, 2 for history, 1 for status, 5 for the companion API, 2 for MCP
+    // 38 are registered: 27 here, 2 for history, 1 for status, 5 for the companion API, 2 for MCP
     // and the wildcard. Registration past the cap fails with only a log line, so count them
     // before adding more.
     config.max_uri_handlers = 44;
@@ -4382,6 +4448,18 @@ httpd_handle_t start_webserver(void)
         .handler = emoncms_test_post_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t mqtt_config_get_uri = {
+        .uri = "/api/mqtt/config",
+        .method = HTTP_GET,
+        .handler = mqtt_config_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t mqtt_config_put_uri = {
+        .uri = "/api/mqtt/config",
+        .method = HTTP_PUT,
+        .handler = mqtt_config_put_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -4419,6 +4497,8 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &emoncms_config_put_uri);
         httpd_register_uri_handler(server, &emoncms_status_get_uri);
         httpd_register_uri_handler(server, &emoncms_test_post_uri);
+        httpd_register_uri_handler(server, &mqtt_config_get_uri);
+        httpd_register_uri_handler(server, &mqtt_config_put_uri);
 
         // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
         history_api_register(server);
@@ -4478,34 +4558,26 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
+// Connects to the broker saved in NVS (see mqtt/mqtt_settings.h), or does nothing when there is
+// none. The client is created once and reconfigured after that, never destroyed: its handle is
+// passed around and published on from other tasks.
 static void start_mqtt_service(void)
 {
-    // size_t value_length;
+    mqtt_settings_t settings;
+    mqtt_settings_load(&settings);
 
-    // nvs_handle_t nvs_handle;
+    if (settings.url[0] == '\0')
+    {
+        ESP_LOGI(TAG, "No MQTT broker configured");
+        return;
+    }
 
-    // int err = nvs_get_str(nvs_handle, "mqtt_url", NULL, &value_length);
-
-    char *mqtt_url = "mqtt://192.168.1.10";
-    char *mqtt_username = "homeassistant";
-    char *mqtt_password = "e&HDtCAxh_^b:tKz8u,ocAw3QgHbX.P_kuYP";
-
-    // if (err == ESP_OK)
-    // {
-    //     err = nvs_get_str(NVS_HANDLE, "mqtt_url", mqtt_url, &value_length);
-    //     mqtt_url[value_length] = '/0';
-
-    //     err = nvs_get_str(NVS_HANDLE, "mqtt_username", mqtt_username, &value_length);
-    //     mqtt_username[value_length] = '/0';
-
-    //     err = nvs_get_str(NVS_HANDLE, "mqtt_password", mqtt_password, &value_length);
-    //     mqtt_password[value_length] = '/0';
-    // }
-    // else
-    // {
-    //     ESP_LOGI(TAG, "No MQTT credentials present");
-    //     return;
-    // }
+    // esp-mqtt copies these, so they only have to last until the client is configured. An unset
+    // field has to be NULL rather than empty; on a client that already exists NULL means "leave
+    // as it was", so removing a username or password takes a restart to reach the broker.
+    const char *mqtt_url = settings.url;
+    const char *mqtt_username = settings.username[0] ? settings.username : NULL;
+    const char *mqtt_password = settings.password[0] ? settings.password : NULL;
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
@@ -4528,10 +4600,31 @@ static void start_mqtt_service(void)
             .size = 1024,
             .out_size = 6144}};
 
-    _mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    if (_mqtt_client == NULL)
+    {
+        _mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
 
-    esp_mqtt_client_register_event(_mqtt_client, MQTT_EVENT_ANY, mqtt_event_handler, NULL);
+        esp_mqtt_client_register_event(_mqtt_client, MQTT_EVENT_ANY, mqtt_event_handler, NULL);
+    }
+    else
+    {
+        esp_mqtt_set_config(_mqtt_client, &mqtt_cfg);
+    }
+
     esp_mqtt_client_start(_mqtt_client);
+}
+
+// Applies settings that have just been saved. Called from the HTTP task, which is only running
+// once the network is up.
+static void restart_mqtt_service(void)
+{
+    if (_mqtt_client != NULL)
+    {
+        esp_mqtt_client_stop(_mqtt_client);
+        is_mqtt_connected = false;
+    }
+
+    start_mqtt_service();
 }
 
 // CHIP owns the primary mDNS hostname (CONFIG_USE_MINIMAL_MDNS=n means we share the

@@ -386,7 +386,7 @@ it, and on `/api/nodes` because the web UI does. Neither is a reason to add it t
 `app_main.cpp`'s `using namespace` block, so it cannot be included from anywhere else.
 
 `companion_api_register()` must run **before** the `/*` wildcard, like `history_api_register()` and
-`status_api_register()`. `config.max_uri_handlers` is a hard cap, now 44 with 36 registered — the
+`status_api_register()`. `config.max_uri_handlers` is a hard cap, now 44 with 38 registered — the
 breakdown is in the comment beside it in `start_webserver()`; count the registrations before adding
 more.
 
@@ -510,6 +510,19 @@ it. State goes to `heating_monitor/home`,
 `room_<id>` / `radiator_<id>` when the MQTT name is empty. Build these topics with
 `ha_room_state_topic()` / `ha_radiator_state_topic()` so discovery and publishing agree. A reading
 that isn't there is published as JSON `null`, never 0.
+
+**The broker is configured from the Settings page**, not in the source. `mqtt/mqtt_settings.{h,cpp}`
+keeps `url`, `username` and `password` in the NVS namespace `mqtt`; `GET /api/mqtt/config` returns
+`password_set` in place of the password, and `PUT` treats an empty password as "keep the stored
+one", the same way the emoncms key is handled. The URL must be `mqtt://` with no credentials in it,
+or empty, which turns MQTT off: `start_mqtt_service()` then creates no client, `_mqtt_client` stays
+NULL and `calculations_manager` skips its publishes.
+
+A `PUT` applies straight away through `restart_mqtt_service()`, which stops the client,
+reconfigures it with `esp_mqtt_set_config()` and starts it again. The client is **never
+destroyed**, because its handle is held and published on by other tasks. One consequence:
+`esp_mqtt_set_config()` ignores a NULL field, so *removing* a username or password only reaches the
+broker after a restart. Changing one applies immediately.
 
 On connect, the MQTT event handler announces only the home. Rooms and radiators are flagged and
 sent by `ha_discovery_announce_pending()` from `update_home()`, for the same reason the history

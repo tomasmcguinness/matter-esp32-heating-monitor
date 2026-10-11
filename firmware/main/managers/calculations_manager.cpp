@@ -46,7 +46,11 @@ static void publish_radiator_state(esp_mqtt_client_handle_t mqtt_client, radiato
 
     char *payload = cJSON_PrintUnformatted(root);
     ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
-    esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+    // There is no client until a broker has been set on the Settings page.
+    if (mqtt_client)
+    {
+        esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+    }
 
     cJSON_free(payload);
     cJSON_Delete(root);
@@ -256,7 +260,10 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
     char *payload = cJSON_PrintUnformatted(root);
     ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
-    esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+    if (mqtt_client)
+    {
+        esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+    }
 
     cJSON_free(payload);
     cJSON_Delete(root);
@@ -434,7 +441,10 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     char *payload = cJSON_PrintUnformatted(root);
     ESP_LOGI(TAG, "Publishing to MQTT topic heating_monitor/home");
-    esp_mqtt_client_publish(mqtt_client, "heating_monitor/home", payload, 0, 0, 0);
+    if (mqtt_client)
+    {
+        esp_mqtt_client_publish(mqtt_client, "heating_monitor/home", payload, 0, 0, 0);
+    }
 
     cJSON_free(payload);
     cJSON_Delete(root);
