@@ -1,4 +1,4 @@
-idf_component_register(SRC_DIRS          "." "managers" "commands" "utilities" "storage" "mqtt" "mcp"
+idf_component_register(SRC_DIRS          "." "managers" "commands" "utilities" "storage" "mqtt" "mcp" "emoncms"
                        INCLUDE_DIRS      "."
                        PRIV_INCLUDE_DIRS  "." "${ESP_MATTER_PATH}/examples/common/utils"
                        LDFRAGMENTS "linker.lf")
