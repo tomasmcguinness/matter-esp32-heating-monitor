@@ -452,8 +452,9 @@ requests from stdin, for putting that build behind an HTTP shim and a real MCP c
 
 Posts nine home-level readings to an emoncms server — emoncms.org by default — as one node:
 `POST <base_url>/input/post` with `Authorization: Bearer <write key>` and a form body of `node`,
-`fulljson` and `time`. Only `{"success": true}` counts as accepted; emoncms answers some rejected
-posts with a 200.
+`fulljson` and `time`. A 200 whose body is the bare text `ok` (what emoncms.org sends) or
+`{"success": true}` counts as accepted; any other body is a rejection, because emoncms answers
+some refused posts with a 200 too.
 
 **The set of inputs is deliberately small and fixed**, because each one becomes a feed that
 emoncms.org charges for: no rooms, no radiators, no COP. It lives in one place, the `INPUTS` table

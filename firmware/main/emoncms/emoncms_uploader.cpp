@@ -348,8 +348,37 @@ static void close_client(void)
     }
 }
 
-// Sends one payload. Fills `result` whatever happens. Only {"success": true} counts: emoncms
-// answers some rejected posts with a 200 and a message.
+// Whether a 200's body says the post was taken. emoncms.org answers a good post with the bare
+// text "ok"; other versions answer {"success": true}. Anything else is a rejection, because
+// emoncms also sends a 200 with a message for a post it refused.
+static bool is_accepted(const char *body)
+{
+    while (*body == ' ' || *body == '\r' || *body == '\n' || *body == '\t')
+    {
+        body++;
+    }
+
+    size_t len = strlen(body);
+
+    while (len > 0 && (body[len - 1] == ' ' || body[len - 1] == '\r' || body[len - 1] == '\n' || body[len - 1] == '\t'))
+    {
+        len--;
+    }
+
+    if (len == 2 && strncmp(body, "ok", 2) == 0)
+    {
+        return true;
+    }
+
+    cJSON *json = cJSON_Parse(body);
+    bool success = cJSON_IsTrue(cJSON_GetObjectItem(json, "success"));
+
+    cJSON_Delete(json);
+
+    return success;
+}
+
+// Sends one payload. Fills `result` whatever happens.
 static void post_payload(const emoncms_config_t *config, uint32_t ts, const char *payload, emoncms_result_t *result)
 {
     // Static because the task's stack is better spent on TLS, and only the task calls this.
@@ -423,11 +452,7 @@ static void post_payload(const emoncms_config_t *config, uint32_t ts, const char
 
     if (result->http_status == 200)
     {
-        cJSON *json = cJSON_Parse(s_response);
-
-        result->ok = cJSON_IsTrue(cJSON_GetObjectItem(json, "success"));
-
-        cJSON_Delete(json);
+        result->ok = is_accepted(s_response);
     }
 
     if (!result->ok)
