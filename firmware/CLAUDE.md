@@ -560,13 +560,20 @@ under it. `Chart` has one y axis by default; a series with `axis: "right"` moves
 which is how a radiator's output in watts sits alongside its flow and return in °C.
 
 `Chart` also takes `modes`: the spans of the day the heat pump spent heating and making hot water,
-drawn by a uPlot `draw` hook as an 8px strip along the bottom of the plot, with a key under it.
+drawn by a uPlot `draw` hook as an 8px strip just under the plot, between the x axis and its time
+labels (the axis's ticks and height are enlarged to make the room), with a key under it. It is
+outside the plot area so that it cannot cover a line running along the bottom.
 Idle and unrecorded time is blank. `modeSpans()` in `historyData.ts` builds them from the home
 series' `heatingRunning` and `dhwRunning` columns, found by name; hot water wins when both are on.
 `History.tsx` derives them from the response it already has, and the room and radiator charts get
 them from `useHeatPumpModes()`, which fetches the home series for the day. The spans are absolute
 times, so nothing is joined against the chart's own points. A bucket is an integer mean, so it
 reads as on only when the mode held throughout — a run is drawn up to one bucket short at each end.
+
+`History.tsx`'s first row of cards is the day's heat by mode -- Heating and Hot water, from
+`modes.*.heatWh` -- and Electricity in, which is the whole day's. The day's total heat is not
+shown, and heat metered in neither mode is in neither card. A mode card dashes when its COP card
+does.
 
 `History.tsx` shows three COP cards for the day being viewed (Heating, Hot water, Overall, from the
 response's `modes` and `cop`) and three across every recorded day (Heating, Hot water, SCOP, from

@@ -39,12 +39,16 @@ export type ChartProps = {
 const MODE_COLOURS = { heating: "#fd7e14", hotWater: "#6f42c1" } as const;
 const MODE_LABELS = { heating: "Heating", hotWater: "Hot water" } as const;
 const MODE_BAR_PX = 8;
+// Clear space above and below the strip, between the plot's bottom edge and the time labels.
+const MODE_BAR_MARGIN_PX = 3;
 
-// Fills each span across the bottom edge of the plot area. Positions come from the x scale, so the
-// strip stays aligned with the lines and the synced cursor whatever the chart's own points are.
+// Fills each span just under the plot area, in the x axis's tick zone, so the strip never covers a
+// line running along the bottom of the plot. Positions come from the x scale, so the strip stays
+// aligned with the lines and the synced cursor whatever the chart's own points are.
 function drawModes(u: uPlot, modes: ModeSpan[]) {
   const { ctx, bbox } = u;
   const barHeight = MODE_BAR_PX * devicePixelRatio;
+  const top = bbox.top + bbox.height + MODE_BAR_MARGIN_PX * devicePixelRatio;
   const right = bbox.left + bbox.width;
 
   ctx.save();
@@ -55,7 +59,7 @@ function drawModes(u: uPlot, modes: ModeSpan[]) {
 
     if (x1 > x0) {
       ctx.fillStyle = MODE_COLOURS[span.mode];
-      ctx.fillRect(x0, bbox.top + bbox.height - barHeight, x1 - x0, barHeight);
+      ctx.fillRect(x0, top, x1 - x0, barHeight);
     }
   }
 
@@ -129,6 +133,7 @@ export function Chart({
     }
 
     const drawn = smooth ? smoothData(data) : data;
+    const hasModes = !!modes && modes.length > 0;
 
     // uPlot sizes itself once, so it is rebuilt on data change and on resize rather than
     // being asked to reflow.
@@ -170,9 +175,16 @@ export function Chart({
           // uPlot creates a scale on demand from a series or axis that names one, but declaring it
           // keeps that an explicit part of the config rather than a behaviour to rely on.
           scales: rightUnit ? { y2: {} } : undefined,
-          hooks: modes && modes.length > 0 ? { draw: [(u) => drawModes(u, modes)] } : undefined,
+          hooks: hasModes ? { draw: [(u) => drawModes(u, modes!)] } : undefined,
           axes: [
-            {},
+            // With a mode strip, the ticks are lengthened to span it and the axis is made taller
+            // by the same amount, so the time labels move down to clear it.
+            hasModes
+              ? {
+                  ticks: { size: MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX },
+                  size: 50 + MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX - 10,
+                }
+              : {},
             { label: unit },
             // Only drawn when something is on it. Its grid is off so the two axes' gridlines
             // don't overlay each other at unrelated values.

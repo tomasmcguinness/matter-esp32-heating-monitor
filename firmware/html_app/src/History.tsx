@@ -5,6 +5,7 @@ import {
   toPlotData,
   todayISO,
   type HistoryResponse,
+  type ModeEnergy,
   type TotalsResponse,
 } from "./historyData";
 
@@ -75,6 +76,25 @@ function CopCard({ title, cop }: { title: string; cop: number | null | undefined
       </div>
     </div>
   );
+}
+
+function EnergyCard({ title, kwh }: { title: string; kwh: number | null }) {
+  return (
+    <div className="card">
+      <div className="card-header">{title}</div>
+      <div className="card-body">
+        <p className="card-title">
+          <h3>{kwh != null ? `${kwh.toFixed(1)} kWh` : "-"}</h3>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// The heat a mode delivered, or null where its COP card shows a dash: no electricity was recorded
+// in that mode, so there was no run to speak of or the day predates the mode being logged.
+function modeHeatKwh(mode: ModeEnergy | undefined): number | null {
+  return mode && mode.electricalWh > 0 ? mode.heatWh / 1000 : null;
 }
 
 function History() {
@@ -154,7 +174,6 @@ function History() {
   // Memoised because Chart rebuilds the plot whenever this array changes identity.
   const modes = useMemo(() => modeSpans(data), [data]);
 
-  const heatKwh = (data?.energyWh?.heat ?? 0) / 1000;
   const elecKwh = (data?.energyWh?.electrical ?? 0) / 1000;
 
   return (
@@ -194,31 +213,12 @@ function History() {
 
       {!loading && !error && hasPoints && (
         <>
+          {/* Heat delivered in each mode, and all the electricity the day used. Heat metered while
+              neither mode was on is in neither card. */}
           <div className="card-group" style={{ marginBottom: "20px" }}>
-            <div className="card">
-              <div className="card-header">Heat out</div>
-              <div className="card-body">
-                <p className="card-title">
-                  <h3>{heatKwh.toFixed(1)} kWh</h3>
-                </p>
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-header">Electricity in</div>
-              <div className="card-body">
-                <p className="card-title">
-                  <h3>{elecKwh.toFixed(1)} kWh</h3>
-                </p>
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-header">Sampled every</div>
-              <div className="card-body">
-                <p className="card-title">
-                  <h3>{data?.interval}s</h3>
-                </p>
-              </div>
-            </div>
+            <EnergyCard title="Heating" kwh={modeHeatKwh(data?.modes?.heating)} />
+            <EnergyCard title="Hot water" kwh={modeHeatKwh(data?.modes?.hotWater)} />
+            <EnergyCard title="Electricity in" kwh={elecKwh} />
           </div>
 
           {/* The day's energy out over energy in: for the slots recorded as heating, for those
