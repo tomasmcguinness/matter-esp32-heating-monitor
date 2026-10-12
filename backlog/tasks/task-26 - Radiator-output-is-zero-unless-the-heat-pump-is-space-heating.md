@@ -4,6 +4,7 @@ title: Radiator output is zero unless the heat pump is space heating
 status: In Progress
 assignee: []
 created_date: '2026-10-12 17:52'
+updated_date: '2026-10-12 17:54'
 labels: []
 dependencies: []
 ---
@@ -21,5 +22,15 @@ A radiator's output is derived from temperatures alone, so one that is still war
 - [ ] #3 Outputs are recalculated and pushed over the radiator WebSocket channel when the heating state changes
 - [ ] #4 A room whose radiators total 0 W reports no measured heat loss, not 0 W/degC
 - [ ] #5 The output line on radiator history charts is zero outside heating spans
-- [ ] #6 idf.py build succeeds
+- [x] #6 idf.py build succeeds
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented on branch radiator-output-when-heating (off emoncms-uploader). idf.py build passes. Not yet run on the board: criteria 1-5 need checking there with the heat pump idle, on hot water and heating.
+
+Decisions agreed with the user: heating means has_heating_running && heating_running; an unknown heating state is zero; applies to live figures and history charts. The room measured-heat-loss change (no figure at 0 W total) was my addition and is in the approved plan.
+
+Known limit: the charted output is zero for up to one bucket (about two minutes) at each end of a heating run, because the heating spans come from averaged buckets.
+<!-- SECTION:NOTES:END -->
