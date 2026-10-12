@@ -179,6 +179,16 @@ export function roomTempByTs(points: (number | null)[][]): RoomTempByTs {
   return byTs;
 }
 
+// Whether the heat pump was space heating at `ts`, going by the spans modeSpans() built. A day
+// with no spans -- recorded before the mode was, or one whose home series could not be fetched --
+// is a day of not heating, which is how the firmware treats a heating state it does not know.
+//
+// The spans come from averaged buckets and a bucket only counts as heating when the mode held
+// throughout, so this reads false for up to a bucket at each end of a run.
+export function isHeatingAt(modes: ModeSpan[] | undefined, ts: number): boolean {
+  return (modes ?? []).some((span) => span.mode === "heating" && ts >= span.from && ts <= span.to);
+}
+
 // Heat output in watts, derived the way update_radiator_outputs() in
 // firmware/main/managers/calculations_manager.cpp derives the live figure:
 //
@@ -193,17 +203,25 @@ export function roomTempByTs(points: (number | null)[][]): RoomTempByTs {
 // The firmware's guards are reproduced: a non-positive flow, return or room reading means it
 // declines to calculate, which is a gap here rather than a zero. Unlike the firmware this is not
 // truncated to a uint16, so the line is exact where the live value on the room page is rounded.
+//
+// As in the firmware, the output is zero unless the heat pump was heating: a radiator that is
+// still warm after the pump stops is not being supplied with anything. A missing reading is
+// still a gap, whatever the mode.
 export function radiatorOutputW(
   flowC100: number | null,
   returnC100: number | null,
   roomC100: number | undefined,
-  ratedW: number
+  ratedW: number,
+  heating: boolean
 ): number | null {
   if (flowC100 === null || returnC100 === null || roomC100 === undefined) {
     return null;
   }
   if (flowC100 <= 0 || returnC100 <= 0 || roomC100 <= 0) {
     return null;
+  }
+  if (!heating) {
+    return 0;
   }
 
   const meanWaterTemp = (flowC100 + returnC100) / 2 / 100;

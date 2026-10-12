@@ -3,6 +3,7 @@ import type uPlot from "uplot";
 import { Chart, ChartCard } from "./HistoryChart";
 import {
   RADIATOR_COL,
+  isHeatingAt,
   radiatorOutputW,
   type ModeSpan,
   type RadiatorSeries,
@@ -83,7 +84,7 @@ function RadiatorChart({
       }
 
       if (ratedW !== undefined) {
-        output.push(radiatorOutputW(f, r, roomTemp, ratedW));
+        output.push(radiatorOutputW(f, r, roomTemp, ratedW, isHeatingAt(modes, ts)));
       }
     }
 
@@ -95,7 +96,7 @@ function RadiatorChart({
       columns.push(output);
     }
     return columns as unknown as uPlot.AlignedData;
-  }, [series.points, ratedW, roomTempByTs, withRoom]);
+  }, [series.points, ratedW, roomTempByTs, withRoom, modes]);
 
   if (series.error) {
     return <ChartCard title={chartTitle}>{series.error}</ChartCard>;
