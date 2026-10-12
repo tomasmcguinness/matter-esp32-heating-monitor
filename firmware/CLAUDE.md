@@ -205,7 +205,17 @@ throughout: `endpoint_entry_t::has_measured_value`, `room_t::has_current_tempera
 reading, not a placeholder. `calculations_manager` works nothing out from a missing input: a
 room's heat loss figures are zeroed and flagged absent (`has_predicted_heat_loss`,
 `has_measured_heat_loss`) without an outdoor temperature, and the measured ones without a room
-temperature and a radiator output as well.
+temperature and a radiator output above zero as well.
+
+**A radiator's output is zero unless the heat pump is space heating.** The figure is derived from
+temperatures, and a radiator stays warm after the pump stops or turns to hot water, so
+`update_radiator_outputs()` reports 0 W unless `has_heating_running && heating_running`. A heating
+state that is not known — no heat pump picked, or none reported — counts as not heating, so a
+system with no heat pump shows 0 W throughout. This is a zero, not a missing value: a radiator
+short of a flow or return reading still has no output at all. `update_heat_pump_running()`
+recalculates every radiator and pushes it on the `radiator` WebSocket channel when heating starts
+or stops, since no temperature report need arrive at that moment. A room whose radiators total
+0 W has no measured heat loss, rather than one of 0 W/°C.
 
 **Freshness within a live subscription is still a gap in the history.** Sensors are subscribed
 min 0 / max 60 (`subscription_manager.cpp`), so a 5 s sampler writes a mix of fresh and held
@@ -587,7 +597,10 @@ the *same* axis is still not possible, so `History.tsx` keeps one chart per unit
 **Recorded quantities are charted; derived ones are computed in the browser.** A radiator's heat
 output is not on the card — `rec_radiator_t` stores flow and return only — so `RoomHistory.tsx`
 derives it per point with the same arithmetic as `update_radiator_outputs()`
-(`rated / (50 / ΔT)^1.3`, ΔT being mean water temperature against room air). That needs the rated
+(`rated / (50 / ΔT)^1.3`, ΔT being mean water temperature against room air), including the rule
+that it is zero unless the heat pump was heating: `isHeatingAt()` tests each point's timestamp
+against the same heating spans the mode strip draws, so the line is zero for up to a bucket at each
+end of a run, and zero all day where no mode was recorded. That needs the rated
 output at dT 50, which the room payload does not carry, so the page fetches `GET /api/radiators`
 once for the whole set, and the room's own series doubles as the room-temperature lookup. The join
 is **on the timestamp, not the array index**: all three kinds share one sampling interval, but
