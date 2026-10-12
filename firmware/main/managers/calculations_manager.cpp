@@ -123,7 +123,13 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
 
             double adjusted_output = (double)radiator->output_dt_50 / factor;
 
-            radiator->heat_output = (uint16_t)adjusted_output;
+            // A radiator only gives out heat while water is being pumped through it. Once the heat
+            // pump stops, or turns to hot water, it stays warm for a while and the temperatures
+            // alone would go on reporting an output. A heating state that is not known -- no heat
+            // pump picked, or none reported yet -- counts as not heating.
+            bool heating = home_manager->has_heating_running && home_manager->heating_running;
+
+            radiator->heat_output = heating ? (uint16_t)adjusted_output : 0;
             radiator->has_heat_output = true;
 
             ESP_LOGI(TAG, "Radiator %u has a calculated output of %uW", radiator->radiator_id, radiator->heat_output);
@@ -208,7 +214,9 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
             room->predicted_heat_loss_at_current_temperature = current_delta_t * room->predicted_heat_loss_per_degree;
 
             // The measured heat loss is the radiators' output over that delta, so it also needs at
-            // least one radiator with an output, and a delta to divide by.
+            // least one radiator with an output, and a delta to divide by. The output has to be
+            // above zero as well: every radiator reads 0 W while the heat pump is not heating, and
+            // that says nothing about how much heat the room loses.
             //
             uint16_t total_radiator_output = 0;
             bool has_radiator_output = false;
@@ -224,7 +232,7 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
                 }
             }
 
-            if (has_radiator_output && current_delta_t != 0)
+            if (has_radiator_output && total_radiator_output > 0 && current_delta_t != 0)
             {
                 ESP_LOGI(TAG, "Room %u has an input of %u W", room->room_id, total_radiator_output);
 

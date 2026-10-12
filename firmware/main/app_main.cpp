@@ -125,6 +125,7 @@ static bool node_is_subscribed(uint64_t node_id);
 static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
 static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
 static void update_heat_pump_running(void);
+static void broadcast_radiator_state(const radiator_t *radiator);
 static void forget_readings_if_unsubscribed(uint64_t node_id);
 static void add_number_or_null(cJSON *object, const char *name, bool has_value, double value);
 
@@ -3583,10 +3584,39 @@ static void update_heat_pump_running(void)
         }
     }
 
+    bool was_heating = g_home_manager.has_heating_running && g_home_manager.heating_running;
+
     g_home_manager.dhw_running = dhw;
     g_home_manager.has_dhw_running = has_dhw;
     g_home_manager.heating_running = heating;
     g_home_manager.has_heating_running = has_heating;
+
+    // A radiator's output is zero unless the heat pump is heating, so every one of them has a new
+    // figure the moment that starts or stops, without any temperature having moved.
+    if ((has_heating && heating) != was_heating)
+    {
+        for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
+        {
+            update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
+            broadcast_radiator_state(radiator);
+        }
+    }
+}
+
+// Pushes a radiator's readings and its output to the web UI. The Layout schematic shows watts per
+// radiator and only ever sees this channel.
+static void broadcast_radiator_state(const radiator_t *radiator)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "channel", "radiator");
+    cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
+    add_number_or_null(root, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
+    add_number_or_null(root, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
+    add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
+
+    ws_broadcast_json(root);
+
+    cJSON_Delete(root);
 }
 
 // And for everything else a node supplies. Its endpoints stop having a reading, and so does whatever
@@ -3650,16 +3680,7 @@ static void forget_readings_if_unsubscribed(uint64_t node_id)
         // Drops the radiator's output with them and republishes its state.
         update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
 
-        cJSON *root = cJSON_CreateObject();
-        cJSON_AddStringToObject(root, "channel", "radiator");
-        cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
-        add_number_or_null(root, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
-        add_number_or_null(root, "returnTemp", radiator->has_return_temperature, radiator->return_temperature);
-        add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
-
-        ws_broadcast_json(root);
-
-        cJSON_Delete(root);
+        broadcast_radiator_state(radiator);
 
         changed = true;
     }
