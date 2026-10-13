@@ -9,9 +9,10 @@
 //   POST /mcp   Streamable HTTP transport, stateless, one JSON response per request
 //   GET  /mcp   405 -- there are no sessions, so no stream to open
 //
-// Tools: list_series, get_series, summarise_cycles, compare_periods. Every one only reads the
-// day files on the SD card. Nothing here writes to the card, changes any manager, or can reach
-// the heat pump.
+// Tools: list_series, get_series, summarise_cycles, compare_periods, list_rooms. They read the day
+// files on the SD card -- the home's, and for get_series a room's or a radiator's -- and list_rooms
+// also reads the rooms' and radiators' names and ratings through mcp_directory.h. Nothing here
+// writes to the card, changes any manager, or can reach the heat pump.
 //
 // There is no authentication, like the rest of this device's HTTP API: anyone who can reach
 // port 80 can read the history. Do not forward this port to the internet.

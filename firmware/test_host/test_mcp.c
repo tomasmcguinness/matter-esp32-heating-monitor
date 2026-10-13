@@ -301,6 +301,22 @@ static void test_point_caps(void)
     CHECK(mcp_series_find("heat_output_w") != NULL);
     CHECK(mcp_series_find("heating_running")->field == 11);
     CHECK(mcp_series_find("target_flow_c") == NULL);
+
+    mcp_series_ref_t ref;
+    CHECK(mcp_series_resolve("heating_running", &ref) && ref.source == MCP_SOURCE_HOME && ref.field == 11);
+    CHECK(mcp_series_resolve("room_4_temp_c", &ref) && ref.source == MCP_SOURCE_ROOM && ref.inst == 4 &&
+          ref.field == 0 && ref.divisor == 100);
+    CHECK(mcp_series_resolve("radiator_12_flow_temp_c", &ref) && ref.source == MCP_SOURCE_RADIATOR &&
+          ref.inst == 12 && ref.field == 0);
+    CHECK(mcp_series_resolve("radiator_255_return_temp_c", &ref) && ref.inst == 255 && ref.field == 1);
+    CHECK(mcp_series_resolve("room_0_temp_c", &ref) && ref.inst == 0);
+    CHECK(!mcp_series_resolve("room_256_temp_c", &ref));
+    CHECK(!mcp_series_resolve("room_01_temp_c", &ref));
+    CHECK(!mcp_series_resolve("room__temp_c", &ref));
+    CHECK(!mcp_series_resolve("room_+1_temp_c", &ref));
+    CHECK(!mcp_series_resolve("room_1_temp_c ", &ref));
+    CHECK(!mcp_series_resolve("room_1_flow_temp_c", &ref));
+    CHECK(!mcp_series_resolve("radiator_3_temp_c", &ref));
 }
 
 static void test_time(void)

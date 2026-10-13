@@ -17,6 +17,7 @@
 #include "cJSON.h"
 #include "esp_http_server.h"
 
+#include "mcp/mcp_directory.h"
 #include "mcp/mcp_server.h"
 #include "storage/history_format.h"
 #include "storage/history_paths.h"
@@ -122,10 +123,22 @@ void local_date_string(uint32_t ts, char *buf, size_t len)
     strftime(buf, len, "%Y-%m-%d", &tm);
 }
 
+bool history_dir_for(uint8_t kind, uint8_t inst, char *out, size_t out_len)
+{
+    if (kind != KIND_ROOM && kind != KIND_RADIATOR) {
+        return false;
+    }
+    return snprintf(out, out_len, FIXTURE_DIR "/%s-%u", kind == KIND_ROOM ? "room" : "rad", inst) < (int)out_len;
+}
+
 bool history_path_for_date(uint8_t kind, uint8_t inst, const char *date, char *out, size_t out_len)
 {
-    (void)kind; (void)inst;
-    return snprintf(out, out_len, FIXTURE_DIR "/home-%s", date) < (int)out_len;
+    char dir[HISTORY_PATH_MAX];
+
+    if (kind == KIND_HOME) {
+        return snprintf(out, out_len, FIXTURE_DIR "/home-%s", date) < (int)out_len;
+    }
+    return history_dir_for(kind, inst, dir, sizeof(dir)) && snprintf(out, out_len, "%s/%s", dir, date) < (int)out_len;
 }
 
 bool history_path_for(uint8_t kind, uint8_t inst, uint32_t base_ts, char *out, size_t out_len)
@@ -139,8 +152,32 @@ bool history_path_for(uint8_t kind, uint8_t inst, uint32_t base_ts, char *out, s
 // the fixture directory.
 DIR *test_opendir(const char *path)
 {
-    (void)path;
-    return opendir(FIXTURE_DIR);
+    return opendir(strcmp(path, SD_CARD_MOUNT_POINT) == 0 ? FIXTURE_DIR : path);
+}
+
+// The house the board's mcp_directory.cpp would report: a kitchen with one radiator, a hall with
+// none and no history, and a radiator that is in no room. The kitchen's name needs escaping twice.
+size_t mcp_directory_rooms(mcp_room_info_t *out, size_t max)
+{
+    static const mcp_room_info_t ROOMS[] = {
+        {.id = 1, .name = "Kitchen \"big\"", .target_temp_c100 = 2100, .heat_loss_w_per_c = 45,
+         .radiator_count = 1, .radiators = {3}},
+        {.id = 2, .name = "Hall", .target_temp_c100 = 1850, .heat_loss_w_per_c = 20},
+    };
+    size_t n = sizeof(ROOMS) / sizeof(ROOMS[0]) < max ? sizeof(ROOMS) / sizeof(ROOMS[0]) : max;
+    memcpy(out, ROOMS, n * sizeof(ROOMS[0]));
+    return n;
+}
+
+size_t mcp_directory_radiators(mcp_radiator_info_t *out, size_t max)
+{
+    static const mcp_radiator_info_t RADS[] = {
+        {.id = 3, .name = "Kitchen K2", .rated_output_w = 1200},
+        {.id = 9, .name = "Spare", .rated_output_w = 500},
+    };
+    size_t n = sizeof(RADS) / sizeof(RADS[0]) < max ? sizeof(RADS) / sizeof(RADS[0]) : max;
+    memcpy(out, RADS, n * sizeof(RADS[0]));
+    return n;
 }
 
 
@@ -174,6 +211,42 @@ static void write_night(void)
         r.outdoor_temp_c100 = 400;
         r.heating_running   = heating ? 1 : 0;
         r.dhw_running       = dhw ? 1 : 0;
+        fwrite(&r, sizeof(r), 1, f);
+    }
+    fclose(f);
+}
+
+// The kitchen and its radiator over the same night. The radiator's file starts an hour in, as one
+// does when its sensor first reports mid-day: the slots before that are simply not in range of
+// anything, and a reader that joined on array index rather than time would be an hour out.
+static void write_rooms(void)
+{
+    mkdir(FIXTURE_DIR "/room-1", 0755);
+    mkdir(FIXTURE_DIR "/rad-3", 0755);
+
+    FILE *f = fopen(FIXTURE_DIR "/room-1/2026-01-15", "wb");
+    history_header_t hdr = {.magic = HISTORY_MAGIC, .version = HISTORY_VERSION, .sensor_kind = KIND_ROOM,
+                            .interval_s = STEP_S, .base_ts = NIGHT, .record_size = sizeof(rec_room_t)};
+    fwrite(&hdr, sizeof(hdr), 1, f);
+    for (uint32_t ts = NIGHT; ts < AT(6, 0); ts += STEP_S) {
+        rec_room_t r;
+        history_fill_sentinel(KIND_ROOM, &r);
+        r.current_temp_c100 = ts < AT(3, 0) ? 2050 : 1975;
+        fwrite(&r, sizeof(r), 1, f);
+    }
+    fclose(f);
+
+    f = fopen(FIXTURE_DIR "/rad-3/2026-01-15", "wb");
+    hdr.sensor_kind = KIND_RADIATOR;
+    hdr.record_size = sizeof(rec_radiator_t);
+    fwrite(&hdr, sizeof(hdr), 1, f);
+    for (uint32_t ts = NIGHT; ts < AT(6, 0); ts += STEP_S) {
+        rec_radiator_t r;
+        history_fill_sentinel(KIND_RADIATOR, &r);
+        if (ts >= AT(1, 0)) {
+            r.flow_temp_c100   = 3400;
+            r.return_temp_c100 = 2950;
+        }
         fwrite(&r, sizeof(r), 1, f);
     }
     fclose(f);
@@ -297,14 +370,14 @@ static void test_tools_list(void)
     const cJSON *tool;
     int          read_only = 0;
 
-    CHECK(cJSON_GetArraySize(tools) == 4);
+    CHECK(cJSON_GetArraySize(tools) == 5);
     cJSON_ArrayForEach(tool, tools)
     {
         read_only += cJSON_IsTrue(cJSON_GetObjectItem(cJSON_GetObjectItem(tool, "annotations"), "readOnlyHint"));
         CHECK(strcmp(str(cJSON_GetObjectItem(tool, "inputSchema"), "type"), "object") == 0);
         CHECK(strlen(str(tool, "description")) > 50);
     }
-    CHECK(read_only == 4);
+    CHECK(read_only == 5);
     CHECK(strcmp(str(cJSON_GetArrayItem(tools, 2), "name"), "summarise_cycles") == 0);
     done(&r);
 }
@@ -380,6 +453,84 @@ static void test_get_series(void)
 
     r = call("get_series", "{\"series\":[\"heat_output_w\"],\"start\":\"2026-01-01T00:00\",\"end\":\"2026-03-01T00:00\"}");
     CHECK(r.is_error && strstr(r.text, "longer than 31 days"));
+    done(&r);
+}
+
+static void test_list_rooms(void)
+{
+    reply_t      r     = call("list_rooms", "{}");
+    const cJSON *rooms = cJSON_GetObjectItem(r.result, "rooms");
+
+    CHECK(r.result != NULL && !r.is_error);
+    CHECK(cJSON_GetArraySize(rooms) == 2);
+
+    const cJSON *kitchen = cJSON_GetArrayItem(rooms, 0);
+    CHECK(num(kitchen, "id") == 1);
+    CHECK(strcmp(str(kitchen, "name"), "Kitchen \"big\"") == 0);
+    CHECK(num(kitchen, "target_temp_c") == 21 && num(kitchen, "predicted_heat_loss_w_per_c") == 45);
+    CHECK(strcmp(cJSON_GetArrayItem(cJSON_GetObjectItem(kitchen, "series"), 0)->valuestring, "room_1_temp_c") == 0);
+    CHECK(strcmp(str(kitchen, "first_day"), "2026-01-15") == 0 && strcmp(str(kitchen, "last_day"), "2026-01-15") == 0);
+
+    const cJSON *rads = cJSON_GetObjectItem(kitchen, "radiators");
+    CHECK(cJSON_GetArraySize(rads) == 1);
+    CHECK(num(cJSON_GetArrayItem(rads, 0), "id") == 3);
+    CHECK(num(cJSON_GetArrayItem(rads, 0), "rated_output_w_dt50") == 1200);
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(cJSON_GetArrayItem(rads, 0), "series")) == 2);
+    CHECK(strcmp(str(cJSON_GetArrayItem(rads, 0), "last_day"), "2026-01-15") == 0);
+
+    // A room with no radiators and no history is still a room.
+    const cJSON *hall = cJSON_GetArrayItem(rooms, 1);
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(hall, "radiators")) == 0);
+    CHECK(cJSON_IsNull(cJSON_GetObjectItem(hall, "first_day")));
+
+    const cJSON *spare = cJSON_GetObjectItem(r.result, "unassigned_radiators");
+    CHECK(cJSON_GetArraySize(spare) == 1 && num(cJSON_GetArrayItem(spare, 0), "id") == 9);
+    done(&r);
+}
+
+static void test_room_series(void)
+{
+    // A room, its radiator and the home in one call, an hour to a bucket.
+    reply_t r = call("get_series",
+                     "{\"series\":[\"room_1_temp_c\",\"radiator_3_flow_temp_c\",\"radiator_3_return_temp_c\","
+                     "\"flow_temp_c\"],\"start\":\"2026-01-15T00:00\",\"end\":\"2026-01-15T06:00\","
+                     "\"interval_seconds\":3600,\"aggregation\":\"last\"}");
+    const cJSON *series = cJSON_GetObjectItem(r.result, "series");
+    const cJSON *room   = cJSON_GetObjectItem(series, "room_1_temp_c");
+    const cJSON *flow   = cJSON_GetObjectItem(series, "radiator_3_flow_temp_c");
+    const cJSON *ret    = cJSON_GetObjectItem(series, "radiator_3_return_temp_c");
+
+    CHECK(r.result != NULL && !r.is_error);
+    CHECK(cJSON_GetArraySize(room) == 6 && cJSON_GetArraySize(flow) == 6);
+    CHECK(cJSON_GetArrayItem(room, 0)->valuedouble == 20.5 && cJSON_GetArrayItem(room, 3)->valuedouble == 19.75);
+    // The radiator had no reading in the first hour, and its second lines up with the room's.
+    CHECK(cJSON_IsNull(cJSON_GetArrayItem(flow, 0)));
+    CHECK(cJSON_GetArrayItem(flow, 1)->valuedouble == 34 && cJSON_GetArrayItem(ret, 1)->valuedouble == 29.5);
+    CHECK(cJSON_GetArrayItem(cJSON_GetObjectItem(series, "flow_temp_c"), 0)->valuedouble == 35);
+    CHECK(cJSON_GetObjectItem(r.result, "notes") == NULL);
+    done(&r);
+
+    // A room that was never recorded is all nulls, not an error: a deleted room looks the same.
+    r = call("get_series", "{\"series\":[\"room_7_temp_c\"],\"start\":\"2026-01-15T00:00\","
+                           "\"end\":\"2026-01-15T06:00\",\"interval_seconds\":3600}");
+    CHECK(!r.is_error && cJSON_IsNull(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(r.result, "series"), "room_7_temp_c"), 0)));
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(r.result, "notes")) == 1);
+    done(&r);
+
+    r = call("get_series", "{\"series\":[\"room_1_humidity\"],\"start\":\"2026-01-15T00:00\",\"end\":\"2026-01-15T06:00\"}");
+    CHECK(r.is_error && strstr(r.text, "list_rooms"));
+    done(&r);
+
+    // Five rooms and radiators over a month is more files than one call may read.
+    r = call("get_series", "{\"series\":[\"room_1_temp_c\",\"room_2_temp_c\",\"room_3_temp_c\",\"radiator_3_flow_temp_c\","
+                           "\"radiator_4_flow_temp_c\"],\"start\":\"2026-01-01T00:00\",\"end\":\"2026-01-31T00:00\"}");
+    CHECK(r.is_error && strstr(r.text, "room-or-radiator days"));
+    done(&r);
+
+    // The same month for one room is fine, and so is flow and return of one radiator: one file.
+    r = call("get_series", "{\"series\":[\"radiator_3_flow_temp_c\",\"radiator_3_return_temp_c\",\"room_1_temp_c\"],"
+                           "\"start\":\"2026-01-01T00:00\",\"end\":\"2026-01-31T00:00\"}");
+    CHECK(!r.is_error);
     done(&r);
 }
 
@@ -498,6 +649,7 @@ int main(int argc, char **argv)
     tzset();
 
     write_night();
+    write_rooms();
     CHECK(mcp_server_register(NULL) == ESP_OK);
     CHECK(s_post != NULL && s_get != NULL);
 
@@ -509,11 +661,17 @@ int main(int argc, char **argv)
     test_tools_list();
     test_list_series();
     test_get_series();
+    test_list_rooms();
+    test_room_series();
     test_summarise_cycles();
     test_compare_periods();
     test_no_card();
 
     remove(FIXTURE_DIR "/home-2026-01-15");
+    remove(FIXTURE_DIR "/room-1/2026-01-15");
+    remove(FIXTURE_DIR "/rad-3/2026-01-15");
+    rmdir(FIXTURE_DIR "/room-1");
+    rmdir(FIXTURE_DIR "/rad-3");
     rmdir(FIXTURE_DIR);
 
     printf("%d checks, %d failed\n", s_checks, s_failures);

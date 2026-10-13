@@ -33,6 +33,29 @@ extern const size_t       MCP_SERIES_COUNT;
 // NULL if there is no series with that id.
 const mcp_series_t *mcp_series_find(const char *id);
 
+// Where a series is recorded: the home's day files, or one room's or one radiator's.
+typedef enum { MCP_SOURCE_HOME, MCP_SOURCE_ROOM, MCP_SOURCE_RADIATOR } mcp_source_t;
+
+// A series id resolved to a column of one source's records.
+typedef struct {
+    mcp_source_t source;
+    uint8_t      inst;     // room or radiator id; 0 for the home
+    uint8_t      field;    // position in that source's record
+    uint16_t     divisor;
+    uint8_t      decimals;
+} mcp_series_ref_t;
+
+// Resolves a home series id from MCP_SERIES, or one of the per-instance ids:
+//
+//   room_<id>_temp_c               a room's air temperature
+//   radiator_<id>_flow_temp_c      a radiator's flow temperature
+//   radiator_<id>_return_temp_c    and its return
+//
+// <id> is the room or radiator id, 0 to 255, in decimal with no leading zeros. False for anything
+// else. This does not check that the room or radiator exists: one that has been deleted still
+// has its history.
+bool mcp_series_resolve(const char *id, mcp_series_ref_t *out);
+
 typedef enum {
     MCP_PLAN_OK,
     MCP_PLAN_EMPTY_RANGE,     // end is not after start

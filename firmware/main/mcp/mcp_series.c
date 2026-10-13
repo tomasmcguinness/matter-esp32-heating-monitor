@@ -41,6 +41,58 @@ const mcp_series_t *mcp_series_find(const char *id)
     return NULL;
 }
 
+// Field positions are rec_room_t's and rec_radiator_t's. Both store 0.01 degC.
+static const struct {
+    const char  *prefix;
+    const char  *suffix;
+    mcp_source_t source;
+    uint8_t      field;
+} INSTANCE_SERIES[] = {
+    {"room_", "_temp_c", MCP_SOURCE_ROOM, 0},
+    {"radiator_", "_flow_temp_c", MCP_SOURCE_RADIATOR, 0},
+    {"radiator_", "_return_temp_c", MCP_SOURCE_RADIATOR, 1},
+};
+
+bool mcp_series_resolve(const char *id, mcp_series_ref_t *out)
+{
+    const mcp_series_t *home = mcp_series_find(id);
+
+    if (home) {
+        *out = (mcp_series_ref_t){MCP_SOURCE_HOME, 0, home->field, home->divisor, home->decimals};
+        return true;
+    }
+
+    for (size_t i = 0; i < sizeof(INSTANCE_SERIES) / sizeof(INSTANCE_SERIES[0]); i++) {
+        size_t prefix_len = strlen(INSTANCE_SERIES[i].prefix);
+
+        if (strncmp(id, INSTANCE_SERIES[i].prefix, prefix_len) != 0) {
+            continue;
+        }
+
+        // The id between the prefix and the suffix: one to three digits, no leading zero, 255 at
+        // most. Parsed by hand so that "room_+1_temp_c" and "room_01_temp_c" are not second
+        // names for room 1.
+        const char *digits = id + prefix_len;
+        unsigned    inst   = 0;
+        size_t      n      = 0;
+
+        while (digits[n] >= '0' && digits[n] <= '9' && n < 3) {
+            inst = inst * 10 + (unsigned)(digits[n] - '0');
+            n++;
+        }
+
+        if (n == 0 || (n > 1 && digits[0] == '0') || inst > 255 ||
+            strcmp(digits + n, INSTANCE_SERIES[i].suffix) != 0) {
+            continue;
+        }
+
+        *out = (mcp_series_ref_t){INSTANCE_SERIES[i].source, (uint8_t)inst, INSTANCE_SERIES[i].field, 100, 2};
+        return true;
+    }
+
+    return false;
+}
+
 static uint32_t ceil_div(uint32_t a, uint32_t b)
 {
     return a / b + (a % b != 0);

@@ -18,6 +18,7 @@
 #include "storage/time_sync.h"
 
 #include "mcp_cycles.h"
+#include "mcp_directory.h"
 #include "mcp_series.h"
 #include "mcp_time.h"
 
@@ -34,6 +35,15 @@ static const char *TAG = "mcp";
 // The longest range one tool call may cover. A day is 484 KB at the 5 s default and the web
 // server is one task, so everything else waits while a call reads its days off the card.
 #define MCP_MAX_RANGE_DAYS 31
+
+// get_series reads a day file per room or radiator asked for, per day, on top of the home's. This
+// caps rooms-and-radiators x days in one call. A room or radiator day is 138 KB at the 5 s
+// default, so the cap is about what a 31 day read of the home series already costs.
+#define MCP_MAX_INSTANCE_DAYS 124
+
+// The most list_rooms reports, which is also the most the history logger records.
+#define MCP_MAX_ROOMS     32
+#define MCP_MAX_RADIATORS 64
 
 // Runs kept per summarise_cycles call. A badly short-cycling day is a couple of hundred, so this
 // is a month of that. They live in PSRAM for the length of the call.
@@ -115,6 +125,25 @@ static void out_printf(mcp_out_t *o, const char *fmt, ...)
     va_end(args);
 
     out_str(o, tmp);
+}
+
+// A JSON string, quotes included, for text that did not come from this file -- a room's name can
+// hold anything. Escaped here for the tool's JSON; out_str escapes it again for the envelope.
+static void out_json_string(mcp_out_t *o, const char *s)
+{
+    out_str(o, "\"");
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+
+        if (c == '"' || c == '\\') {
+            out_printf(o, "\\%c", c);
+        } else if (c < 0x20) {
+            out_printf(o, "\\u%04x", c);
+        } else {
+            out_printf(o, "%c", c);
+        }
+    }
+    out_str(o, "\"");
 }
 
 // A number with `decimals` places, or null.
@@ -210,26 +239,31 @@ static void *big_alloc(size_t size)
     return p ? p : calloc(1, size);
 }
 
-// A field of a home record, or false when it holds the sentinel.
-static bool home_field(const uint8_t *rec, size_t index, int32_t *out)
+// A field of a record of `kind`, or false when it holds the sentinel.
+static bool rec_field(uint8_t kind, const uint8_t *rec, size_t index, int32_t *out)
 {
     uint16_t raw;
     memcpy(&raw, rec + index * 2, 2);
 
-    if (history_field_is_null(KIND_HOME, index, raw)) {
+    if (history_field_is_null(kind, index, raw)) {
         return false;
     }
 
-    *out = ((history_unsigned_mask(KIND_HOME) >> index) & 1u) ? (int32_t)raw : (int32_t)(int16_t)raw;
+    *out = ((history_unsigned_mask(kind) >> index) & 1u) ? (int32_t)raw : (int32_t)(int16_t)raw;
     return true;
 }
 
-// Opens the home file for the local day starting at `day` and reads its header. NULL if there is
-// none this firmware can read.
-static FILE *open_home_day(uint32_t day, history_header_t *hdr)
+static bool home_field(const uint8_t *rec, size_t index, int32_t *out)
+{
+    return rec_field(KIND_HOME, rec, index, out);
+}
+
+// Opens a series' file for the local day starting at `day` and reads its header. `inst` is the
+// room or radiator id, ignored for KIND_HOME. NULL if there is none this firmware can read.
+static FILE *open_day(uint8_t kind, uint8_t inst, uint32_t day, history_header_t *hdr)
 {
     char path[HISTORY_PATH_MAX];
-    if (!history_path_for(KIND_HOME, 0, day, path, sizeof(path))) {
+    if (!history_path_for(kind, inst, day, path, sizeof(path))) {
         return NULL;
     }
 
@@ -239,12 +273,17 @@ static FILE *open_home_day(uint32_t day, history_header_t *hdr)
     }
 
     if (fread(hdr, sizeof(*hdr), 1, f) != 1 || hdr->magic != HISTORY_MAGIC ||
-        hdr->version != HISTORY_VERSION || hdr->sensor_kind != KIND_HOME ||
-        hdr->record_size != sizeof(rec_home_t) || hdr->interval_s == 0) {
+        hdr->version != HISTORY_VERSION || hdr->sensor_kind != kind ||
+        hdr->record_size != history_record_size(kind) || hdr->interval_s == 0) {
         fclose(f);
         return NULL;
     }
     return f;
+}
+
+static FILE *open_home_day(uint32_t day, history_header_t *hdr)
+{
+    return open_day(KIND_HOME, 0, day, hdr);
 }
 
 // The local midnight after `day`. Thirty hours on is always inside the next local day, whether
@@ -261,11 +300,13 @@ typedef struct {
     uint32_t samples;
 } scan_stats_t;
 
-// Calls `cb` for every recorded slot with start <= ts < end, in time order, across as many day
-// files as the range touches. False only if the read buffer could not be allocated.
-static bool scan_range(uint32_t start, uint32_t end, scan_cb_t cb, void *ctx, scan_stats_t *stats)
+// Calls `cb` for every recorded slot of one series with start <= ts < end, in time order, across
+// as many day files as the range touches. False only if the read buffer could not be allocated.
+static bool scan_series(uint8_t kind, uint8_t inst, uint32_t start, uint32_t end, scan_cb_t cb,
+                        void *ctx, scan_stats_t *stats)
 {
-    uint8_t *buf = malloc(SCAN_CHUNK_RECORDS * sizeof(rec_home_t));
+    size_t   rec_size = history_record_size(kind);
+    uint8_t *buf      = malloc(SCAN_CHUNK_RECORDS * rec_size);
     if (!buf) {
         return false;
     }
@@ -274,7 +315,7 @@ static bool scan_range(uint32_t start, uint32_t end, scan_cb_t cb, void *ctx, sc
 
     for (uint32_t day = local_midnight_for(start); day < end; day = next_day(day)) {
         history_header_t hdr;
-        FILE            *f = open_home_day(day, &hdr);
+        FILE            *f = open_day(kind, inst, day, &hdr);
         if (!f) {
             continue;
         }
@@ -285,18 +326,18 @@ static bool scan_range(uint32_t start, uint32_t end, scan_cb_t cb, void *ctx, sc
         if (start > hdr.base_ts) {
             slot = (start - hdr.base_ts + hdr.interval_s - 1) / hdr.interval_s;
         }
-        fseek(f, (long)(sizeof(hdr) + (size_t)slot * sizeof(rec_home_t)), SEEK_SET);
+        fseek(f, (long)(sizeof(hdr) + (size_t)slot * rec_size), SEEK_SET);
 
         bool   done = false;
         size_t got;
-        while (!done && (got = fread(buf, sizeof(rec_home_t), SCAN_CHUNK_RECORDS, f)) > 0) {
+        while (!done && (got = fread(buf, rec_size, SCAN_CHUNK_RECORDS, f)) > 0) {
             for (size_t i = 0; i < got; i++, slot++) {
                 uint32_t ts = hdr.base_ts + slot * hdr.interval_s;
                 if (ts >= end) {
                     done = true;
                     break;
                 }
-                cb(ctx, ts, hdr.interval_s, buf + i * sizeof(rec_home_t));
+                cb(ctx, ts, hdr.interval_s, buf + i * rec_size);
                 stats->samples++;
             }
         }
@@ -305,6 +346,12 @@ static bool scan_range(uint32_t start, uint32_t end, scan_cb_t cb, void *ctx, sc
 
     free(buf);
     return true;
+}
+
+// The home series, which is what every tool but get_series reads.
+static bool scan_range(uint32_t start, uint32_t end, scan_cb_t cb, void *ctx, scan_stats_t *stats)
+{
+    return scan_series(KIND_HOME, 0, start, end, cb, ctx, stats);
 }
 
 // The sampling interval of the first day file in a range, or 0 if no day in it has one.
@@ -497,6 +544,118 @@ static esp_err_t tool_list_series(httpd_req_t *req, const char *id)
 }
 
 // ---------------------------------------------------------------------------
+// list_rooms
+// ---------------------------------------------------------------------------
+
+// The first and last days a room or radiator has a file for, as YYYY-MM-DD, or null for both.
+static void write_recorded_days(mcp_out_t *o, uint8_t kind, uint8_t inst)
+{
+    char first[16] = "";
+    char last[16]  = "";
+    char path[HISTORY_PATH_MAX];
+    DIR *dir = history_dir_for(kind, inst, path, sizeof(path)) ? opendir(path) : NULL;
+
+    if (dir) {
+        struct dirent *ent;
+
+        while ((ent = readdir(dir)) != NULL) {
+            const char *d = ent->d_name;
+
+            if (strlen(d) != 10 || d[4] != '-' || d[7] != '-') {
+                continue;
+            }
+            if (first[0] == '\0' || strcmp(d, first) < 0) {
+                strlcpy(first, d, sizeof(first));
+            }
+            if (strcmp(d, last) > 0) {
+                strlcpy(last, d, sizeof(last));
+            }
+        }
+        closedir(dir);
+    }
+
+    if (first[0]) {
+        out_printf(o, ",\"first_day\":\"%s\",\"last_day\":\"%s\"", first, last);
+    } else {
+        out_str(o, ",\"first_day\":null,\"last_day\":null");
+    }
+}
+
+static void write_radiator(mcp_out_t *o, const mcp_radiator_info_t *rad)
+{
+    out_printf(o, "{\"id\":%u,\"name\":", rad->id);
+    out_json_string(o, rad->name);
+    out_printf(o, ",\"rated_output_w_dt50\":%u,\"series\":[\"radiator_%u_flow_temp_c\",\"radiator_%u_return_temp_c\"]",
+               rad->rated_output_w, rad->id, rad->id);
+    write_recorded_days(o, KIND_RADIATOR, rad->id);
+    out_str(o, "}");
+}
+
+static esp_err_t tool_list_rooms(httpd_req_t *req, const char *id)
+{
+    mcp_room_info_t     *rooms = malloc(MCP_MAX_ROOMS * sizeof(mcp_room_info_t));
+    mcp_radiator_info_t *rads  = malloc(MCP_MAX_RADIATORS * sizeof(mcp_radiator_info_t));
+    mcp_out_t           *o     = malloc(sizeof(mcp_out_t));
+
+    if (!rooms || !rads || !o) {
+        free(rooms);
+        free(rads);
+        free(o);
+        return tool_error(req, id, "The device ran out of memory.");
+    }
+
+    size_t room_count = mcp_directory_rooms(rooms, MCP_MAX_ROOMS);
+    size_t rad_count  = mcp_directory_radiators(rads, MCP_MAX_RADIATORS);
+    bool   placed[MCP_MAX_RADIATORS] = {false};
+
+    tool_result_begin(o, req, id);
+    out_str(o, "{\"rooms\":[");
+
+    for (size_t i = 0; i < room_count; i++) {
+        const mcp_room_info_t *room = &rooms[i];
+
+        out_printf(o, "%s{\"id\":%u,\"name\":", i ? "," : "", room->id);
+        out_json_string(o, room->name);
+        out_printf(o, ",\"target_temp_c\":%.2f,\"predicted_heat_loss_w_per_c\":%u,\"series\":[\"room_%u_temp_c\"]",
+                   room->target_temp_c100 / 100.0, room->heat_loss_w_per_c, room->id);
+        write_recorded_days(o, KIND_ROOM, room->id);
+
+        out_str(o, ",\"radiators\":[");
+        bool any = false;
+        for (uint8_t r = 0; r < room->radiator_count; r++) {
+            for (size_t k = 0; k < rad_count; k++) {
+                if (rads[k].id == room->radiators[r]) {
+                    out_str(o, any ? "," : "");
+                    write_radiator(o, &rads[k]);
+                    placed[k] = true;
+                    any       = true;
+                }
+            }
+        }
+        out_str(o, "]}");
+    }
+
+    // A radiator in no room is still recorded, so it is still listed.
+    out_str(o, "],\"unassigned_radiators\":[");
+    bool any = false;
+    for (size_t k = 0; k < rad_count; k++) {
+        if (!placed[k]) {
+            out_str(o, any ? "," : "");
+            write_radiator(o, &rads[k]);
+            any = true;
+        }
+    }
+    out_str(o, "]}");
+
+    esp_err_t err = tool_result_end(o, false);
+
+    free(rooms);
+    free(rads);
+    free(o);
+    return err;
+}
+
+// ---------------------------------------------------------------------------
 // get_series
 // ---------------------------------------------------------------------------
 
@@ -507,12 +666,21 @@ typedef struct {
     uint32_t            interval;
     uint32_t            buckets;
     size_t              series_count;
-    const mcp_series_t *series[16];
+    mcp_series_ref_t    series[16];
+    const char         *ids[16]; // as the caller wrote them, owned by the request's JSON
     aggregation_t       aggregation;
+    // The series the scan in progress is reading: only the columns that come from it are filled.
+    uint8_t             kind;
+    uint8_t             inst;
     // series_count x buckets each. `count` is what says a bucket has a reading at all.
     int64_t  *acc;
     uint32_t *count;
 } resample_t;
+
+static uint8_t source_kind(mcp_source_t source)
+{
+    return source == MCP_SOURCE_ROOM ? KIND_ROOM : source == MCP_SOURCE_RADIATOR ? KIND_RADIATOR : KIND_HOME;
+}
 
 static void resample_cb(void *ctx, uint32_t ts, uint16_t interval_s, const uint8_t *rec)
 {
@@ -526,7 +694,8 @@ static void resample_cb(void *ctx, uint32_t ts, uint16_t interval_s, const uint8
 
     for (size_t s = 0; s < r->series_count; s++) {
         int32_t value;
-        if (!home_field(rec, r->series[s]->field, &value)) {
+        if (source_kind(r->series[s].source) != r->kind || r->series[s].inst != r->inst ||
+            !rec_field(r->kind, rec, r->series[s].field, &value)) {
             continue;
         }
 
@@ -567,15 +736,40 @@ static esp_err_t tool_get_series(httpd_req_t *req, const char *id, const cJSON *
     }
     cJSON_ArrayForEach(item, series)
     {
-        const mcp_series_t *found = cJSON_IsString(item) ? mcp_series_find(item->valuestring) : NULL;
-        if (!found) {
-            return tool_error(req, id, "Unknown series \"%s\". Call list_series for the ids.",
+        mcp_series_ref_t found;
+        if (!cJSON_IsString(item) || !mcp_series_resolve(item->valuestring, &found)) {
+            return tool_error(req, id,
+                              "Unknown series \"%s\". Call list_series for the home's ids and "
+                              "list_rooms for the room and radiator ones.",
                               cJSON_IsString(item) ? item->valuestring : "?");
         }
         if (r.series_count == sizeof(r.series) / sizeof(r.series[0])) {
             return tool_error(req, id, "Too many series in one call; ask for 16 or fewer.");
         }
+        r.ids[r.series_count]      = item->valuestring;
         r.series[r.series_count++] = found;
+    }
+
+    // Each room or radiator is a file of its own per day, so they are what a long range costs.
+    uint32_t days      = (end - start + 86399) / 86400 + 1;
+    uint32_t instances = 0;
+
+    for (size_t s = 0; s < r.series_count; s++) {
+        bool first = r.series[s].source != MCP_SOURCE_HOME;
+
+        for (size_t t = 0; t < s && first; t++) {
+            first = r.series[t].source != r.series[s].source || r.series[t].inst != r.series[s].inst;
+        }
+        instances += first;
+    }
+
+    if (instances * days > MCP_MAX_INSTANCE_DAYS) {
+        return tool_error(req, id,
+                          "That asks for %lu rooms and radiators over about %lu days, and one call "
+                          "may read at most %d room-or-radiator days. Ask for fewer of them at a "
+                          "time, or a range of %lu days or less.",
+                          (unsigned long)instances, (unsigned long)days, MCP_MAX_INSTANCE_DAYS,
+                          (unsigned long)(MCP_MAX_INSTANCE_DAYS / instances > 1 ? MCP_MAX_INSTANCE_DAYS / instances - 1 : 1));
     }
 
     const cJSON *aggregation = cJSON_GetObjectItemCaseSensitive(args, "aggregation");
@@ -612,10 +806,33 @@ static esp_err_t tool_get_series(httpd_req_t *req, const char *id, const cJSON *
     r.acc     = big_alloc(r.series_count * r.buckets * sizeof(int64_t));
     r.count   = big_alloc(r.series_count * r.buckets * sizeof(uint32_t));
 
-    mcp_out_t   *o = malloc(sizeof(mcp_out_t));
-    scan_stats_t stats;
+    mcp_out_t   *o  = malloc(sizeof(mcp_out_t));
+    scan_stats_t stats = {0};
+    bool         ok = r.acc && r.count && o;
 
-    if (!r.acc || !r.count || !o || !scan_range(start, end, resample_cb, &r, &stats)) {
+    // One pass over the card per source: the home, and each room or radiator asked for. Buckets
+    // are found from the timestamp, so sources whose files start at different slots still line up.
+    for (size_t s = 0; ok && s < r.series_count; s++) {
+        bool first = true;
+
+        for (size_t t = 0; t < s && first; t++) {
+            first = r.series[t].source != r.series[s].source || r.series[t].inst != r.series[s].inst;
+        }
+        if (!first) {
+            continue;
+        }
+
+        scan_stats_t one;
+
+        r.kind = source_kind(r.series[s].source);
+        r.inst = r.series[s].inst;
+        ok     = scan_series(r.kind, r.inst, start, end, resample_cb, &r, &one);
+
+        stats.files += one.files;
+        stats.samples += one.samples;
+    }
+
+    if (!ok) {
         free(r.acc);
         free(r.count);
         free(o);
@@ -634,9 +851,9 @@ static esp_err_t tool_get_series(httpd_req_t *req, const char *id, const cJSON *
 
     out_str(o, "],\"series\":{");
     for (size_t s = 0; s < r.series_count; s++) {
-        const mcp_series_t *def = r.series[s];
+        const mcp_series_ref_t *def = &r.series[s];
 
-        out_printf(o, "%s\"%s\":[", s ? "," : "", def->id);
+        out_printf(o, "%s\"%s\":[", s ? "," : "", r.ids[s]);
         for (uint32_t b = 0; b < r.buckets; b++) {
             size_t at = s * r.buckets + b;
             double value = (double)r.acc[at];
@@ -987,15 +1204,16 @@ static esp_err_t handle_initialize(httpd_req_t *req, const char *id, const cJSON
         }
     }
 
-    char result[768];
+    char result[896];
     snprintf(result, sizeof(result),
              "{\"protocolVersion\":\"%s\",\"capabilities\":{\"tools\":{}},"
              "\"serverInfo\":{\"name\":\"" MCP_SERVER_NAME "\",\"version\":\"" MCP_SERVER_VERSION "\"},"
              "\"instructions\":\"Read-only access to a home heat pump monitor's recorded history: "
              "heat and electrical power, flow, return, outdoor and indoor temperatures, flow rate "
-             "and operating mode, sampled every few seconds. Use summarise_cycles for cycling and "
-             "COP questions and compare_periods for before/after comparisons; get_series is for "
-             "plotting or inspecting a stretch directly.\"}",
+             "and operating mode, sampled every few seconds, plus each room's temperature and each "
+             "radiator's flow and return. Use summarise_cycles for cycling and COP questions and "
+             "compare_periods for before/after comparisons; get_series is for plotting or "
+             "inspecting a stretch directly; list_rooms names the rooms and radiators.\"}",
              version);
 
     return send_result(req, id, result);
@@ -1014,8 +1232,9 @@ static esp_err_t handle_tools_call(httpd_req_t *req, const char *id, const cJSON
     bool is_get     = strcmp(name->valuestring, "get_series") == 0;
     bool is_cycles  = strcmp(name->valuestring, "summarise_cycles") == 0;
     bool is_compare = strcmp(name->valuestring, "compare_periods") == 0;
+    bool is_rooms   = strcmp(name->valuestring, "list_rooms") == 0;
 
-    if (!is_list && !is_get && !is_cycles && !is_compare) {
+    if (!is_list && !is_get && !is_cycles && !is_compare && !is_rooms) {
         return send_rpc_error(req, "200 OK", id, -32602, "Unknown tool");
     }
 
@@ -1027,6 +1246,9 @@ static esp_err_t handle_tools_call(httpd_req_t *req, const char *id, const cJSON
 
     if (is_list) {
         return tool_list_series(req, id);
+    }
+    if (is_rooms) {
+        return tool_list_rooms(req, id);
     }
     if (is_get) {
         return tool_get_series(req, id, args);
