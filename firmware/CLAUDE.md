@@ -402,8 +402,9 @@ more.
 
 **The MCP server (`mcp/`):**
 
-`POST /mcp` is a read-only [MCP](https://modelcontextprotocol.io) server over the home history,
-so an AI assistant can analyse cycling, COP and the effect of heating-curve changes. Add it to
+`POST /mcp` is a read-only [MCP](https://modelcontextprotocol.io) server over the recorded
+history, so an AI assistant can analyse cycling, COP, the effect of heating-curve changes, and how
+individual rooms and radiators behave. Add it to
 Claude Code with `claude mcp add --transport http heating-monitor http://<board-ip>/mcp`.
 
 | Tool | Returns |
@@ -412,10 +413,32 @@ Claude Code with `claude mcp add --transport http heating-monitor http://<board-
 | `get_series` | Series over a range as `{ interval_seconds, timestamps, series }`; at most 1000 points each unless an interval is named, never more than 5000 |
 | `summarise_cycles` | Each compressor run in a range, plus a period summary |
 | `compare_periods` | Two period summaries side by side, each with its mean outdoor temperature |
+| `list_rooms` | Each room with its radiators: id, name, target, ratings, series ids, first and last recorded day |
 
-Every tool only reads `/sdcard/home-*`. Nothing in `mcp/` writes to the card, touches a manager or
-can reach the heat pump, and that is the property to keep: a tool that changes anything does not
-belong here. There is **no authentication**, like the rest of the HTTP API.
+The cycle tools and `list_series` only read `/sdcard/home-*`. `get_series` also reads a room's or
+a radiator's day files, and `list_rooms` reads the configuration. Nothing in `mcp/` writes to the
+card, changes a manager or can reach the heat pump, and that is the property to keep: a tool that
+changes anything does not belong here.
+
+**Rooms and radiators.** `get_series` takes `room_<id>_temp_c`, `radiator_<id>_flow_temp_c` and
+`radiator_<id>_return_temp_c` alongside the home ids, resolved by `mcp_series_resolve()`. Each
+distinct room or radiator is one more pass over the card, bucketed **by timestamp**, so a file that
+started mid-day still lines up with the home's. An id with no files returns nulls, not an error — a
+deleted room keeps its history and looks no different from one that never existed. Because every
+one is a file per day, a call may read at most `MCP_MAX_INSTANCE_DAYS` (124) room-or-radiator days,
+roughly what 31 days of the home series already costs.
+
+**Radiator heat output is not offered as a series**, for the reason it is not on the card: it is
+derived, and the `pow()` belongs off the device. `list_rooms` gives the rated output and its
+description gives the formula, including that the output is zero unless `heating_running` is 1.
+
+`mcp_directory.h` is the server's one view of the managers: `mcp_directory_rooms()` and
+`mcp_directory_radiators()` copy names, targets, ratings and room membership out by value.
+`mcp_directory.cpp` implements them against `g_room_manager` and `g_radiator_manager`; the split
+exists because `mcp_server.c` is C and is also built on a desktop, where `test_server.c` supplies
+them. They are only safe on the HTTP task, which is the task that adds and frees those lists'
+nodes. Names are user text, so they go through `out_json_string()`. What they report is **today's
+configuration** — history from before a radiator was re-rated or moved is not marked. There is **no authentication**, like the rest of the HTTP API.
 
 - `mcp_server.c` — the transport and the tools. Streamable HTTP, **stateless**: one JSON response
   per POST, no session id, no SSE. `GET /mcp` is registered only to answer 405; without it the
