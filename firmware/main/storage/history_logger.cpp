@@ -16,6 +16,7 @@
 #include "history_format.h"
 #include "history_paths.h"
 #include "history_totals.h"
+#include "subscription_log.h"
 #include "sd_card.h"
 #include "time_sync.h"
 
@@ -528,6 +529,10 @@ static void flush_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(FLUSH_INTERVAL_MS));
         flush_once();
+
+        // The subscription log rides on this task for the same reason the samples do: it is the
+        // one place file I/O happens off the CHIP event loop. See subscription_log.h.
+        subscription_log_flush();
 
         // After the flush, so a day that ended since the last cycle has its final samples on
         // the card before it is summarised.

@@ -9,6 +9,7 @@ import ElectricalPower from "./ElectricalPower";
 import Cop from "./Cop";
 import SubscriptionPill from "./SubscriptionPill";
 import HeatPump, { type HeatPumpData } from "./HeatPump";
+import HomeStatus from "./HomeStatus";
 import { WebSocketContext } from "./WSContext.jsx";
 
 function Home() {
@@ -31,6 +32,8 @@ function Home() {
   let [heatPumpNodeId, setHeatPumpNodeId] = useState<number | undefined>(undefined);
   let [heatPumpSubscription, setHeatPumpSubscription] = useState<string | undefined>(undefined);
   let [heatPump, setHeatPump] = useState<HeatPumpData | null | undefined>(undefined);
+  let [heatingRunning, setHeatingRunning] = useState<boolean | null | undefined>(undefined);
+  let [dhwRunning, setDhwRunning] = useState<boolean | null | undefined>(undefined);
   let [electricalMeterNodeId, setElectricalMeterNodeId] = useState<number | undefined>(undefined);
   let [electricalMeterSubscription, setElectricalMeterSubscription] = useState<string | undefined>(undefined);
   let [electricalVoltage, setElectricalVoltage] = useState<number | null | undefined>(undefined);
@@ -65,6 +68,8 @@ function Home() {
     setHeatPumpNodeId(data.heatPumpNodeId);
     setHeatPumpSubscription(data.heatPumpSubscription);
     setHeatPump(data.heatPump);
+    setHeatingRunning(data.heatingRunning);
+    setDhwRunning(data.dhwRunning);
 
     setElectricalMeterNodeId(data.electricalMeterNodeId);
     setElectricalMeterSubscription(data.electricalMeterSubscription);
@@ -98,7 +103,11 @@ function Home() {
 
   return (
     <>
-      <h1>Home <NavLink className="btn btn-primary action-button" to={`/edit`}>Edit</NavLink></h1>
+      <h1 className="d-flex flex-wrap align-items-center gap-3">
+        Home
+        <HomeStatus outdoorTemperature={outdoorTemperature} indoorTemperature={averageInternalTemperature} heatingRunning={heatingRunning} dhwRunning={dhwRunning} />
+        <NavLink className="btn btn-primary ms-auto" to={`/edit`}>Edit</NavLink>
+      </h1>
       <hr />
       {/* Node 0 is the firmware's "nothing selected". Sections check for it exactly, rather than for
           falsy, so the alert doesn't flash up before the first fetch has returned. */}

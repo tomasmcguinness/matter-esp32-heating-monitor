@@ -71,7 +71,9 @@ export function fieldsMatch(body: HistoryResponse, expected: string[]): boolean 
 }
 
 // A stretch of the day the heat pump spent in one mode, as unix seconds. Idle time has no span.
-export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" };
+// "noData" is a stretch where neither state was recorded -- the heat pump's subscription was lost,
+// or the device was not running -- so an outage is not mistaken for the heat pump being idle.
+export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" | "noData" };
 
 // The heat pump's mode over a day, from the home series' heatingRunning and dhwRunning columns.
 // Those are found by name rather than position, so this does not care where they sit in the
@@ -84,6 +86,10 @@ export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" 
 //
 // A bucket is the integer mean of its slots, so a 0/1 column reads 1 only when the mode held for
 // the whole bucket. A run therefore starts and ends up to one bucket late and early.
+//
+// A bucket with both columns null is "noData", but only on a day where the mode was recorded at
+// least once. A day where it never was -- recorded before the columns existed, or with no heat
+// pump picked -- is still a day with no spans, rather than a strip that is grey end to end.
 export function modeSpans(body: HistoryResponse | null): ModeSpan[] {
   const points = body?.points ?? [];
   const heatingCol = (body?.fields?.indexOf("heatingRunning") ?? -1) + 1;
@@ -93,13 +99,21 @@ export function modeSpans(body: HistoryResponse | null): ModeSpan[] {
     return [];
   }
 
+  const isRecorded = (point: (number | null)[]) =>
+    (heatingCol !== 0 && point[heatingCol] != null) || (dhwCol !== 0 && point[dhwCol] != null);
+
+  if (!points.some(isRecorded)) {
+    return [];
+  }
+
   const bucketWidth = (body?.interval ?? 0) * (body?.stride ?? 1);
   const spans: ModeSpan[] = [];
 
   for (const point of points) {
     const ts = point[0] as number;
-    const mode =
-      dhwCol !== 0 && (point[dhwCol] ?? 0) > 0
+    const mode = !isRecorded(point)
+      ? "noData"
+      : dhwCol !== 0 && (point[dhwCol] ?? 0) > 0
         ? "hotWater"
         : heatingCol !== 0 && (point[heatingCol] ?? 0) > 0
           ? "heating"

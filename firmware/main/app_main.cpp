@@ -78,6 +78,7 @@
 #include "storage/history_api.h"
 #include "storage/status_api.h"
 #include "storage/history_logger.h"
+#include "storage/subscription_log.h"
 #include "storage/sd_card.h"
 #include "storage/time_sync.h"
 
@@ -263,6 +264,7 @@ void node_subscription_established_cb(uint64_t remote_node_id, uint32_t subscrip
     // Indicate we have a subscription!
     //
     mark_node_has_subscription(&g_node_manager, remote_node_id, subscription_id);
+    subscription_log_record(remote_node_id, SUBLOG_ESTABLISHED, 0);
 
     // The attempt has resolved, so its in-flight slot can go to the next queued node.
     subscription_attempt_finished(remote_node_id);
@@ -278,7 +280,19 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     //
     bool create_new_subscription = false;
 
+    // Read before the mark clears it: an established subscription ending is a drop, while id 0 is
+    // an attempt that never got that far.
+    matter_node_t *node = find_node(&g_node_manager, remote_node_id);
+    bool was_subscribed = node && node->has_subscription && subscription_id != 0 && node->subscription_id == subscription_id;
+
     mark_node_has_no_subscription(&g_node_manager, remote_node_id, subscription_id, &create_new_subscription);
+
+    // A termination for a subscription the node has already replaced changes nothing, so it is
+    // not logged either.
+    if (create_new_subscription)
+    {
+        subscription_log_record(remote_node_id, was_subscribed ? SUBLOG_TERMINATED : SUBLOG_ATTEMPT_FAILED, 0);
+    }
 
     // Also how an attempt ends that connected but never got as far as establishing -- esp-matter
     // reports that as a termination with subscription id 0. A no-op after an established one.
@@ -313,6 +327,7 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
     bool create_new_subscription = false;
 
     mark_node_has_no_subscription(&g_node_manager, node_id, 0, &create_new_subscription);
+    subscription_log_record(node_id, SUBLOG_ATTEMPT_FAILED, error.AsInteger());
 
     subscription_attempt_finished(node_id);
 
@@ -2065,6 +2080,7 @@ esp_err_t unpair_node(uint64_t node_id)
 
     remove_node(&g_node_manager, node_id);
     heat_pump_forget_node(&g_heat_pump_manager, node_id);
+    subscription_log_record(node_id, SUBLOG_REMOVED, 0);
 
     return ESP_OK;
 }
@@ -3422,8 +3438,8 @@ static cJSON *build_home_json(void)
     }
 
     // The average of the rooms' temperatures, derived by update_home(); null while no room
-    // has a reading. dhwRunning comes from the picked heat pump -- see
-    // update_heat_pump_running() -- and is null while none is picked or it has not reported.
+    // has a reading. heatingRunning and dhwRunning come from the picked heat pump -- see
+    // update_heat_pump_running() -- and are null while none is picked or it has not reported.
     //
     if (g_home_manager.has_average_internal_temperature)
     {
@@ -3432,6 +3448,15 @@ static cJSON *build_home_json(void)
     else
     {
         cJSON_AddNullToObject(root, "averageInternalTemperature");
+    }
+
+    if (g_home_manager.has_heating_running)
+    {
+        cJSON_AddBoolToObject(root, "heatingRunning", g_home_manager.heating_running);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "heatingRunning");
     }
 
     if (g_home_manager.has_dhw_running)
@@ -4847,6 +4872,14 @@ extern "C" void app_main()
     esp_matter::controller::matter_controller_client::get_instance().init(112233, 1, 5580);
     esp_matter::controller::matter_controller_client::get_instance().setup_commissioner();
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+
+    // Before the subscription manager, so the boot is the first event and nothing is recorded
+    // ahead of it. Not fatal: without it there is just no Diagnostics history.
+    err = subscription_log_init();
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start the subscription log, err:%d", err);
+    }
 
     // Starts the queue and the worker that drains it. Everything that wants a subscription calls
     // enqueue_subscription(); the worker serialises them and works out the attribute paths from

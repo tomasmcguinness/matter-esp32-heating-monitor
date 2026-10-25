@@ -109,7 +109,9 @@ hot water, on any other Thermostat endpoint it is heating, ORed across endpoints
 readings are dropped, so the record holds the sentinel rather than a stale mode. It runs after
 every heat pump report, when the readings are forgotten, and when the pick changes. Both are
 also in the MQTT home state (`heating_running`, `dhw_running`; true, false or null) and announced
-to Home Assistant as binary sensors.
+to Home Assistant as binary sensors. `GET /api/home` and the `home` channel carry them as
+`heatingRunning` and `dhwRunning` (same nulls), which `HomeStatus.tsx` shows as the mode icon in the
+Home page's heading, beside the outdoor and average indoor temperatures.
 
 The section is built from **everything on the heat pump's node**, not from the heat pump endpoint's
 `PartsList`, which is never read:
@@ -339,6 +341,45 @@ The sampling interval is stored in the `home_manager` NVS blob and changed throu
 `PUT /api/home`. A change takes effect at the next local midnight, because a file's records
 must stay spaced at the interval its header records. It applies to **all three series** — that
 is what keeps them slot-aligned, so there is deliberately no per-kind interval.
+
+**The subscription log (`storage/subscription_log.{h,cpp}`) — the Diagnostics page:**
+
+History records quantities, so a lost subscription shows there only as a gap with no owner and no
+cause. This records the subscriptions themselves, per node, in `/sdcard/subs/YYYY-MM-DD`: an 8-byte
+header (`SUBL`, version, record size) and fixed 24-byte `sublog_record_t`s (node id, ts, CHIP error
+code, event), appended in the order they happen.
+
+- **What is recorded.** `node_subscription_established_cb` → `ESTABLISHED`;
+  `node_subscription_terminated_cb` → `TERMINATED` when it ends the node's current established
+  subscription, `ATTEMPT_FAILED` when the id is 0 (an attempt that never established), nothing
+  when it is for a subscription the node has already replaced; `node_subscribe_failed_cb` →
+  `ATTEMPT_FAILED` with `error.AsInteger()`; `unpair_node()` → `REMOVED`. One failed attempt can
+  be reported by both a termination and a failure callback, so failure counts can run high.
+- **No I/O on the CHIP event loop.** `subscription_log_record()` only pushes onto a 256-entry RAM
+  ring, stamped with the uptime and, once `clock_is_valid()`, the wall time. The history flush task
+  calls `subscription_log_flush()` once a minute, which converts any uptime-only events to wall
+  time (so events from before SNTP land at the right time) and writes them. With no card the events
+  are dropped. Before the clock is set they are held.
+- **Every day file states its starting point.** A new file opens with `DAY_START` and one
+  `UP_AT_START` per node subscribed at that moment, kept by the flush task from the events it has
+  written. `subscription_log_init()` writes `BOOT` first, before `subscription_manager_init()`,
+  and a boot means every node is unsubscribed.
+- **Monitor downtime is visible.** Every flush also writes `ALIVE`, so the last `ALIVE` before a
+  `BOOT`, or the last in a past day's file, is when the monitor itself stopped. That is about
+  35 KB a day.
+
+`GET /api/history/subscriptions?date=` is routed inside the `/api/history/*` wildcard, so it costs
+no URI handler. It streams the day's events, plus any still in the ring, as
+`{storage, date, now, events: [{ts, event, nodeId?, lastAlive?, code?, error?}], lastAlive}`.
+`ALIVE` records are not sent: each `boot` carries the last one before it as `lastAlive`. Error codes
+are decoded with `chip::ErrorStr(err, false, storage)`, the overload that takes caller storage,
+because the plain one shares a static buffer with the CHIP task.
+
+`Diagnostics.tsx` (`/diagnostics`) replays the events into a 24-hour bar per node: subscribed,
+not subscribed, or monitor off. Each node also shows the % of the day subscribed, the number of
+drops and failed attempts, and its longest outage, plus a list of outages with their failure
+reasons. Nodes are sorted worst first. Names come from `/api/nodes`, and a node that is no longer
+paired shows as "Removed device". Today refreshes every minute.
 
 **The companion API (`companion_api.{h,cpp}`, `node_api.h`):**
 
@@ -597,7 +638,10 @@ which is how a radiator's output in watts sits alongside its flow and return in 
 drawn by a uPlot `draw` hook as an 8px strip just under the plot, between the x axis and its time
 labels (the axis's ticks and height are enlarged to make the room), with a key under it. It is
 outside the plot area so that it cannot cover a line running along the bottom.
-Idle and unrecorded time is blank. `modeSpans()` in `historyData.ts` builds them from the home
+Idle time is blank. Time with neither column recorded -- the heat pump's subscription was lost, or
+the device was down -- is a grey "No data" span, so an outage is not read as the heat pump being
+off; the key lists it only when there is some. A day with no mode recorded at all has no strip.
+`modeSpans()` in `historyData.ts` builds them from the home
 series' `heatingRunning` and `dhwRunning` columns, found by name; hot water wins when both are on.
 `History.tsx` derives them from the response it already has, and the room and radiator charts get
 them from `useHeatPumpModes()`, which fetches the home series for the day. The spans are absolute

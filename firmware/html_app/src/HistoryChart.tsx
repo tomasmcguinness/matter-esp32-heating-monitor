@@ -35,9 +35,10 @@ export type ChartProps = {
   modes?: ModeSpan[];
 };
 
-// The strip's colours, and its height in CSS pixels. Idle time is left blank.
-const MODE_COLOURS = { heating: "#fd7e14", hotWater: "#6f42c1" } as const;
-const MODE_LABELS = { heating: "Heating", hotWater: "Hot water" } as const;
+// The strip's colours, and its height in CSS pixels. Idle time is left blank; time with no recorded
+// mode is grey, so an outage reads differently from the heat pump being off.
+const MODE_COLOURS = { heating: "#fd7e14", hotWater: "#6f42c1", noData: "#adb5bd" } as const;
+const MODE_LABELS = { heating: "Heating", hotWater: "Hot water", noData: "No data" } as const;
 const MODE_BAR_PX = 8;
 // Clear space above and below the strip, between the plot's bottom edge and the time labels.
 const MODE_BAR_MARGIN_PX = 3;
@@ -212,7 +213,9 @@ export function Chart({
       <div ref={holder} />
       {modes && modes.length > 0 && (
         <div className="text-muted small" style={{ textAlign: "center" }}>
-          {(["heating", "hotWater"] as const).map((mode) => (
+          {(["heating", "hotWater", "noData"] as const)
+            .filter((mode) => mode !== "noData" || modes.some((span) => span.mode === "noData"))
+            .map((mode) => (
             <span key={mode} style={{ margin: "0 8px" }}>
               <span
                 style={{

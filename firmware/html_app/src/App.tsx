@@ -25,6 +25,7 @@ import { WebSocketProvider } from './WSContext.jsx'
 import History from "./History.tsx";
 import Settings from "./Settings.tsx";
 import Status from "./Status.tsx";
+import Diagnostics from "./Diagnostics.tsx";
 
 function App() {
 
@@ -67,6 +68,9 @@ function App() {
               <li className="nav-item">
                 <NavLink className="nav-link" to="/status">Status</NavLink>
               </li>
+              <li className="nav-item">
+                <NavLink className="nav-link" to="/diagnostics">Diagnostics</NavLink>
+              </li>
             </ul>
           </div>
         </div>
@@ -101,6 +105,8 @@ function App() {
             <Route path="/settings" element={<Settings />} />
 
             <Route path="/status" element={<Status />} />
+
+            <Route path="/diagnostics" element={<Diagnostics />} />
 
           </Routes>
         </div>

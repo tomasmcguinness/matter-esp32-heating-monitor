@@ -11,6 +11,7 @@
 #include "history_format.h"
 #include "history_paths.h"
 #include "history_totals.h"
+#include "subscription_log.h"
 #include "sd_card.h"
 #include "time_sync.h"
 
@@ -578,6 +579,7 @@ static esp_err_t totals_handler(httpd_req_t *req)
 //
 //   /api/history/dates
 //   /api/history/totals
+//   /api/history/subscriptions[?date=]            -- see subscription_log.h
 //   /api/history/room?id=N[&date=&points=]        /api/history/room/dates?id=N
 //   /api/history/radiator?id=N[&date=&points=]    /api/history/radiator/dates?id=N
 static esp_err_t history_sub_handler(httpd_req_t *req)
@@ -592,6 +594,10 @@ static esp_err_t history_sub_handler(httpd_req_t *req)
 
     if (strncmp(req->uri, "/api/history/totals", 19) == 0) {
         return totals_handler(req);
+    }
+
+    if (strncmp(req->uri, "/api/history/subscriptions", 26) == 0) {
+        return subscription_log_get_handler(req);
     }
 
     uint8_t     kind = 0;
