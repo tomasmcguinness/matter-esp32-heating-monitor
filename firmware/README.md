@@ -77,6 +77,18 @@ idf.py flash monitor
 With an Ethernet cable plugged in, the board picks up an address over DHCP on boot — there is no
 console step. Watch for `Ethernet Connected` followed by the DHCP address in the log.
 
+### Time zone and NTP server
+
+History is filed by local day, so set the board's time zone before relying on it: **Settings →
+Time** in the web UI. The default is `Europe/London`, with time from `pool.ntp.org`. Pick your
+zone from the list, and change the NTP server if your network blocks outbound NTP. Both are saved
+straight away but take effect when the board next restarts, so that a day's history file is never
+split between two zones.
+
+Day files already on the card keep the zone they were written in. The MCP server's `timezone`
+argument accepts the configured zone and `UTC`. For any other zone, pass timestamps with an
+explicit offset.
+
 ## Commissioning
 
 Open `http://heating-monitor.local` from your browser (the address is also in the logs) and

@@ -449,11 +449,31 @@ static void write_series_day(uint8_t kind, uint8_t inst, uint32_t base_ts,
     uint8_t sentinel[HISTORY_MAX_RECORD_SIZE];
     history_fill_sentinel(kind, sentinel);
 
+    // A file normally starts at the midnight its samples were counted from. One that does not
+    // was begun under another time zone: the zone was changed and the device restarted, and the
+    // new zone's local date has the same name. Its slots count from its own base_ts, so each
+    // sample is placed by its timestamp rather than written at a slot that means another time.
+    bool rebase = hdr.base_ts != base_ts;
+    if (rebase) {
+        // Every flush until the next local midnight comes here, so this is not a warning.
+        ESP_LOGD(TAG, "%s starts at %lu, not %lu; placing samples by time", path,
+                 (unsigned long)hdr.base_ts, (unsigned long)base_ts);
+    }
+
     for (pending_t *p : records) {
-        if (p->slot < next_slot) {
+        uint32_t slot = p->slot;
+        if (rebase) {
+            uint32_t ts = base_ts + p->slot * s_interval_s;
+            if (ts < hdr.base_ts || hdr.interval_s == 0) {
+                continue;
+            }
+            slot = (ts - hdr.base_ts) / hdr.interval_s;
+        }
+
+        if (slot < next_slot) {
             continue; // already written; a clock step backwards is the only way here
         }
-        while (next_slot < p->slot) {
+        while (next_slot < slot) {
             if (fwrite(sentinel, rec_size, 1, f) != 1) {
                 ESP_LOGE(TAG, "Short write padding %s", path);
                 fclose(f);

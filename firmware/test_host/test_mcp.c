@@ -20,6 +20,7 @@
 #include "mcp_cycles.h"
 #include "mcp_series.h"
 #include "mcp_time.h"
+#include "timezones.h"
 
 static int s_checks;
 static int s_failures;
@@ -351,6 +352,64 @@ static void test_time(void)
     CHECK(strcmp(buf, "2026-06-30T23:00:00Z") == 0);
 }
 
+// Local wall-clock offset from UTC at `ts`, in minutes, under the TZ currently set.
+static int offset_minutes(uint32_t ts)
+{
+    char buf[32];
+    mcp_time_format(ts, false, buf, sizeof(buf));
+    int h = 0, m = 0;
+    sscanf(buf + 20, "%d:%d", &h, &m);
+    return (buf[19] == '-' ? -1 : 1) * (h * 60 + m);
+}
+
+static int offset_in(const char *zone, uint32_t ts)
+{
+    setenv("TZ", timezones_posix_for(zone), 1);
+    tzset();
+    return offset_minutes(ts);
+}
+
+static void test_timezones(void)
+{
+    CHECK(timezones_posix_for(TIMEZONE_DEFAULT) != NULL);
+    CHECK(strcmp(timezones_posix_for("Europe/London"), "GMT0BST,M3.5.0/1,M10.5.0") == 0);
+    CHECK(timezones_posix_for("Mars/Olympus_Mons") == NULL);
+    CHECK(timezones_posix_for("europe/london") == NULL);
+    CHECK(timezones_posix_for(NULL) == NULL);
+    CHECK(timezones_at(timezones_count()) == NULL);
+
+    // Every entry: a unique name that fits the settings field, and a TZ string the C library
+    // accepts with a plausible offset in both January and July.
+    for (size_t i = 0; i < timezones_count(); i++) {
+        const tz_entry_t *z = timezones_at(i);
+        CHECK(strlen(z->name) < TIMEZONE_NAME_MAX);
+        for (size_t j = i + 1; j < timezones_count(); j++) {
+            CHECK(strcmp(z->name, timezones_at(j)->name) != 0);
+        }
+        int jan = offset_in(z->name, 1768435200u); // 2026-01-15T00:00Z
+        int jul = offset_in(z->name, 1784073600u); // 2026-07-15T00:00Z
+        CHECK(jan >= -12 * 60 && jan <= 14 * 60);
+        CHECK(jul >= -12 * 60 && jul <= 14 * 60);
+        CHECK(abs(jan - jul) <= 60);
+    }
+
+    // A few known offsets, both sides of each hemisphere's summer.
+    CHECK(offset_in("Europe/London", 1768435200u) == 0);
+    CHECK(offset_in("Europe/London", 1784073600u) == 60);
+    CHECK(offset_in("Europe/Berlin", 1784073600u) == 120);
+    CHECK(offset_in("America/New_York", 1768435200u) == -300);
+    CHECK(offset_in("America/New_York", 1784073600u) == -240);
+    CHECK(offset_in("America/St_Johns", 1768435200u) == -210);
+    CHECK(offset_in("Asia/Kolkata", 1768435200u) == 330);
+    CHECK(offset_in("Australia/Sydney", 1768435200u) == 660);
+    CHECK(offset_in("Australia/Sydney", 1784073600u) == 600);
+    CHECK(offset_in("Australia/Adelaide", 1768435200u) == 630);
+    CHECK(offset_in("Pacific/Auckland", 1768435200u) == 780);
+    CHECK(offset_in("Europe/Istanbul", 1768435200u) == 180);
+    CHECK(offset_in("America/Sao_Paulo", 1768435200u) == -180);
+    CHECK(offset_in("UTC", 1784073600u) == 0);
+}
+
 int main(void)
 {
     test_night();
@@ -359,6 +418,7 @@ int main(void)
     test_plausibility();
     test_point_caps();
     test_time();
+    test_timezones();
 
     printf("%d checks, %d failed\n", s_checks, s_failures);
     return s_failures ? 1 : 0;

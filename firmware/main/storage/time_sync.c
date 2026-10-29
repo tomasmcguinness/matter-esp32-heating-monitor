@@ -6,13 +6,35 @@
 #include "esp_log.h"
 #include "esp_sntp.h"
 
-static const char *TAG = "time_sync";
+#include "time_settings.h"
+#include "timezones.h"
 
-// UK. Matches matter-esp32-home-energy-manager (main.cpp:104).
-#define LOCAL_TZ "GMT0BST,M3.5.0/1,M10.5.0"
+static const char *TAG = "time_sync";
 
 static volatile bool s_clock_valid = false;
 static bool          s_started     = false;
+
+// Read from NVS once, at the first call that needs them, and kept for the life of the boot: the
+// logger and everything else that works in local days must not see the zone change under them.
+// SNTP keeps the pointer to the server name, so it has to live here rather than on a stack.
+static bool            s_loaded = false;
+static time_settings_t s_settings;
+
+static void load_settings(void)
+{
+    if (s_loaded) {
+        return;
+    }
+    s_loaded = true;
+
+    time_settings_load(&s_settings);
+
+    // time_settings_load() only hands back a zone that is in the table.
+    setenv("TZ", timezones_posix_for(s_settings.zone), 1);
+    tzset();
+
+    ESP_LOGI(TAG, "Time zone %s, NTP server %s", s_settings.zone, s_settings.ntp_server);
+}
 
 static void on_time_sync(struct timeval *tv)
 {
@@ -29,15 +51,20 @@ void time_sync_start(void)
     }
     s_started = true;
 
-    setenv("TZ", LOCAL_TZ, 1);
-    tzset();
+    load_settings();
 
     sntp_set_time_sync_notification_cb(on_time_sync);
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(0, s_settings.ntp_server);
     esp_sntp_init();
 
     ESP_LOGI(TAG, "SNTP started");
+}
+
+const char *time_sync_zone_name(void)
+{
+    load_settings();
+    return s_settings.zone;
 }
 
 bool clock_is_valid(void)

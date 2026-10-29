@@ -28,6 +28,9 @@
 #define NIGHT       1768435200u // 2026-01-15T00:00:00Z, also local midnight
 #define AT(h, m)    (NIGHT + (h) * 3600u + (m) * 60u)
 
+// What the firmware passes from esp_app_get_description().
+#define TEST_VERSION "1.2.3-test"
+
 static int s_checks;
 static int s_failures;
 
@@ -321,6 +324,7 @@ static void test_protocol(void)
     CHECK(num(r.json, "id") == 1);
     CHECK(strcmp(str(result, "protocolVersion"), "2025-03-26") == 0);
     CHECK(strcmp(str(cJSON_GetObjectItem(result, "serverInfo"), "name"), "heating-monitor") == 0);
+    CHECK(strcmp(str(cJSON_GetObjectItem(result, "serverInfo"), "version"), TEST_VERSION) == 0);
     CHECK(cJSON_IsObject(cJSON_GetObjectItem(cJSON_GetObjectItem(result, "capabilities"), "tools")));
     CHECK(strlen(str(result, "instructions")) > 100);
     done(&r);
@@ -379,6 +383,66 @@ static void test_tools_list(void)
     }
     CHECK(read_only == 5);
     CHECK(strcmp(str(cJSON_GetArrayItem(tools, 2), "name"), "summarise_cycles") == 0);
+
+    // The schemas name the zone the device was registered with, never the placeholder.
+    char *text = cJSON_PrintUnformatted(tools);
+    CHECK(strstr(text, "{{LOCAL_ZONE}}") == NULL);
+    CHECK(strstr(text, "\"enum\":[\"Europe/London\",\"UTC\"]") != NULL);
+    free(text);
+    done(&r);
+}
+
+// The device set to another zone, after a night recorded under Europe/London: the day file is
+// named and based on London's midnight, which is New York's 19:00 the evening before.
+static void test_other_zone(void)
+{
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    CHECK(mcp_server_register(NULL, "America/New_York", TEST_VERSION) == ESP_OK);
+
+    reply_t r    = post("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/list\"}");
+    char   *text = cJSON_PrintUnformatted(cJSON_GetObjectItem(r.json, "result"));
+    CHECK(strstr(text, "{{LOCAL_ZONE}}") == NULL);
+    CHECK(strstr(text, "Europe/London") == NULL);
+    CHECK(strstr(text, "\"enum\":[\"America/New_York\",\"UTC\"]") != NULL);
+    free(text);
+    done(&r);
+
+    // 01:00-03:00Z is the 14th in New York, whose midnight is after the range. The samples are in
+    // home-2026-01-15 all the same.
+    r = call("get_series", "{\"series\":[\"heat_output_w\"],\"start\":\"2026-01-14T20:00\",\"end\":\"2026-01-14T22:00\","
+                           "\"interval_seconds\":3600,\"timezone\":\"America/New_York\"}");
+    CHECK(!r.is_error);
+    const cJSON *stamps = cJSON_GetObjectItem(r.result, "timestamps");
+    const cJSON *heat   = cJSON_GetObjectItem(cJSON_GetObjectItem(r.result, "series"), "heat_output_w");
+    CHECK(cJSON_GetArraySize(stamps) == 2);
+    CHECK(strcmp(cJSON_GetArrayItem(stamps, 0)->valuestring, "2026-01-14T20:00:00-05:00") == 0);
+    CHECK(cJSON_IsNumber(cJSON_GetArrayItem(heat, 0)) && cJSON_IsNumber(cJSON_GetArrayItem(heat, 1)));
+    done(&r);
+
+    // The zone it is not set to any more is refused, naming the one it is.
+    r = call("get_series", "{\"series\":[\"heat_output_w\"],\"start\":\"2026-01-15T00:00\",\"end\":\"2026-01-15T06:00\","
+                           "\"timezone\":\"Europe/London\"}");
+    CHECK(r.is_error && strstr(r.text, "America/New_York and UTC"));
+    done(&r);
+
+    // The whole night, as UTC so the period prints the same: nothing may change with the zone.
+    r = call("summarise_cycles", "{\"start\":\"2026-01-15T00:00:00Z\",\"end\":\"2026-01-15T06:00:00Z\",\"include_runs\":false,\"timezone\":\"UTC\"}");
+    CHECK(!r.is_error);
+    reply_t new_york = r;
+
+    setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0", 1);
+    tzset();
+    CHECK(mcp_server_register(NULL, "Europe/London", TEST_VERSION) == ESP_OK);
+
+    r = call("summarise_cycles", "{\"start\":\"2026-01-15T00:00:00Z\",\"end\":\"2026-01-15T06:00:00Z\",\"include_runs\":false,\"timezone\":\"UTC\"}");
+    CHECK(!r.is_error);
+    char *a = cJSON_PrintUnformatted(cJSON_GetObjectItem(new_york.result, "summary"));
+    char *b = cJSON_PrintUnformatted(cJSON_GetObjectItem(r.result, "summary"));
+    CHECK(a && b && strcmp(a, b) == 0);
+    free(a);
+    free(b);
+    done(&new_york);
     done(&r);
 }
 
@@ -570,7 +634,7 @@ static void test_summarise_cycles(void)
 
     // An override, and the summary alone. A 2 kW threshold leaves only the hot water run.
     r = call("summarise_cycles", "{\"start\":\"2026-01-15T00:00\",\"end\":\"2026-01-15T06:00\","
-                                 "\"on_threshold_w\":2000,\"include_runs\":false}");
+                                 "\"on_threshold_w\":2000,\"include_runs\":false,\"timezone\":\"UTC\"}");
     CHECK(num(cJSON_GetObjectItem(r.result, "summary"), "runs") == 1);
     CHECK(cJSON_GetObjectItem(r.result, "runs") == NULL);
     done(&r);
@@ -650,7 +714,7 @@ int main(int argc, char **argv)
 
     write_night();
     write_rooms();
-    CHECK(mcp_server_register(NULL) == ESP_OK);
+    CHECK(mcp_server_register(NULL, "Europe/London", TEST_VERSION) == ESP_OK);
     CHECK(s_post != NULL && s_get != NULL);
 
     if (argc > 1 && strcmp(argv[1], "--serve") == 0) {
@@ -665,6 +729,7 @@ int main(int argc, char **argv)
     test_room_series();
     test_summarise_cycles();
     test_compare_periods();
+    test_other_zone();
     test_no_card();
 
     remove(FIXTURE_DIR "/home-2026-01-15");

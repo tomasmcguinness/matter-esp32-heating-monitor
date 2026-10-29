@@ -238,7 +238,16 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   stays false, the logger no-ops and the history endpoints report
   `{"storage":"unavailable"}`. Cards must be **FAT32** — ESP-IDF does not mount exFAT
   unless `CONFIG_FATFS_USE_EXFAT` is set, and cards over 32 GB usually ship exFAT.
-- `time_sync.c` — SNTP plus `TZ=GMT0BST,M3.5.0/1,M10.5.0`. Nothing is logged until the
+- `time_sync.c` — SNTP plus `TZ`, both from the **time settings** (`time_settings.{h,c}`, NVS
+  namespace `time`, keys `zone` and `ntp`; `GET`/`PUT /api/time/config`, `TimeSettings.tsx`).
+  The default is `Europe/London` (`GMT0BST,M3.5.0/1,M10.5.0`) and `pool.ntp.org`. There is no tz
+  database, so a zone is an IANA name from the table in `timezones.c`, mapped to a POSIX string.
+  Both are read **once per boot**, on the first call to `time_sync_start()` or
+  `time_sync_zone_name()`, so a change takes effect on restart: the logger, subscription log and
+  totals all work out local midnight on other tasks, and must not see the zone change mid-day.
+  A zone change still means a day file can be reopened whose header `base_ts` is the old zone's
+  midnight, so `write_series_day()` places each sample by its timestamp when the two differ,
+  rather than at a slot counted from the new midnight. Nothing is logged until the
   first sync, because before it `time(NULL)` is in 1970 and every dated filename would be
   wrong. `CONFIG_ENABLE_SNTP_TIME_SYNC=y` is set as well, but only to unlock the
   `gettimeofday` branch of `ClockImpl::GetClock_RealTime` in the custom platform layer —
@@ -437,7 +446,7 @@ it, and on `/api/nodes` because the web UI does. Neither is a reason to add it t
 `app_main.cpp`'s `using namespace` block, so it cannot be included from anywhere else.
 
 `companion_api_register()` must run **before** the `/*` wildcard, like `history_api_register()` and
-`status_api_register()`. `config.max_uri_handlers` is a hard cap, now 44 with 38 registered — the
+`status_api_register()`. `config.max_uri_handlers` is a hard cap, now 44 with 40 registered — the
 breakdown is in the comment beside it in `start_webserver()`; count the registrations before adding
 more.
 
@@ -502,8 +511,12 @@ configuration** — history from before a radiator was re-rated or moved is not 
 
 Things that are deliberately so:
 
-- **Timezones are Europe/London and UTC only.** The board has one zone in `TZ` and no tz database.
-  A caller elsewhere passes timestamps with an explicit offset.
+- **Timezones are the configured zone and UTC only.** The board has one zone in `TZ` and no tz
+  database. `mcp_server_register()` is given its IANA name (and the firmware version, for
+  `serverInfo`), and `mcp_tools.json` writes `{{LOCAL_ZONE}}` wherever the schemas name it, which
+  `tools/list` fills in. A caller elsewhere passes timestamps with an explicit offset.
+  `scan_series()` opens one day file beyond each end of the range and never goes back in time,
+  because files written before a zone change have the old zone's day boundaries.
 - **A call covers at most 31 days** (`MCP_MAX_RANGE_DAYS`). Each day is a 484 KB read on the httpd
   task, and everything else the web server does waits behind it.
 - **The rated output is a tool argument**, `rated_output_w`, defaulting to a placeholder 8000 W.

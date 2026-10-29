@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds and runs the host tests for the MCP server. No board needed.
 #
-#   test_mcp     the plain-C modules: cycle detection, point caps, timestamps
+#   test_mcp     the plain-C modules: cycle detection, point caps, timestamps, the zone table
 #   test_server  the HTTP and JSON-RPC layer, against a day file in a temporary directory
 #
 # test_server uses ESP-IDF's copy of cJSON, so it needs IDF_PATH (or the usual install location).
@@ -13,7 +13,8 @@ CJSON="$IDF/components/json/cJSON"
 MCP=../main/mcp
 FLAGS="-std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined"
 
-cc $FLAGS -I $MCP test_mcp.c $MCP/mcp_cycles.c $MCP/mcp_series.c $MCP/mcp_time.c -lm -o test_mcp
+cc $FLAGS -I $MCP -I ../main/storage test_mcp.c $MCP/mcp_cycles.c $MCP/mcp_series.c $MCP/mcp_time.c \
+   ../main/storage/timezones.c -lm -o test_mcp
 ./test_mcp
 
 # The firmware build embeds mcp_tools.json as a NUL-terminated symbol; this does the same.

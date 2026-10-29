@@ -81,6 +81,8 @@
 #include "storage/subscription_log.h"
 #include "storage/sd_card.h"
 #include "storage/time_sync.h"
+#include "storage/time_settings.h"
+#include "storage/timezones.h"
 
 #include "device_identity.h"
 #include "node_api.h"
@@ -89,6 +91,7 @@
 #include "emoncms/emoncms_uploader.h"
 
 #include "mqtt_client.h"
+#include "esp_app_desc.h"
 
 #include "mdns.h"
 
@@ -4316,6 +4319,71 @@ static esp_err_t mqtt_config_put_handler(httpd_req_t *req)
 
 #pragma endregion
 
+#pragma region Time settings API
+
+// `zone` and `ntp_server` are what is saved; `active_zone` is what this boot is running on, which
+// differs until the next restart. `zones` is every zone the device can be set to.
+static esp_err_t time_config_get_handler(httpd_req_t *req)
+{
+    time_settings_t settings;
+    time_settings_load(&settings);
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "zone", settings.zone);
+    cJSON_AddStringToObject(root, "ntp_server", settings.ntp_server);
+    cJSON_AddStringToObject(root, "active_zone", time_sync_zone_name());
+
+    cJSON *zones = cJSON_AddArrayToObject(root, "zones");
+
+    for (size_t i = 0; i < timezones_count(); i++)
+    {
+        cJSON_AddItemToArray(zones, cJSON_CreateString(timezones_at(i)->name));
+    }
+
+    return send_json_response(req, root);
+}
+
+// Saved only. TZ and SNTP are set once per boot, by time_sync.c, so this applies on restart.
+static esp_err_t time_config_put_handler(httpd_req_t *req)
+{
+    cJSON *root = read_json_body(req);
+
+    if (root == NULL)
+    {
+        return ESP_OK;
+    }
+
+    time_settings_t settings;
+    time_settings_load(&settings);
+
+    bool valid = copy_json_string(root, "zone", settings.zone, sizeof(settings.zone)) &&
+                 copy_json_string(root, "ntp_server", settings.ntp_server, sizeof(settings.ntp_server));
+
+    cJSON_Delete(root);
+
+    esp_err_t err = valid ? time_settings_save(&settings) : ESP_ERR_INVALID_ARG;
+
+    if (err == ESP_ERR_INVALID_ARG)
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "The time zone must be one of those listed, and the NTP server a host name or IP address with no spaces.");
+        return ESP_OK;
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save the time settings, err:%d", err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Could not save the settings.");
+        return ESP_OK;
+    }
+
+    return time_config_get_handler(req);
+}
+
+#pragma endregion
+
 static const httpd_uri_t ws_uri = {
     .uri = "/ws",
     .method = HTTP_GET,
@@ -4339,7 +4407,7 @@ httpd_handle_t start_webserver(void)
         ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
     }
 
-    // 38 are registered: 27 here, 2 for history, 1 for status, 5 for the companion API, 2 for MCP
+    // 40 are registered: 29 here, 2 for history, 1 for status, 5 for the companion API, 2 for MCP
     // and the wildcard. Registration past the cap fails with only a log line, so count them
     // before adding more.
     config.max_uri_handlers = 44;
@@ -4506,6 +4574,18 @@ httpd_handle_t start_webserver(void)
         .handler = mqtt_config_put_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t time_config_get_uri = {
+        .uri = "/api/time/config",
+        .method = HTTP_GET,
+        .handler = time_config_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t time_config_put_uri = {
+        .uri = "/api/time/config",
+        .method = HTTP_PUT,
+        .handler = time_config_put_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t wildcard_get_uri = {
         .uri = "/*", // Match all URIs of type /path/to/file
         .method = HTTP_GET,
@@ -4545,12 +4625,14 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &emoncms_test_post_uri);
         httpd_register_uri_handler(server, &mqtt_config_get_uri);
         httpd_register_uri_handler(server, &mqtt_config_put_uri);
+        httpd_register_uri_handler(server, &time_config_get_uri);
+        httpd_register_uri_handler(server, &time_config_put_uri);
 
         // Registered before the wildcard, which matches "/*" and would otherwise swallow them.
         history_api_register(server);
         status_api_register(server);
         companion_api_register(server, &g_node_manager);
-        mcp_server_register(server);
+        mcp_server_register(server, time_sync_zone_name(), esp_app_get_description()->version);
 
         httpd_register_uri_handler(server, &wildcard_get_uri);
 

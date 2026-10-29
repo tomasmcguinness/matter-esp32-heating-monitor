@@ -6,8 +6,8 @@
 
 // ISO 8601 in and out for the MCP tools. Unix seconds everywhere inside.
 //
-// The device has one zone, the one time_sync.c sets in TZ -- UK time -- and no tz database, so
-// "local" here always means that. A caller in another zone passes timestamps with an explicit
+// The device has one zone, the one time_sync.c sets in TZ from the time settings, and no tz
+// database, so "local" here always means that. A caller in another zone passes timestamps with an explicit
 // offset, which are taken as given.
 
 #ifdef __cplusplus

@@ -24,8 +24,13 @@
 
 static const char *TAG = "mcp";
 
-#define MCP_SERVER_NAME    "heating-monitor"
-#define MCP_SERVER_VERSION "0.1.0"
+#define MCP_SERVER_NAME "heating-monitor"
+
+// Given to mcp_server_register(): the IANA name of the zone TZ is set to, and the firmware version
+// reported in serverInfo. Copied, so the caller's strings need not outlive the call.
+static char s_local_zone[48]  = "UTC";
+static char s_version[32]     = "unknown";
+static char s_zone_error[192] = "";
 
 // Offered when the client asks for a protocol version this server does not know.
 #define MCP_PROTOCOL_VERSION "2025-06-18"
@@ -60,6 +65,10 @@ static const char *TAG = "mcp";
 // The tool definitions, embedded from mcp_tools.json so the schemas can be written as JSON
 // rather than as an escaped C string. NUL-terminated by the build.
 extern const char mcp_tools_json_start[] asm("_binary_mcp_tools_json_start");
+
+// Where mcp_tools.json names the device's own time zone. tools/list replaces each with
+// s_local_zone, so the schemas tell the model the zone the board is actually set to.
+#define LOCAL_ZONE_PLACEHOLDER "{{LOCAL_ZONE}}"
 
 // ---------------------------------------------------------------------------
 // Output
@@ -313,7 +322,16 @@ static bool scan_series(uint8_t kind, uint8_t inst, uint32_t start, uint32_t end
 
     memset(stats, 0, sizeof(*stats));
 
-    for (uint32_t day = local_midnight_for(start); day < end; day = next_day(day)) {
+    // The earliest timestamp still to be handed to `cb`. Day files written before the time zone
+    // was changed have the old zone's day boundaries, which can be up to a day from this zone's:
+    // the file for the day before `start`'s, or the day after `end`'s, may hold some of the range,
+    // and neighbouring files may overlap. Looking one day further each way finds the former, and
+    // never going backwards in time drops the overlap. Under an unchanged zone the extra two
+    // files hold nothing in range and cost an open each.
+    uint32_t next_ts = start;
+
+    for (uint32_t day = local_midnight_for(start > 86400 ? start - 86400 : start); day < end + 86400;
+         day = next_day(day)) {
         history_header_t hdr;
         FILE            *f = open_day(kind, inst, day, &hdr);
         if (!f) {
@@ -323,8 +341,8 @@ static bool scan_series(uint8_t kind, uint8_t inst, uint32_t start, uint32_t end
 
         // Slot arithmetic rather than a search: slot i is base_ts + i * interval_s.
         uint32_t slot = 0;
-        if (start > hdr.base_ts) {
-            slot = (start - hdr.base_ts + hdr.interval_s - 1) / hdr.interval_s;
+        if (next_ts > hdr.base_ts) {
+            slot = (next_ts - hdr.base_ts + hdr.interval_s - 1) / hdr.interval_s;
         }
         fseek(f, (long)(sizeof(hdr) + (size_t)slot * rec_size), SEEK_SET);
 
@@ -339,6 +357,7 @@ static bool scan_series(uint8_t kind, uint8_t inst, uint32_t start, uint32_t end
                 }
                 cb(ctx, ts, hdr.interval_s, buf + i * rec_size);
                 stats->samples++;
+                next_ts = ts + 1;
             }
         }
         fclose(f);
@@ -372,8 +391,8 @@ static uint16_t native_interval(uint32_t start, uint32_t end)
 // Arguments
 // ---------------------------------------------------------------------------
 
-// The `timezone` argument: true for UTC, false for the device's own (UK) time. An unknown zone
-// is an error the caller can act on.
+// The `timezone` argument: true for UTC, false for the device's own zone, s_local_zone. An
+// unknown zone is an error the caller can act on.
 static bool zone_arg(const cJSON *args, bool *utc, const char **error)
 {
     const cJSON *zone = cJSON_GetObjectItemCaseSensitive(args, "timezone");
@@ -383,7 +402,7 @@ static bool zone_arg(const cJSON *args, bool *utc, const char **error)
         return true;
     }
     if (cJSON_IsString(zone)) {
-        if (strcmp(zone->valuestring, "Europe/London") == 0) {
+        if (strcmp(zone->valuestring, s_local_zone) == 0) {
             return true;
         }
         if (strcmp(zone->valuestring, "UTC") == 0 || strcmp(zone->valuestring, "Etc/UTC") == 0) {
@@ -392,8 +411,7 @@ static bool zone_arg(const cJSON *args, bool *utc, const char **error)
         }
     }
 
-    *error = "This device only knows the timezones Europe/London and UTC. For any other zone, "
-             "pass start and end with an explicit offset such as 2026-10-08T06:00:00+02:00.";
+    *error = s_zone_error;
     return false;
 }
 
@@ -1189,6 +1207,21 @@ static esp_err_t tool_compare_periods(httpd_req_t *req, const char *id, const cJ
 // JSON-RPC
 // ---------------------------------------------------------------------------
 
+// The embedded tool definitions, with every LOCAL_ZONE_PLACEHOLDER replaced by s_local_zone.
+static void send_tools_json(httpd_req_t *req)
+{
+    const char  *p   = mcp_tools_json_start;
+    const size_t len = strlen(LOCAL_ZONE_PLACEHOLDER);
+    const char  *at;
+
+    while ((at = strstr(p, LOCAL_ZONE_PLACEHOLDER)) != NULL) {
+        httpd_resp_send_chunk(req, p, at - p);
+        httpd_resp_sendstr_chunk(req, s_local_zone);
+        p = at + len;
+    }
+    httpd_resp_sendstr_chunk(req, p);
+}
+
 static esp_err_t handle_initialize(httpd_req_t *req, const char *id, const cJSON *params)
 {
     static const char *const KNOWN[] = {"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"};
@@ -1207,14 +1240,14 @@ static esp_err_t handle_initialize(httpd_req_t *req, const char *id, const cJSON
     char result[896];
     snprintf(result, sizeof(result),
              "{\"protocolVersion\":\"%s\",\"capabilities\":{\"tools\":{}},"
-             "\"serverInfo\":{\"name\":\"" MCP_SERVER_NAME "\",\"version\":\"" MCP_SERVER_VERSION "\"},"
+             "\"serverInfo\":{\"name\":\"" MCP_SERVER_NAME "\",\"version\":\"%s\"},"
              "\"instructions\":\"Read-only access to a home heat pump monitor's recorded history: "
              "heat and electrical power, flow, return, outdoor and indoor temperatures, flow rate "
              "and operating mode, sampled every few seconds, plus each room's temperature and each "
              "radiator's flow and return. Use summarise_cycles for cycling and COP questions and "
              "compare_periods for before/after comparisons; get_series is for plotting or "
              "inspecting a stretch directly; list_rooms names the rooms and radiators.\"}",
-             version);
+             version, s_version);
 
     return send_result(req, id, result);
 }
@@ -1317,7 +1350,7 @@ static esp_err_t mcp_post_handler(httpd_req_t *req)
         httpd_resp_sendstr_chunk(req, "{\"jsonrpc\":\"2.0\",\"id\":");
         httpd_resp_sendstr_chunk(req, id);
         httpd_resp_sendstr_chunk(req, ",\"result\":{\"tools\":");
-        httpd_resp_sendstr_chunk(req, mcp_tools_json_start);
+        send_tools_json(req);
         httpd_resp_sendstr_chunk(req, "}}");
         err = httpd_resp_send_chunk(req, NULL, 0);
     } else if (strcmp(method->valuestring, "tools/call") == 0) {
@@ -1342,8 +1375,15 @@ static esp_err_t mcp_get_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"error\":\"This MCP endpoint takes POST only\"}");
 }
 
-esp_err_t mcp_server_register(httpd_handle_t server)
+esp_err_t mcp_server_register(httpd_handle_t server, const char *local_zone, const char *version)
 {
+    snprintf(s_local_zone, sizeof(s_local_zone), "%s", local_zone);
+    snprintf(s_version, sizeof(s_version), "%s", version);
+    snprintf(s_zone_error, sizeof(s_zone_error),
+             "This device only knows the timezones %s and UTC. For any other zone, pass start and "
+             "end with an explicit offset such as 2026-10-08T06:00:00+02:00.",
+             s_local_zone);
+
     const httpd_uri_t post_uri = {
         .uri      = "/mcp",
         .method   = HTTP_POST,

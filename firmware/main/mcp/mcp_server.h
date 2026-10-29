@@ -18,12 +18,16 @@
 // port 80 can read the history. Do not forward this port to the internet.
 //
 // Two URI handlers. Must be registered before the "/*" wildcard.
+//
+// `local_zone` is the IANA name of the zone TZ is set to (time_sync_zone_name()): the tools take
+// it, and UTC, as their `timezone`, and the tool schemas name it. `version` is the firmware
+// version reported as serverInfo.version. Both are copied.
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-esp_err_t mcp_server_register(httpd_handle_t server);
+esp_err_t mcp_server_register(httpd_handle_t server, const char *local_zone, const char *version);
 
 #ifdef __cplusplus
 }
