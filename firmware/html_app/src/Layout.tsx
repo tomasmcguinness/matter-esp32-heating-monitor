@@ -1,5 +1,7 @@
 import { useCallback, useContext, useEffect, useState } from "react";
 import { WebSocketContext } from "./WSContext.jsx";
+import { useHome } from "./HomeContext";
+import PageHeader from "./PageHeader";
 import Temperature from "./Temperature";
 import Power from "./Power";
 import "./Layout.css";
@@ -136,16 +138,10 @@ function buildGroups(rooms: Room[]): Group[] {
 function Layout() {
 
   const [rooms, setRooms] = useState<Room[] | null>(null);
-  const [home, setHome] = useState<HomeSnapshot>({});
+  // Owned by HomeContext, which is the one subscriber to the "home" channel.
+  const home: HomeSnapshot = useHome() ?? {};
 
   const { subscribe, unsubscribe } = useContext(WebSocketContext);
-
-  // The firmware builds the "home" push from the same function as GET /api/home, so the snapshot
-  // replaces wholesale -- the same applier Home.tsx uses.
-  //
-  const applyHome = useCallback((data: HomeSnapshot) => {
-    setHome(data);
-  }, []);
 
   // The radiator channel pushes whichever of flowTemp / returnTemp changed, plus the recalculated
   // currentOutput. Patch immutably inside the updater rather than closing over the list, so the
@@ -191,18 +187,11 @@ function Layout() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [roomsResponse, homeResponse] = await Promise.all([
-        fetch("/api/rooms"),
-        fetch("/api/home"),
-      ]);
+      const roomsResponse = await fetch("/api/rooms");
 
       if (roomsResponse.ok) {
         const data: Room[] = await roomsResponse.json();
         setRooms(data.sort((a, b) => a.name.localeCompare(b.name)));
-      }
-
-      if (homeResponse.ok) {
-        setHome(await homeResponse.json());
       }
     };
 
@@ -210,16 +199,14 @@ function Layout() {
   }, []);
 
   useEffect(() => {
-    subscribe("home", applyHome);
     subscribe("radiator", applyRadiator);
     subscribe("room", applyRoom);
 
     return () => {
-      unsubscribe("home");
       unsubscribe("radiator");
       unsubscribe("room");
     };
-  }, [subscribe, unsubscribe, applyHome, applyRadiator, applyRoom]);
+  }, [subscribe, unsubscribe, applyRadiator, applyRoom]);
 
   if (rooms === null) {
     return <span>Loading...</span>;
@@ -228,8 +215,7 @@ function Layout() {
   if (rooms.length === 0) {
     return (
       <>
-        <h1>Layout</h1>
-        <hr />
+        <PageHeader title="Layout" />
         <div className="alert alert-info">There are no rooms, so there is nothing to draw. Add one!</div>
       </>
     );
@@ -245,8 +231,7 @@ function Layout() {
 
   return (
     <>
-      <h1>Layout</h1>
-      <hr />
+      <PageHeader title="Layout" />
       <div className="layout-schematic">
         <div className="legend">
           <span><span className="swatch-flow"></span>Flow</span>

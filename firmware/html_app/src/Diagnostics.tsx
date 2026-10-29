@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DateToolbar } from "./HistoryChart";
 import { shiftDate, todayISO } from "./historyData";
+import PageHeader from "./PageHeader";
 
 // When each device was and was not subscribed over a day, from GET /api/history/subscriptions.
 // The firmware records every subscription established, ended and failed -- see
@@ -388,8 +389,7 @@ function Diagnostics() {
 
   return (
     <>
-      <h1>Diagnostics</h1>
-      <hr />
+      <PageHeader title="Diagnostics" />
 
       <p className="text-muted">
         When each device held a subscription. A device that is not subscribed sends no readings, so

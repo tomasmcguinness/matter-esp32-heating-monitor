@@ -4,6 +4,7 @@ import PowerSource from "./PowerSource"
 import Battery from "./Battery"
 import CheckMark from "./CheckMark";
 import CrossMark from "./CrossMark";
+import PageHeader from "./PageHeader";
 
 // The subscription icon's tooltip. lastSeen is transient on the device -- the firmware stamps it
 // when a report arrives and never persists it -- so null means nothing has been heard since the
@@ -151,9 +152,9 @@ function Devices() {
 
   return (
     <>
-      <h1>Devices      
-         <NavLink className="btn btn-primary action-button" to="/devices/add">Add Device</NavLink></h1>
-      <hr />
+      <PageHeader title="Devices">
+        <NavLink className="btn btn-primary" to="/devices/add">Add Device</NavLink>
+      </PageHeader>
       <div className="form-check" style={{marginBottom: '10px'}}>
   <input className="form-check-input" type="checkbox" checked={showEndpoints} id="flexCheckDefault" defaultChecked={false}  onChange={e => setShowEndpoints(e.target.checked)} />
   <label className="form-check-label" htmlFor="flexCheckDefault">

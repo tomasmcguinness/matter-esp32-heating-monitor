@@ -8,6 +8,7 @@ import {
   type ModeEnergy,
   type TotalsResponse,
 } from "./historyData";
+import PageHeader from "./PageHeader";
 
 // GET /api/history returns one local day of the home's recorded values: fixed-cadence slots
 // with nulls where no reading was recorded, plus the day's integrated energy.
@@ -178,8 +179,7 @@ function History() {
 
   return (
     <>
-      <h1>History</h1>
-      <hr />
+      <PageHeader title="History" />
 
       <DateToolbar date={date} setDate={setDate} />
 

@@ -4,6 +4,7 @@ import Temperature from "./Temperature.tsx";
 import { WebSocketContext } from './WSContext.jsx';
 import Power from "./Power.tsx";
 import RadiatorType from "./RadiatorType.tsx";
+import PageHeader from "./PageHeader";
 
 function Radiators() {
 
@@ -78,8 +79,7 @@ function Radiators() {
 
   return (
     <>
-      <h1>Radiators</h1>
-      <hr />
+      <PageHeader title="Radiators" />
       {radiators.length === 0 && <div className="alert alert-info">There are no radiators. Add one!</div>}
       {radiators.length > 0 && <table className="table table-striped table-bordered">
         <thead>

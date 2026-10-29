@@ -7,3 +7,33 @@
     float: right;
     vertical-align: middle;
 }
+/* PageHeader: title | live home status | action button. Three columns with equal outer tracks, so
+   the status sits in the middle of the page whether or not there is a button. Below md the status
+   drops to its own row under the title, so nothing is squeezed into a horizontal scroll. */
+.page-header {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    column-gap: 1rem;
+    row-gap: 0.5rem;
+}
+
+.page-header-status {
+    justify-self: center;
+}
+
+.page-header-actions {
+    justify-self: end;
+}
+
+@media (max-width: 767.98px) {
+    .page-header {
+        grid-template-columns: 1fr auto;
+    }
+
+    .page-header-status {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        justify-self: start;
+    }
+}

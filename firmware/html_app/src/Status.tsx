@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import PageHeader from "./PageHeader";
 
 interface SdStatus {
   state: "absent" | "no_filesystem" | "mounted";
@@ -137,8 +138,7 @@ function Status() {
 
   return (
     <>
-      <h1>Status</h1>
-      <hr />
+      <PageHeader title="Status" />
 
       {error && <div className="alert alert-danger">{error}</div>}
 

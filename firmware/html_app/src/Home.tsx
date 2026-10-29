@@ -1,6 +1,6 @@
 import { NavLink } from "react-router"
 import Temperature from "./Temperature"
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import FlowRate from "./FlowRate";
 // import Power from "./Power";
 import Voltage from "./Voltage";
@@ -9,8 +9,8 @@ import ElectricalPower from "./ElectricalPower";
 import Cop from "./Cop";
 import SubscriptionPill from "./SubscriptionPill";
 import HeatPump, { type HeatPumpData } from "./HeatPump";
-import HomeStatus from "./HomeStatus";
-import { WebSocketContext } from "./WSContext.jsx";
+import PageHeader from "./PageHeader";
+import { useHome } from "./HomeContext";
 
 function Home() {
 
@@ -32,18 +32,16 @@ function Home() {
   let [heatPumpNodeId, setHeatPumpNodeId] = useState<number | undefined>(undefined);
   let [heatPumpSubscription, setHeatPumpSubscription] = useState<string | undefined>(undefined);
   let [heatPump, setHeatPump] = useState<HeatPumpData | null | undefined>(undefined);
-  let [heatingRunning, setHeatingRunning] = useState<boolean | null | undefined>(undefined);
-  let [dhwRunning, setDhwRunning] = useState<boolean | null | undefined>(undefined);
   let [electricalMeterNodeId, setElectricalMeterNodeId] = useState<number | undefined>(undefined);
   let [electricalMeterSubscription, setElectricalMeterSubscription] = useState<string | undefined>(undefined);
   let [electricalVoltage, setElectricalVoltage] = useState<number | null | undefined>(undefined);
   let [electricalCurrent, setElectricalCurrent] = useState<number | null | undefined>(undefined);
   let [electricalPower, setElectricalPower] = useState<number | null | undefined>(undefined);
 
-  const { subscribe, unsubscribe } = useContext(WebSocketContext);
+  const home = useHome();
 
-  // The firmware builds the "home" websocket payload from the same function as GET /api/home, so the
-  // initial fetch and every push can share one applier.
+  // HomeContext keeps the latest GET /api/home payload, replaced by every "home" push, so the page
+  // applies whichever arrived last.
   //
   const applyHome = useCallback((data: any) => {
     setAverageInternalTemperature(data.averageInternalTemperature);
@@ -68,8 +66,6 @@ function Home() {
     setHeatPumpNodeId(data.heatPumpNodeId);
     setHeatPumpSubscription(data.heatPumpSubscription);
     setHeatPump(data.heatPump);
-    setHeatingRunning(data.heatingRunning);
-    setDhwRunning(data.dhwRunning);
 
     setElectricalMeterNodeId(data.electricalMeterNodeId);
     setElectricalMeterSubscription(data.electricalMeterSubscription);
@@ -78,37 +74,17 @@ function Home() {
     setElectricalPower(data.electricalPower);
   }, []);
 
-  // Still fetched on mount, so the page has data straight away rather than waiting for whatever
-  // sensor reports next.
-  //
   useEffect(() => {
-    const fetchHome = async () => {
-      var response = await fetch(`/api/home`);
-
-      if (response.ok) {
-        applyHome(await response.json());
-      }
-    };
-
-    fetchHome();
-  }, [applyHome]);
-
-  useEffect(() => {
-    subscribe("home", applyHome);
-
-    return () => {
-      unsubscribe("home")
+    if (home) {
+      applyHome(home);
     }
-  }, [subscribe, unsubscribe, applyHome]);
+  }, [home, applyHome]);
 
   return (
     <>
-      <h1 className="d-flex flex-wrap align-items-center gap-3">
-        Home
-        <HomeStatus outdoorTemperature={outdoorTemperature} indoorTemperature={averageInternalTemperature} heatingRunning={heatingRunning} dhwRunning={dhwRunning} />
-        <NavLink className="btn btn-primary ms-auto" to={`/edit`}>Edit</NavLink>
-      </h1>
-      <hr />
+      <PageHeader title="Home">
+        <NavLink className="btn btn-primary" to={`/edit`}>Edit</NavLink>
+      </PageHeader>
       {/* Node 0 is the firmware's "nothing selected". Sections check for it exactly, rather than for
           falsy, so the alert doesn't flash up before the first fetch has returned. */}
       <div className="row">

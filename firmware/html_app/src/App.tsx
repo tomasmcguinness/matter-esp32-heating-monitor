@@ -22,6 +22,7 @@ import EditRoom from "./EditRoom.tsx";
 import RoomHistory from "./RoomHistory.tsx";
 
 import { WebSocketProvider } from './WSContext.jsx'
+import { HomeProvider } from './HomeContext.tsx'
 import History from "./History.tsx";
 import Settings from "./Settings.tsx";
 import Status from "./Status.tsx";
@@ -76,6 +77,7 @@ function App() {
         </div>
       </nav>
       <WebSocketProvider>
+        <HomeProvider>
         <div className={containerClass}>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -110,6 +112,7 @@ function App() {
 
           </Routes>
         </div>
+        </HomeProvider>
       </WebSocketProvider>
     </>
   )

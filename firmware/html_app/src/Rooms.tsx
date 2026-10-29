@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router"
 import Temperature from "./Temperature.tsx";
 import { WebSocketContext } from './WSContext.jsx';
 import Power from "./Power.tsx";
+import PageHeader from "./PageHeader";
 
 function Rooms() {
 
@@ -64,8 +65,9 @@ function Rooms() {
 
   return (
     <>
-      <h1>Rooms <NavLink className="btn btn-primary action-button" to="/rooms/add">Add Room</NavLink></h1>
-      <hr />
+      <PageHeader title="Rooms">
+        <NavLink className="btn btn-primary" to="/rooms/add">Add Room</NavLink>
+      </PageHeader>
       {rooms.length === 0 && <div className="alert alert-info">There are no rooms. Add one!</div>}
       {rooms.length > 0 && <table className="table table-striped table-bordered">
         <thead>

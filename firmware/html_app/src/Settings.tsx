@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import EmoncmsSettings from "./EmoncmsSettings";
 import MqttSettings from "./MqttSettings";
 import TimeSettings from "./TimeSettings";
+import PageHeader from "./PageHeader";
 
 interface DeviceInfo {
   name: string;
@@ -34,8 +35,7 @@ function Settings() {
 
   return (
     <>
-      <h1>Settings</h1>
-      <hr />
+      <PageHeader title="Settings" />
 
       {error && <div className="alert alert-danger">{error}</div>}
 
