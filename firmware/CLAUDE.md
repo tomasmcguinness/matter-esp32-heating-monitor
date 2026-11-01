@@ -620,6 +620,33 @@ entity is one row in the `*_SENSORS` tables, plus the matching key in `calculati
 A row with `binary` set is a true/false in the payload and is announced as a `binary_sensor`,
 whose template maps it to `ON` / `OFF` and a null to `None` (unknown).
 
+**Keeping the CHIP task's event queue from filling:**
+
+lwIP's task posts every incoming UDP packet to the CHIP platform event queue, and **CHIP aborts if the
+post fails** (`Failed to post event to CHIP Platform event queue`, then `abort()` in
+`ScheduleLambdaBridge`). Anything that holds the CHIP task up while packets arrive restarts the
+board, and CASE crypto during resubscription does that on its own, so three things guard it.
+Don't do slow work on the CHIP task, which includes `attribute_data_cb` and everything it calls.
+
+- **`BoundedQueueFilter` (`utilities/bounded_queue_filter.h`)** counts the packets queued and drops new
+  ones past 96, or 24 for mDNS, so UDP alone can't fill the 128-entry queue
+  (`CONFIG_MAX_EVENT_QUEUE_SIZE`). Senders retransmit, so a drop is a delay, and a backlog that drained
+  is logged as `Dropped N UDP packets`. `install_mdns_queue_filter()` installs it, and a
+  `static_assert` there keeps the limits below the queue size.
+- **`mqtt/mqtt_publisher.{h,cpp}`** is the way to publish. `esp_mqtt_client_publish()` blocks on the
+  client's lock and the socket, so calling it on the CHIP task lets a slow broker stall it. The
+  publisher's task holds one latest-value slot per topic, 96 in all, so a burst becomes one publish.
+  It also builds the home payload, through `mqtt_publisher_defer()`, reading `home_manager` unlocked
+  as the history sampler does. The exception is `ha_discovery_publish_online()`, which runs on the
+  MQTT task.
+- **`schedule_home_broadcast()`** debounces the home WebSocket push by 250 ms, for use in
+  `attribute_data_cb`, which runs once per attribute. CHIP task only: HTTP handlers call
+  `broadcast_home_state()` directly.
+
+Crash backtraces need no coredump: the panic is on the console, and `xtensa-esp32s3-elf-addr2line -pfiaC
+-e build/heating-monitor.elf <addresses>` decodes it, provided `ELF file SHA256` in the log matches
+`sha256sum` of that file.
+
 **Other components:**
 - `commands/` — Matter pairing and identify command wrappers
 - `utilities/` — URL path token parsing (from the `path_variable_handlers` pattern)

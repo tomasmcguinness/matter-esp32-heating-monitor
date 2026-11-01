@@ -146,3 +146,10 @@ CONFIG_FATFS_MAX_LFN=255
 # esp-matter examples do it. No Time Synchronisation cluster is created either, since
 # this build has CONFIG_ESP_MATTER_ENABLE_MATTER_SERVER=n.
 CONFIG_ENABLE_SNTP_TIME_SYNC=y
+
+# Each incoming UDP packet takes a slot in the CHIP platform event queue, and CHIP aborts if a post
+# fails. 40 is not enough for this many subscriptions on a LAN full of Matter mDNS traffic while the
+# CHIP task is busy with CASE crypto. BoundedQueueFilter (main/utilities/bounded_queue_filter.h)
+# keeps UDP below this limit, and needs CONFIG_ENABLE_ENDPOINT_QUEUE_FILTER.
+CONFIG_MAX_EVENT_QUEUE_SIZE=128
+CONFIG_ENABLE_ENDPOINT_QUEUE_FILTER=y

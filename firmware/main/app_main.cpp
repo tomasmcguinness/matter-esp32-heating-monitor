@@ -46,7 +46,7 @@
 #include <esp_matter.h>
 #include <lib/dnssd/Types.h>
 #include <platform/ESP32/NetworkCommissioningDriver.h>
-#include <platform/ESP32/ESP32EndpointQueueFilter.h>
+#include "utilities/bounded_queue_filter.h"
 #include <inet/UDPEndPointImpl.h>
 
 #include "cJSON.h"
@@ -74,6 +74,7 @@
 #include "utilities/UrlTokenBindings.h"
 
 #include "mqtt/ha_discovery.h"
+#include "mqtt/mqtt_publisher.h"
 #include "mqtt/mqtt_settings.h"
 #include "storage/history_api.h"
 #include "storage/status_api.h"
@@ -124,6 +125,7 @@ static httpd_handle_t server;
 static void ws_async_send(void *arg);
 static void ws_broadcast_json(cJSON *root);
 static void broadcast_home_state(void);
+static void schedule_home_broadcast(void);
 static void broadcast_home_if_home_sensor(uint64_t node_id);
 static bool node_is_subscribed(uint64_t node_id);
 static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
@@ -779,7 +781,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
             if (!is_home_meter && g_home_manager.heat_pump_node_id == remote_node_id && g_home_manager.heat_pump_endpoint_id == path.mEndpointId)
             {
-                broadcast_home_state();
+                schedule_home_broadcast();
             }
         }
 
@@ -820,7 +822,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         // The meter feeds the home's electricity figures, so push them rather than waiting for the
         // next GET /api/home.
         //
-        broadcast_home_state();
+        schedule_home_broadcast();
     }
     else if (path.mClusterId == HEAT_METER_CLUSTER_ID)
     {
@@ -952,7 +954,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         //
         if (is_home_meter)
         {
-            broadcast_home_state();
+            schedule_home_broadcast();
         }
     }
     else if (path.mClusterId == Thermostat::Id || path.mClusterId == WaterHeaterManagement::Id || path.mClusterId == WaterHeaterMode::Id)
@@ -1133,7 +1135,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         if (g_home_manager.heat_pump_node_id == remote_node_id)
         {
             update_heat_pump_running();
-            broadcast_home_state();
+            schedule_home_broadcast();
         }
     }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
@@ -1194,7 +1196,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
 
         if (hasMatched)
         {
-            broadcast_home_state();
+            schedule_home_broadcast();
             return;
         }
 
@@ -1240,7 +1242,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 cJSON_Delete(root);
 
                 // The radiator's output feeds totalRadiatorOutput and the measured heat loss totals.
-                broadcast_home_state();
+                schedule_home_broadcast();
 
                 hasMatched = true;
 
@@ -1272,7 +1274,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 cJSON_Delete(root);
 
                 // The room's heat loss feeds the home totals.
-                broadcast_home_state();
+                schedule_home_broadcast();
 
                 hasMatched = true;
 
@@ -1287,7 +1289,7 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         //
         if (!hasMatched && g_home_manager.heat_pump_node_id == remote_node_id)
         {
-            broadcast_home_state();
+            schedule_home_broadcast();
         }
     }
     else
@@ -3486,12 +3488,14 @@ static cJSON *build_home_json(void)
 //
 static void broadcast_home_state(void)
 {
+    // Before the server check: this is also what brings the history snapshot and the home's MQTT
+    // state up to date, and reports can arrive before the web server has started.
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+
     if (server == NULL)
     {
         return;
     }
-
-    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 
     cJSON *root = build_home_json();
     cJSON_AddStringToObject(root, "channel", "home");
@@ -3499,6 +3503,42 @@ static void broadcast_home_state(void)
     ws_broadcast_json(root);
 
     cJSON_Delete(root);
+}
+
+// How long a report waits for the rest of its burst before the home is pushed. A subscription's
+// priming report, and every report from the heat pump, is many attributes in one message.
+#define HOME_BROADCAST_DEBOUNCE_MS 250
+
+static bool s_home_broadcast_pending = false; // only touched on the CHIP task
+
+static void home_broadcast_timer(chip::System::Layer *, void *)
+{
+    s_home_broadcast_pending = false;
+    broadcast_home_state();
+}
+
+// attribute_data_cb runs once per attribute, on the CHIP task. Pushing the home each time serialises
+// the same snapshot dozens of times over while the CHIP task's event queue fills behind it, so a
+// burst shares one push, made after the last of it. CHIP task only.
+//
+static void schedule_home_broadcast(void)
+{
+    if (s_home_broadcast_pending)
+    {
+        return;
+    }
+
+    CHIP_ERROR err = chip::DeviceLayer::SystemLayer().StartTimer(chip::System::Clock::Milliseconds32(HOME_BROADCAST_DEBOUNCE_MS),
+                                                                 home_broadcast_timer, nullptr);
+
+    if (err != CHIP_NO_ERROR)
+    {
+        ESP_LOGE(TAG, "Failed to schedule the home broadcast: %s", ErrorStr(err));
+        broadcast_home_state();
+        return;
+    }
+
+    s_home_broadcast_pending = true;
 }
 
 // The Home screen shows the subscription state of the home's own sensors, so a change to one of them
@@ -4707,6 +4747,8 @@ static void start_mqtt_service(void)
     const char *mqtt_username = settings.username[0] ? settings.username : NULL;
     const char *mqtt_password = settings.password[0] ? settings.password : NULL;
 
+    mqtt_publisher_start();
+
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker = {
             .address = {
@@ -4880,7 +4922,10 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 static void install_mdns_queue_filter()
 {
 #ifdef CONFIG_ENABLE_ENDPOINT_QUEUE_FILTER
-    static chip::Inet::ESP32EndpointQueueFilter s_endpoint_queue_filter;
+    static_assert(BoundedQueueFilter::kMaxQueuedPackets + 16 <= CONFIG_MAX_EVENT_QUEUE_SIZE,
+                  "UDP packets must leave room in the CHIP event queue for everything else that posts to it");
+
+    static BoundedQueueFilter s_endpoint_queue_filter;
 
     // Same MAC CHIP's minimal mDNS derives the hostname from (the Ethernet MAC on this board).
     uint8_t mac[chip::DeviceLayer::ConfigurationManager::kPrimaryMACAddressLength];
@@ -4905,7 +4950,7 @@ static void install_mdns_queue_filter()
     }
 
     chip::Inet::UDPEndPointImpl::SetQueueFilter(&s_endpoint_queue_filter);
-    ESP_LOGI(TAG, "mDNS queue filter installed for host %.12s", hostname);
+    ESP_LOGI(TAG, "UDP queue filter installed for host %.12s", hostname);
 #endif
 }
 

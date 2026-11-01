@@ -3,8 +3,14 @@
 
 #include "storage/history_logger.h"
 #include "mqtt/ha_discovery.h"
+#include "mqtt/mqtt_publisher.h"
 
 static const char *TAG = "calculations_manager";
+
+static void publish_home_state(void *arg);
+
+// Only read on the publisher task. The handle is created once and never destroyed.
+static esp_mqtt_client_handle_t s_home_mqtt_client = NULL;
 
 // Electricity below this is treated as standby rather than as running, so no COP is derived
 // from it. 50 W.
@@ -49,7 +55,7 @@ static void publish_radiator_state(esp_mqtt_client_handle_t mqtt_client, radiato
     // There is no client until a broker has been set on the Settings page.
     if (mqtt_client)
     {
-        esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+        mqtt_publisher_publish(mqtt_client, state_topic, payload, false);
     }
 
     cJSON_free(payload);
@@ -270,7 +276,7 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
     ESP_LOGI(TAG, "Publishing to MQTT topic %s", state_topic);
     if (mqtt_client)
     {
-        esp_mqtt_client_publish(mqtt_client, state_topic, payload, 0, 0, 0);
+        mqtt_publisher_publish(mqtt_client, state_topic, payload, false);
     }
 
     cJSON_free(payload);
@@ -393,7 +399,20 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
         ESP_LOGI(TAG, "COP is %lld.%02lld", cop / 100, cop % 100);
     }
 
-    // Only publish if we have a conection??
+    // The arithmetic above is cheap, but a single report can land here several times over, and the
+    // heat pump's reports come in bursts, so the payload is left to the publisher task. That builds
+    // it once, from the latest figures, and reads home_manager unlocked one field at a time, as
+    // the history sampler and the emoncms uploader do.
+    if (mqtt_client)
+    {
+        s_home_mqtt_client = mqtt_client;
+        mqtt_publisher_defer(publish_home_state, home_manager);
+    }
+}
+
+static void publish_home_state(void *arg)
+{
+    const home_manager_t *home_manager = (const home_manager_t *)arg;
 
     cJSON *root = cJSON_CreateObject();
 
@@ -449,9 +468,9 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     char *payload = cJSON_PrintUnformatted(root);
     ESP_LOGI(TAG, "Publishing to MQTT topic heating_monitor/home");
-    if (mqtt_client)
+    if (s_home_mqtt_client)
     {
-        esp_mqtt_client_publish(mqtt_client, "heating_monitor/home", payload, 0, 0, 0);
+        mqtt_publisher_publish(s_home_mqtt_client, "heating_monitor/home", payload, false);
     }
 
     cJSON_free(payload);

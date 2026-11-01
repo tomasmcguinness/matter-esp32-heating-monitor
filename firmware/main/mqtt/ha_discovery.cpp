@@ -9,6 +9,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "mqtt_publisher.h"
 
 static const char *TAG = "ha_discovery";
 
@@ -315,15 +316,16 @@ static void publish_device(esp_mqtt_client_handle_t client, const ha_device_t *d
 
         // Retained: Home Assistant replays retained discovery when its MQTT integration starts, so
         // without this the entities vanish on every HA restart until something republishes.
-        int msg_id = esp_mqtt_client_publish(client, config_topic, payload, 0, 0, 1);
+        //
+        // Queued, because update_home() reaches this on the CHIP task. mqtt_publisher logs a
+        // publish that fails.
+        bool queued = mqtt_publisher_publish(client, config_topic, payload, true);
 
-        ESP_LOGI(TAG, "Announced %u entities of `%s` to %s (%u bytes, msg_id %d)",
-                 (unsigned)d->sensor_count, d->name, config_topic, (unsigned)strlen(payload), msg_id);
+        ESP_LOGI(TAG, "Announcing %u entities of `%s` to %s (%u bytes)",
+                 (unsigned)d->sensor_count, d->name, config_topic, (unsigned)strlen(payload));
 
-        if (msg_id < 0) {
-            // The usual cause is the payload outrunning the client's out buffer -- see the
-            // buffer.out_size set in start_mqtt_service().
-            ESP_LOGE(TAG, "Discovery publish failed; is the MQTT out buffer large enough?");
+        if (!queued) {
+            ESP_LOGE(TAG, "Discovery publish for `%s` could not be queued", d->name);
         }
 
         cJSON_free(payload);
@@ -341,7 +343,7 @@ static void remove_device(esp_mqtt_client_handle_t client, const char *device_id
     char config_topic[128];
     config_topic_for(device_id, config_topic, sizeof(config_topic));
 
-    esp_mqtt_client_publish(client, config_topic, "", 0, 0, 1);
+    mqtt_publisher_publish(client, config_topic, "", true);
 
     ESP_LOGI(TAG, "Removed %s", config_topic);
 }
