@@ -28,6 +28,11 @@ function EditRadiator() {
     });
   }, []);
 
+  function swapSensors() {
+    setFlowSensor(returnSensor);
+    setReturnSensor(flowSensor);
+  }
+
   function saveRadiator(e: any) {
     e.preventDefault();
 
@@ -88,11 +93,19 @@ function EditRadiator() {
         <label htmlFor="output" className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
         <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
       </div>
-      <div className="mb-3">
-        <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={true} id="flowTemperatureSensor" selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
-      </div>
-      <div className="mb-3">
-        <SensorSelect deviceType={770} title="Return Temperature Sensor" required={true} id="returnTemperatureSensor" selectedSensor={returnSensor || ''} onSelectedSensorChange={(e) => setReturnSensor(e)} />
+      <div className="row g-2 mb-3">
+        <div className="col-12 col-md">
+          <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={true} id="flowTemperatureSensor" selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
+        </div>
+        <div className="col-12 col-md-auto d-flex justify-content-center align-items-end">
+          <button type="button" className="btn btn-outline-secondary" title="Swap flow and return sensors" aria-label="Swap flow and return sensors" onClick={swapSensors}>
+            <i className="bi bi-arrow-left-right d-none d-md-inline"></i>
+            <i className="bi bi-arrow-down-up d-md-none"></i>
+          </button>
+        </div>
+        <div className="col-12 col-md">
+          <SensorSelect deviceType={770} title="Return Temperature Sensor" required={true} id="returnTemperatureSensor" selectedSensor={returnSensor || ''} onSelectedSensorChange={(e) => setReturnSensor(e)} />
+        </div>
       </div>
       <button type="submit" className="btn btn-primary" onClick={saveRadiator} style={{ 'marginRight': '5px' }}>Save</button>
       <NavLink className="btn btn-danger" to={`/radiators/${radiatorId}`}>Cancel</NavLink>
