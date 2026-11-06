@@ -7,6 +7,7 @@ import Voltage from "./Voltage";
 import Current from "./Current";
 import ElectricalPower from "./ElectricalPower";
 import Cop from "./Cop";
+import HourlyCost, { type CommodityPrice } from "./HourlyCost";
 import SubscriptionPill from "./SubscriptionPill";
 import HeatPump, { type HeatPumpData } from "./HeatPump";
 import PageHeader from "./PageHeader";
@@ -37,6 +38,9 @@ function Home() {
   let [electricalVoltage, setElectricalVoltage] = useState<number | null | undefined>(undefined);
   let [electricalCurrent, setElectricalCurrent] = useState<number | null | undefined>(undefined);
   let [electricalPower, setElectricalPower] = useState<number | null | undefined>(undefined);
+  let [commodityPriceNodeId, setCommodityPriceNodeId] = useState<number | undefined>(undefined);
+  let [commodityPriceSubscription, setCommodityPriceSubscription] = useState<string | undefined>(undefined);
+  let [commodityPrice, setCommodityPrice] = useState<CommodityPrice | null | undefined>(undefined);
 
   const home = useHome();
 
@@ -72,6 +76,10 @@ function Home() {
     setElectricalVoltage(data.electricalVoltage);
     setElectricalCurrent(data.electricalCurrent);
     setElectricalPower(data.electricalPower);
+
+    setCommodityPriceNodeId(data.commodityPriceNodeId);
+    setCommodityPriceSubscription(data.commodityPriceSubscription);
+    setCommodityPrice(data.commodityPrice);
   }, []);
 
   useEffect(() => {
@@ -87,66 +95,44 @@ function Home() {
       </PageHeader>
       {/* Node 0 is the firmware's "nothing selected". Sections check for it exactly, rather than for
           falsy, so the alert doesn't flash up before the first fetch has returned. */}
-      <div className="row">
-        {/* Both of these are derived by the firmware rather than read from one device, so this
-            heading carries no subscription pill. */}
-        <div className="col-md-6">
-          <h4 style={{marginTop: '20px'}}>Indoors</h4>
-          <div className="card-group" style={{ marginBottom: '5px' }}>
-            <div className="card">
-              <div className="card-header">
-                Average Temperature
-              </div>
-              <div className="card-body">
-                <p className="card-title"><h3><Temperature>{averageInternalTemperature}</Temperature></h3></p>
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-header">
-                COP
-              </div>
-              <div className="card-body">
-                <p className="card-title"><h3><Cop>{cop}</Cop></h3></p>
-              </div>
-            </div>
-        {/* <div className="card">
+      <h4 style={{marginTop: '20px'}}>Summary</h4>
+      {/* The figures here come from different places, so the subscription pills are on the cards that
+          depend on a single device, rather than on the heading. */}
+      <div className="card-group" style={{ marginBottom: '5px' }}>
+        <div className="card">
           <div className="card-header">
-            Predicted Heat Loss
+            Average Indoor Temperature
           </div>
           <div className="card-body">
-            <p className="card-title"><h3><Power>{totalPredictedHeatLoss}</Power></h3></p>
-          </div>
-        </div> */}
-        {/* <div className="card">
-          <div className="card-header">
-            Measured Heat Loss
-          </div>
-          <div className="card-body">
-            <p className="card-title"><h3><Power>{totalMeasuredHeatLoss}</Power></h3></p>
-          </div>
-        </div> */}
+            <p className="card-title"><h3><Temperature>{averageInternalTemperature}</Temperature></h3></p>
           </div>
         </div>
-        <div className="col-md-6">
-          <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Outdoors<SubscriptionPill state={outdoorTemperatureSensorSubscription} /></h4>
-          <div className="card-group" style={{ marginBottom: '5px' }}>
-            <div className="card">
-              <div className="card-header">
-                Temperature
-              </div>
-              <div className="card-body">
-                {outdoorTemperatureSensorNodeId === 0 ?
-                  <span>No outdoor temperature sensor is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</span> :
-                  <p className="card-title"><h3><Temperature>{outdoorTemperature}</Temperature></h3></p>}
-              </div>
-            </div>
-            <div className="card">
-              <div className="card-header">
-                Forecast
-              </div>
-              <div className="card-body">
-              </div>
-            </div>
+        <div className="card">
+          <div className="card-header d-flex justify-content-between align-items-center">
+            Outdoor Temperature<SubscriptionPill state={outdoorTemperatureSensorSubscription} />
+          </div>
+          <div className="card-body">
+            {outdoorTemperatureSensorNodeId === 0 ?
+              <span>No outdoor temperature sensor is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</span> :
+              <p className="card-title"><h3><Temperature>{outdoorTemperature}</Temperature></h3></p>}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header">
+            COP
+          </div>
+          <div className="card-body">
+            <p className="card-title"><h3><Cop>{cop}</Cop></h3></p>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header d-flex justify-content-between align-items-center">
+            Approx Hourly Running Cost<SubscriptionPill state={commodityPriceSubscription} />
+          </div>
+          <div className="card-body">
+            {commodityPriceNodeId === 0 ?
+              <span>No commodity price is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</span> :
+              <p className="card-title"><h3><HourlyCost electricalPower={electricalPower} commodityPrice={commodityPrice} /></h3></p>}
           </div>
         </div>
       </div>

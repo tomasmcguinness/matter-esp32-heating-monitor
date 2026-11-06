@@ -223,9 +223,10 @@ static void send_subscription(intptr_t arg)
     bool wants_electrical = node_has_device_type(node, DEVICE_TYPE_ELECTRICAL_SENSOR);
     bool wants_heat_meter = node_has_device_type(node, HEAT_METER_DEVICE_TYPE_ID);
     bool wants_heat_pump = node_has_device_type(node, DEVICE_TYPE_HEAT_PUMP);
+    bool wants_commodity_price = node_has_device_type(node, DEVICE_TYPE_ELECTRICAL_ENERGY_TARIFF);
     bool wants_battery = node_is_battery_powered(node);
 
-    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_heat_pump && !wants_battery)
+    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_heat_pump && !wants_commodity_price && !wants_battery)
     {
         ESP_LOGW(TAG, "Node 0x%016llX has no temperature, flow, electrical, heat meter or heat pump device types and is not on battery; nothing to subscribe to", node_id);
 
@@ -236,7 +237,7 @@ static void send_subscription(intptr_t arg)
     }
 
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 8 : 0) + (wants_battery ? 2 : 0));
+    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 8 : 0) + (wants_commodity_price ? 3 : 0) + (wants_battery ? 2 : 0));
 
     if (!attr_paths.Get())
     {
@@ -305,6 +306,16 @@ static void send_subscription(intptr_t arg)
         attr_paths[path_index++] = AttributePathParams(WaterHeaterMode::Id, WaterHeaterMode::Attributes::CurrentMode::Id);
     }
 
+    if (wants_commodity_price)
+    {
+        // What the running cost needs. Wildcard on the endpoint, as above. PriceForecast is left out:
+        // it is the largest thing the cluster has, and nothing here uses it.
+        //
+        attr_paths[path_index++] = AttributePathParams(CommodityPrice::Id, CommodityPrice::Attributes::TariffUnit::Id);
+        attr_paths[path_index++] = AttributePathParams(CommodityPrice::Id, CommodityPrice::Attributes::Currency::Id);
+        attr_paths[path_index++] = AttributePathParams(CommodityPrice::Id, CommodityPrice::Attributes::CurrentPrice::Id);
+    }
+
     if (wants_battery)
     {
         // The endpoint is left wildcard because PowerSource does not have to be on the root, and a
@@ -318,10 +329,11 @@ static void send_subscription(intptr_t arg)
     ScopedMemoryBufferWithSize<EventPathParams> event_paths;
     event_paths.Alloc(0);
 
-    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s%s)", node_id, (unsigned)path_index,
+    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s%s%s)", node_id, (unsigned)path_index,
              wants_temperature ? "temperature " : "", wants_flow ? "flow " : "",
              wants_electrical ? "electrical " : "", wants_heat_meter ? "heat_meter " : "",
-             wants_heat_pump ? "heat_pump " : "", wants_battery ? "battery" : "");
+             wants_heat_pump ? "heat_pump " : "", wants_commodity_price ? "commodity_price " : "",
+             wants_battery ? "battery" : "");
 
     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(node_id,
                                                                               std::move(attr_paths),

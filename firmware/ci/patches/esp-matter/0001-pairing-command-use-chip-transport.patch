@@ -1,0 +1,12 @@
+diff --git a/components/esp_matter_controller/commands/esp_matter_controller_pairing_command.cpp b/components/esp_matter_controller/commands/esp_matter_controller_pairing_command.cpp
+index c112c492..56637fcb 100644
+--- a/components/esp_matter_controller/commands/esp_matter_controller_pairing_command.cpp
++++ b/components/esp_matter_controller/commands/esp_matter_controller_pairing_command.cpp
+@@ -25,6 +25,7 @@ static const char *TAG = "pairing_command";
+ 
+ using namespace chip;
+ using namespace chip::Controller;
++using namespace chip::Transport;
+ 
+ namespace esp_matter {
+ namespace controller {

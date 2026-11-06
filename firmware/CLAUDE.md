@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is an ESP-IDF firmware project for a **Waveshare ESP32-S3-ETH** board (16MB flash, octal PSRAM, W5500 SPI Ethernet) that acts as a **Matter protocol controller** for monitoring a home heating system. It commissions and subscribes to Matter temperature sensors (over Thread, via an external border router), calculates heat loss, and serves a web UI for configuration and monitoring.
 
-Networking is **Ethernet only** — WiFi is compiled out (`CONFIG_ENABLE_WIFI_STATION=n`). BLE stays enabled because it is still used to commission the Thread sensors (`pairing_ble_thread`).
+Networking is **Ethernet only** — WiFi is compiled out (`CONFIG_ENABLE_WIFI_STATION=n`). BLE stays compiled in, but nothing uses it to commission: `commission_node()` is always on-network, because iOS, through the companion app, puts a device on Thread first. A sensor that has not joined the network cannot be paired from the web page. To add a device that is already on another fabric, open a commissioning window from that controller and give the board the code it issues.
 
 ## Build Commands
 
@@ -46,6 +46,42 @@ comment in `companion_api.cpp`. Re-enabling `start_mdns_service()` means setting
 `CONFIG_USE_MINIMAL_MDNS=n` first, in both `sdkconfig` and `sdkconfig.defaults`.
 
 The IP is on the Settings page, and `GET /api/companion/info` reports it as `ip` and `url`.
+
+### Continuous integration and releases
+
+`.github/workflows/firmware.yml` builds the firmware in the `espressif/idf` container on every push
+to `main` and every pull request that touches `firmware/`, and uploads the result as a workflow
+artifact. Pushing a `v*` tag also publishes those files as a GitHub release; the firmware version is
+`git describe`, so tag `v0.0.7` builds as `0.0.7`.
+
+The local build depends on trees outside this repo, so **CI rebuilds them from pins and patches in
+`firmware/ci/`**, and they must be kept in step with what the board actually runs:
+
+| What | Pinned in | Local equivalent |
+|---|---|---|
+| ESP-IDF | `versions.env` `IDF_VERSION`, and the workflow's container tag | `~/esp/esp-idf-v5.5.4` |
+| lwIP ND6 stale-router fix (espressif/esp-lwip PR 98) | `patches/lwip/` | Uncommitted edit in that tree's `components/lwip/lwip` |
+| esp-matter | `versions.env` `ESP_MATTER_COMMIT`, on tomasmcguinness/esp-matter | `~/esp/esp-matter-tom` |
+| esp-matter local edits | `patches/esp-matter/` | Uncommitted edits in that tree |
+| connectedhomeip | `versions.env` `CHIP_COMMIT` (not the commit esp-matter records) | `connectedhomeip/connectedhomeip` in it |
+
+`ci/setup-toolchain.sh esp-matter <dir>` fetches esp-matter and connectedhomeip at those commits,
+applies the patches, checks out CHIP's ESP32 submodules and runs `install.sh --no-host-tool`. That is
+the slow part, so the workflow caches the result keyed on `versions.env`, the esp-matter patches and
+the script: changing any of them rebuilds it. `ci/setup-toolchain.sh esp-idf` applies the lwIP patch
+to the container's ESP-IDF and skips one already applied. Patches are `git apply` format, made with
+`git format-patch` or `git diff` in the tree they apply to. Two things are deliberately not
+reproduced: the logging added to CHIP's `BindingCluster.cpp`, and the submodules CHIP has locally
+at commits other than the ones `CHIP_COMMIT` records. CI uses the recorded ones. When the lwIP fix
+ships in an ESP-IDF release, move to that release and delete `patches/lwip/`.
+
+`ci/package-release.sh` turns a build into the release files, all taken from `flasher_args.json`:
+each flash part at its offset, an ESP Web Tools `manifest.json` that lists them, a
+`heating-monitor-<version>-merged.bin` for esptool at 0x0, and `SHA256SUMS`. The manifest lists the
+parts rather than the merged image because merging fills the gaps between parts with 0xFF, and nvs
+(0x10000) is in the gap before the app: the merged image wipes every node, room and radiator, while
+the parts keep them unless the installer is told to erase (`new_install_prompt_erase`).
+`heating-monitor.bin` on its own is the OTA image.
 
 ### Web App Development
 ```sh
@@ -619,6 +655,26 @@ handlers announce or remove single rooms and radiators directly when they change
 entity is one row in the `*_SENSORS` tables, plus the matching key in `calculations_manager.cpp`.
 A row with `binary` set is a true/false in the payload and is announced as a `binary_sensor`,
 whose template maps it to `ON` / `OFF` and a null to `None` (unknown).
+
+**Commodity Price and the running cost:**
+
+Edit Home has a Commodity Price picker (device type 1299, Electrical Energy Tariff), stored as
+`commodity_price_node_id` / `commodity_price_endpoint_id` at the **end** of the `home_manager` NVS
+blob, after the heat pump, with the same size check on load. `send_subscription()` subscribes any
+such node to `TariffUnit`, `Currency` and `CurrentPrice`. `PriceForecast` is left out.
+
+`managers/commodity_price_manager.{h,cpp}` holds the readings, transient like `heat_pump_manager`
+and for the same reason: a subscription only reports a value again when it changes, so **every**
+tariff endpoint is stored, picked or not, or a price picked mid-period would stay blank until the
+next one. A node's readings go when its subscription ends. A null `CurrentPrice`, or one with no
+`Price`, clears the reading rather than keeping the last.
+
+`GET /api/home` and the `home` channel carry `commodityPrice`: `{price, decimalPoints, currency,
+tariffUnit}`, null until both price and currency are known. The cost itself is derived in the
+browser (`HourlyCost.tsx`): `electricalPower / 1e6 * price / 10^decimalPoints`, so this moment's
+Electricity Meter power at this moment's price. It falls to standby pence between runs, and a kVAh
+tariff is treated as kWh, which is why the card says "Approx". It is not recorded in history, and
+it is not on MQTT or the companion API.
 
 **Keeping the CHIP task's event queue from filling:**
 

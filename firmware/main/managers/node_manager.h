@@ -8,6 +8,7 @@
 #define DEVICE_TYPE_TEMPERATURE_SENSOR 770
 #define DEVICE_TYPE_FLOW_SENSOR 774
 #define DEVICE_TYPE_ELECTRICAL_SENSOR 1296
+#define DEVICE_TYPE_ELECTRICAL_ENERGY_TARIFF 1299
 
 // How we record the PowerSource cluster's FeatureMap. 0 means we haven't asked yet.
 #define POWER_SOURCE_WIRED 1

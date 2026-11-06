@@ -19,6 +19,11 @@ typedef struct {
     uint64_t heat_pump_node_id;
     uint16_t heat_pump_endpoint_id;
 
+    // The Electrical Energy Tariff endpoint whose Commodity Price the running cost uses. Its
+    // readings are held by commodity_price_manager.
+    uint64_t commodity_price_node_id;
+    uint16_t commodity_price_endpoint_id;
+
     // How often the SD card history logger samples, in seconds. 0 means "never saved",
     // which history_logger_init() reads as "use the default".
     uint16_t logging_interval_s;

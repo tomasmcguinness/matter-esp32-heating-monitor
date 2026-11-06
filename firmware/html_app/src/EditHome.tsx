@@ -13,6 +13,7 @@ function EditHome() {
   const [electricalMeter, setElectricalMeter] = useState<string | undefined>(undefined);
   const [heatMeter, setHeatMeter] = useState<string | undefined>(undefined);
   const [heatPump, setHeatPump] = useState<string | undefined>(undefined);
+  const [commodityPrice, setCommodityPrice] = useState<string | undefined>(undefined);
   const [loggingInterval, setLoggingInterval] = useState<number>(5);
   const [activeInterval, setActiveInterval] = useState<number | undefined>(undefined);
 
@@ -25,6 +26,7 @@ function EditHome() {
       setElectricalMeter(`${data.electricalMeterNodeId}|${data.electricalMeterEndpointId}`);
       setHeatMeter(`${data.heatMeterNodeId}|${data.heatMeterEndpointId}`);
       setHeatPump(`${data.heatPumpNodeId}|${data.heatPumpEndpointId}`);
+      setCommodityPrice(`${data.commodityPriceNodeId}|${data.commodityPriceEndpointId}`);
       setLoggingInterval(data.loggingIntervalSeconds ?? 5);
       setActiveInterval(data.loggingIntervalActiveSeconds);
     });
@@ -61,6 +63,9 @@ function EditHome() {
     var heatPumpNodeId = nodeId(heatPump);
     var heatPumpEndpointId = endpointId(heatPump);
 
+    var commodityPriceNodeId = nodeId(commodityPrice);
+    var commodityPriceEndpointId = endpointId(commodityPrice);
+
     var object: any = {
       outdoorTemperatureSensorNodeId,
       outdoorTemperatureSensorEndpointId,
@@ -76,6 +81,8 @@ function EditHome() {
       heatMeterEndpointId,
       heatPumpNodeId,
       heatPumpEndpointId,
+      commodityPriceNodeId,
+      commodityPriceEndpointId,
       loggingIntervalSeconds: loggingInterval
     };
     var json = JSON.stringify(object);
@@ -117,6 +124,10 @@ function EditHome() {
       </div>
       <div className="mb-3">
         <SensorSelect deviceType={1296} title="Electricity Meter" required={false} id="electricalMeter" selectedSensor={electricalMeter} onSelectedSensorChange={(e: string) => setElectricalMeter(e)} />
+      </div>
+      <div className="mb-3">
+        {/* Together with the Electricity Meter, this gives the Home page its running cost. */}
+        <SensorSelect deviceType={1299} title="Commodity Price" required={false} id="commodityPrice" selectedSensor={commodityPrice} onSelectedSensorChange={(e: string) => setCommodityPrice(e)} />
       </div>
       <div className="mb-3">
         <label className="form-label" htmlFor="loggingInterval">History sampling interval (seconds)</label>

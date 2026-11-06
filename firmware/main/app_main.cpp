@@ -59,6 +59,7 @@
 #include "managers/room_manager.h"
 #include "managers/home_manager.h"
 #include "managers/heat_pump_manager.h"
+#include "managers/commodity_price_manager.h"
 
 #include "heat_meter_cluster.h"
 #include "commands/pairing_command.h"
@@ -115,6 +116,7 @@ radiator_manager_t g_radiator_manager = {0};
 room_manager_t g_room_manager = {0};
 home_manager_t g_home_manager = {0};
 heat_pump_manager_t g_heat_pump_manager = {0};
+commodity_price_manager_t g_commodity_price_manager = {0};
 
 esp_mqtt_client_handle_t _mqtt_client;
 static bool is_mqtt_connected = false;
@@ -130,6 +132,7 @@ static void broadcast_home_if_home_sensor(uint64_t node_id);
 static bool node_is_subscribed(uint64_t node_id);
 static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
 static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
+static void forget_commodity_price_if_unsubscribed(uint64_t node_id);
 static void update_heat_pump_running(void);
 static void broadcast_radiator_state(const radiator_t *radiator);
 static void forget_readings_if_unsubscribed(uint64_t node_id);
@@ -305,6 +308,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
 
     forget_outdoor_temperature_if_unsubscribed(remote_node_id);
     forget_heat_pump_if_unsubscribed(remote_node_id);
+    forget_commodity_price_if_unsubscribed(remote_node_id);
     forget_readings_if_unsubscribed(remote_node_id);
 
     broadcast_home_if_home_sensor(remote_node_id);
@@ -338,6 +342,7 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
 
     forget_outdoor_temperature_if_unsubscribed(node_id);
     forget_heat_pump_if_unsubscribed(node_id);
+    forget_commodity_price_if_unsubscribed(node_id);
     forget_readings_if_unsubscribed(node_id);
 
     broadcast_home_if_home_sensor(node_id);
@@ -744,6 +749,64 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGW(TAG, "ExtAddress for unknown node %016llx; dropping", remote_node_id);
             }
+        }
+    }
+    else if (path.mClusterId == CommodityPrice::Id)
+    {
+        // Stored for every tariff endpoint, picked or not: see commodity_price_manager.h.
+        //
+        commodity_price_endpoint_t *reading = commodity_price_get_endpoint(&g_commodity_price_manager, remote_node_id, path.mEndpointId);
+
+        if (reading == NULL)
+        {
+            return;
+        }
+
+        CHIP_ERROR decode_err = CHIP_NO_ERROR;
+
+        switch (path.mAttributeId)
+        {
+        case CommodityPrice::Attributes::TariffUnit::Id:
+        {
+            CommodityPrice::Attributes::TariffUnit::TypeInfo::DecodableType unit;
+            decode_err = chip::app::DataModel::Decode(*data, unit);
+            reading->has_tariff_unit = decode_err == CHIP_NO_ERROR;
+            reading->tariff_unit = reading->has_tariff_unit ? (uint8_t)unit : 0;
+            break;
+        }
+        case CommodityPrice::Attributes::Currency::Id:
+        {
+            CommodityPrice::Attributes::Currency::TypeInfo::DecodableType currency;
+            decode_err = chip::app::DataModel::Decode(*data, currency);
+            reading->has_currency = decode_err == CHIP_NO_ERROR && !currency.IsNull();
+            reading->currency = reading->has_currency ? currency.Value().currency : 0;
+            reading->decimal_points = reading->has_currency ? currency.Value().decimalPoints : 0;
+            break;
+        }
+        case CommodityPrice::Attributes::CurrentPrice::Id:
+        {
+            // Null between tariff periods, and Price is optional within one: a tariff can give only
+            // a price level. Either way there is no figure to work from, so the old one goes too.
+            CommodityPrice::Attributes::CurrentPrice::TypeInfo::DecodableType current;
+            decode_err = chip::app::DataModel::Decode(*data, current);
+            reading->has_price = decode_err == CHIP_NO_ERROR && !current.IsNull() && current.Value().price.HasValue();
+            reading->price = reading->has_price ? current.Value().price.Value() : 0;
+            break;
+        }
+        default:
+            ESP_LOGI(TAG, "Unhandled CommodityPrice attribute 0x%08lX", (unsigned long)path.mAttributeId);
+            return;
+        }
+
+        if (decode_err != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to decode CommodityPrice attribute 0x%08lX: %s", (unsigned long)path.mAttributeId, ErrorStr(decode_err));
+        }
+
+        if (g_home_manager.commodity_price_node_id == remote_node_id &&
+            g_home_manager.commodity_price_endpoint_id == path.mEndpointId)
+        {
+            schedule_home_broadcast();
         }
     }
     else if (path.mClusterId == ElectricalPowerMeasurement::Id)
@@ -2085,6 +2148,7 @@ esp_err_t unpair_node(uint64_t node_id)
 
     remove_node(&g_node_manager, node_id);
     heat_pump_forget_node(&g_heat_pump_manager, node_id);
+    commodity_price_forget_node(&g_commodity_price_manager, node_id);
     subscription_log_record(node_id, SUBLOG_REMOVED, 0);
 
     return ESP_OK;
@@ -3228,6 +3292,28 @@ static bool endpoint_has_device_type(const endpoint_entry_t *endpoint, uint32_t 
 // tank (Water Heater). Null while no heat pump is picked or the node is gone. Everything is in the
 // units the clusters report: mW and 0.01 degC, with enums and bitmaps left as numbers for the UI.
 //
+// The picked tariff's latest price, or null until both it and the currency that says how to read it
+// have been reported. The running cost is worked out from this in the browser.
+//
+static void add_commodity_price_json(cJSON *root)
+{
+    const commodity_price_endpoint_t *reading = commodity_price_find_endpoint(&g_commodity_price_manager,
+                                                                              g_home_manager.commodity_price_node_id,
+                                                                              g_home_manager.commodity_price_endpoint_id);
+
+    if (reading == NULL || !reading->has_price || !reading->has_currency)
+    {
+        cJSON_AddNullToObject(root, "commodityPrice");
+        return;
+    }
+
+    cJSON *price = cJSON_AddObjectToObject(root, "commodityPrice");
+    cJSON_AddNumberToObject(price, "price", (double)reading->price);
+    cJSON_AddNumberToObject(price, "decimalPoints", reading->decimal_points);
+    cJSON_AddNumberToObject(price, "currency", reading->currency);
+    add_number_or_null(price, "tariffUnit", reading->has_tariff_unit, reading->tariff_unit);
+}
+
 static void add_heat_pump_json(cJSON *root)
 {
     matter_node_t *node = find_node(&g_node_manager, g_home_manager.heat_pump_node_id);
@@ -3354,6 +3440,11 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "heatPumpEndpointId", g_home_manager.heat_pump_endpoint_id);
     cJSON_AddStringToObject(root, "heatPumpSubscription", home_sensor_subscription_state(g_home_manager.heat_pump_node_id));
     add_heat_pump_json(root);
+
+    cJSON_AddNumberToObject(root, "commodityPriceNodeId", g_home_manager.commodity_price_node_id);
+    cJSON_AddNumberToObject(root, "commodityPriceEndpointId", g_home_manager.commodity_price_endpoint_id);
+    cJSON_AddStringToObject(root, "commodityPriceSubscription", home_sensor_subscription_state(g_home_manager.commodity_price_node_id));
+    add_commodity_price_json(root);
     
     cJSON_AddNumberToObject(root, "loggingIntervalSeconds", history_logger_interval());
     cJSON_AddNumberToObject(root, "loggingIntervalActiveSeconds", history_logger_active_interval());
@@ -3598,6 +3689,19 @@ static void forget_heat_pump_if_unsubscribed(uint64_t node_id)
     update_heat_pump_running();
 }
 
+// The same for a tariff: a price with no subscription behind it could be from any tariff period,
+// and a running cost worked out from it would look just as current as a real one.
+//
+static void forget_commodity_price_if_unsubscribed(uint64_t node_id)
+{
+    if (node_is_subscribed(node_id))
+    {
+        return;
+    }
+
+    commodity_price_forget_node(&g_commodity_price_manager, node_id);
+}
+
 // Works out whether the picked heat pump is space heating or producing hot water, for the history
 // record and the bar the charts draw from it. Both come from the Heat bit of
 // ThermostatRunningState: on a Water Heater endpoint it means hot water, on any other Thermostat
@@ -3801,7 +3905,8 @@ static void broadcast_home_if_home_sensor(uint64_t node_id)
     if (node_id == g_home_manager.outdoor_temp_node_id ||
         node_id == g_home_manager.heat_meter_node_id ||
         node_id == g_home_manager.heat_pump_node_id ||
-        node_id == g_home_manager.electrical_meter_node_id)
+        node_id == g_home_manager.electrical_meter_node_id ||
+        node_id == g_home_manager.commodity_price_node_id)
     {
         broadcast_home_state();
     }
@@ -3908,6 +4013,17 @@ static esp_err_t home_put_handler(httpd_req_t *req)
         g_home_manager.heat_pump_endpoint_id = (uint16_t)heatPumpEndpointIdJSON->valueint;
 
         update_heat_pump_running();
+    }
+
+    // Optional, for the same reason.
+    //
+    const cJSON *commodityPriceNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "commodityPriceNodeId");
+    const cJSON *commodityPriceEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "commodityPriceEndpointId");
+
+    if (cJSON_IsNumber(commodityPriceNodeIdJSON) && cJSON_IsNumber(commodityPriceEndpointIdJSON))
+    {
+        g_home_manager.commodity_price_node_id = (uint64_t)commodityPriceNodeIdJSON->valueint;
+        g_home_manager.commodity_price_endpoint_id = (uint16_t)commodityPriceEndpointIdJSON->valueint;
     }
 
     // Optional: a client that omits it leaves the logger alone rather than resetting it.
@@ -4973,6 +5089,7 @@ extern "C" void app_main()
     room_manager_init(&g_room_manager);
     home_manager_init(&g_home_manager);
     heat_pump_manager_init(&g_heat_pump_manager);
+    commodity_price_manager_init(&g_commodity_price_manager);
 
     /* Matter start */
 
