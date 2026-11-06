@@ -4,9 +4,10 @@ title: Select a Heat Pump on Edit Home and show its readings on the Home page
 status: Done
 assignee: []
 created_date: '2026-10-04 12:37'
-updated_date: '2026-10-04 12:44'
+updated_date: '2026-11-06 15:32'
 labels: []
 dependencies: []
+ordinal: 8000
 ---
 
 ## Description

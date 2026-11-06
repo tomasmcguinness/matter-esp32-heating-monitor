@@ -1,11 +1,11 @@
 ---
 id: TASK-30
 title: Configurable timezone and NTP server
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29 15:46'
-updated_date: '2026-10-29 15:53'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - web-ui
@@ -13,6 +13,7 @@ labels:
   - release
 dependencies: []
 priority: high
+ordinal: 19000
 ---
 
 ## Description

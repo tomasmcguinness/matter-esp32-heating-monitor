@@ -4,7 +4,7 @@ title: Announce rooms and radiators to Home Assistant over MQTT
 status: Done
 assignee: []
 created_date: '2026-10-01 08:18'
-updated_date: '2026-10-01 08:21'
+updated_date: '2026-11-06 15:32'
 labels:
   - firmware
   - mqtt
@@ -14,6 +14,7 @@ references:
   - firmware/main/managers/calculations_manager.cpp
   - firmware/main/app_main.cpp
 priority: medium
+ordinal: 10000
 ---
 
 ## Description

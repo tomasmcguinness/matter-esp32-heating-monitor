@@ -4,12 +4,13 @@ title: 'Record rooms and radiators with no reading as null in history, not 0'
 status: Done
 assignee: []
 created_date: '2026-10-01 06:18'
-updated_date: '2026-10-01 06:19'
+updated_date: '2026-11-06 15:32'
 labels:
   - firmware
   - bug
 dependencies: []
 priority: medium
+ordinal: 11000
 ---
 
 ## Description

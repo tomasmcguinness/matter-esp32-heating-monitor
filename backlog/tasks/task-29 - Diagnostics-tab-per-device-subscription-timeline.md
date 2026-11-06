@@ -1,14 +1,15 @@
 ---
 id: TASK-29
 title: 'Diagnostics tab: per-device subscription timeline'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-16 18:43'
-updated_date: '2026-10-16 18:50'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - web-app
 dependencies: []
+ordinal: 20000
 ---
 
 ## Description

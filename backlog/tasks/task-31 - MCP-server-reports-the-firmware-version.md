@@ -1,17 +1,18 @@
 ---
 id: TASK-31
 title: MCP server reports the firmware version
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29 15:46'
-updated_date: '2026-10-29 15:53'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - mcp
   - release
 dependencies: []
 priority: medium
+ordinal: 18000
 ---
 
 ## Description

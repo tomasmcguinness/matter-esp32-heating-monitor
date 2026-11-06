@@ -1,12 +1,13 @@
 ---
 id: TASK-26
 title: Radiator output is zero unless the heat pump is space heating
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-12 17:52'
-updated_date: '2026-10-12 17:54'
+updated_date: '2026-11-06 15:33'
 labels: []
 dependencies: []
+ordinal: 23000
 ---
 
 ## Description

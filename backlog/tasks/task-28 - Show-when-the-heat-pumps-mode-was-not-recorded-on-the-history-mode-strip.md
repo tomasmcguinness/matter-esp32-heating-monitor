@@ -1,16 +1,17 @@
 ---
 id: TASK-28
 title: Show when the heat pump's mode was not recorded on the history mode strip
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-16 18:38'
-updated_date: '2026-10-16 18:38'
+updated_date: '2026-11-06 15:33'
 labels:
   - web-app
 dependencies: []
 references:
   - firmware/html_app/src/historyData.ts
   - firmware/html_app/src/HistoryChart.tsx
+ordinal: 21000
 ---
 
 ## Description

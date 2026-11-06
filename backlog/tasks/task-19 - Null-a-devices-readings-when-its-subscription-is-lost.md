@@ -1,16 +1,17 @@
 ---
 id: TASK-19
 title: Null a device's readings when its subscription is lost
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-08 12:17'
-updated_date: '2026-10-08 12:21'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - web
   - bug
 dependencies: []
 priority: medium
+ordinal: 30000
 ---
 
 ## Description

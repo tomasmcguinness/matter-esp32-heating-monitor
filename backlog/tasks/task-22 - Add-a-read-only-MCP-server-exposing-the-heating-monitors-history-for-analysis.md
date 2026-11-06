@@ -1,15 +1,16 @@
 ---
 id: TASK-22
 title: Add a read-only MCP server exposing the heating monitor's history for analysis
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-09 09:18'
-updated_date: '2026-10-09 09:50'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - mcp
 dependencies:
   - TASK-20
+ordinal: 27000
 ---
 
 ## Description

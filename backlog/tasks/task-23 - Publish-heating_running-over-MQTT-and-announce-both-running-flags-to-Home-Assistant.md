@@ -3,16 +3,17 @@ id: TASK-23
 title: >-
   Publish heating_running over MQTT and announce both running flags to Home
   Assistant
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-10 07:02'
-updated_date: '2026-10-10 07:03'
+updated_date: '2026-11-06 15:33'
 labels: []
 dependencies:
   - TASK-20
 references:
   - firmware/main/managers/calculations_manager.cpp
   - firmware/main/mqtt/ha_discovery.cpp
+ordinal: 26000
 ---
 
 ## Description

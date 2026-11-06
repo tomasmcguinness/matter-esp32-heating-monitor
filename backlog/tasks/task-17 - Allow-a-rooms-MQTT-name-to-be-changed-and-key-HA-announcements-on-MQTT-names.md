@@ -4,7 +4,7 @@ title: 'Allow a room''s MQTT name to be changed, and key HA announcements on MQT
 status: Done
 assignee: []
 created_date: '2026-10-01 09:35'
-updated_date: '2026-10-01 09:37'
+updated_date: '2026-11-06 15:32'
 labels:
   - firmware
   - mqtt
@@ -12,6 +12,7 @@ labels:
 dependencies:
   - TASK-16
 priority: medium
+ordinal: 9000
 ---
 
 ## Description

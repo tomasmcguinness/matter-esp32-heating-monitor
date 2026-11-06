@@ -1,14 +1,15 @@
 ---
 id: TASK-20
 title: Show when the heat pump is heating vs making hot water on the history charts
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-08 15:50'
-updated_date: '2026-10-08 15:53'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - web-app
 dependencies: []
+ordinal: 29000
 ---
 
 ## Description

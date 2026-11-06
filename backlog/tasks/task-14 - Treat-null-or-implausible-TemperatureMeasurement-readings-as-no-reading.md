@@ -4,12 +4,13 @@ title: Treat null or implausible TemperatureMeasurement readings as no reading
 status: Done
 assignee: []
 created_date: '2026-10-01 05:35'
-updated_date: '2026-10-01 05:37'
+updated_date: '2026-11-06 15:32'
 labels:
   - firmware
   - bug
 dependencies: []
 priority: medium
+ordinal: 12000
 ---
 
 ## Description

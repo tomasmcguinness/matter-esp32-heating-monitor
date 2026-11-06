@@ -1,14 +1,15 @@
 ---
 id: TASK-32
 title: Show the home status in the page header on every tab
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-29 16:28'
-updated_date: '2026-10-29 16:30'
+updated_date: '2026-11-06 15:33'
 labels:
   - web-ui
 dependencies: []
+ordinal: 17000
 ---
 
 ## Description

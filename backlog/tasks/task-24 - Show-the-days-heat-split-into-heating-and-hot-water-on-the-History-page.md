@@ -1,13 +1,15 @@
 ---
 id: TASK-24
 title: Show the day's heat split into heating and hot water on the History page
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-10 15:49'
+updated_date: '2026-11-06 15:33'
 labels: []
 dependencies: []
 references:
   - firmware/html_app/src/History.tsx
+ordinal: 25000
 ---
 
 ## Description

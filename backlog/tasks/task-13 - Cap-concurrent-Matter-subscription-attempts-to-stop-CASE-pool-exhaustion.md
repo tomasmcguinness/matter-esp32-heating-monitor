@@ -1,12 +1,13 @@
 ---
 id: TASK-13
 title: Cap concurrent Matter subscription attempts to stop CASE pool exhaustion
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-26 10:27'
-updated_date: '2026-09-26 10:27'
+updated_date: '2026-11-06 15:33'
 labels: []
 dependencies: []
+ordinal: 31000
 ---
 
 ## Description

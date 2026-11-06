@@ -1,15 +1,16 @@
 ---
 id: TASK-21
 title: 'Show heating, hot water and overall COP for a day and across all recorded days'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-09 08:35'
-updated_date: '2026-10-09 08:38'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - web-app
 dependencies:
   - TASK-20
+ordinal: 28000
 ---
 
 ## Description

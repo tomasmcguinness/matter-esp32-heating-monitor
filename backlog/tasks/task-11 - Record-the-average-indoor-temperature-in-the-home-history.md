@@ -1,16 +1,17 @@
 ---
 id: TASK-11
 title: Record the average indoor temperature in the home history
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-26 05:27'
-updated_date: '2026-09-26 05:34'
+updated_date: '2026-11-06 15:32'
 labels: []
 dependencies: []
 references:
   - firmware/main/managers/calculations_manager.cpp
   - firmware/main/mqtt/ha_discovery.cpp
   - firmware/main/storage/history_logger.cpp
+ordinal: 13000
 ---
 
 ## Description

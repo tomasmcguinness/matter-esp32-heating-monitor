@@ -1,12 +1,13 @@
 ---
 id: TASK-27
 title: Add room and radiator information to the MCP server
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-13 19:16'
-updated_date: '2026-10-13 19:18'
+updated_date: '2026-11-06 15:33'
 labels: []
 dependencies: []
+ordinal: 22000
 ---
 
 ## Description

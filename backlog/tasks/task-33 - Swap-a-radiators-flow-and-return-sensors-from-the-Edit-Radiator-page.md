@@ -1,14 +1,15 @@
 ---
 id: TASK-33
 title: Swap a radiator's flow and return sensors from the Edit Radiator page
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-31 07:59'
-updated_date: '2026-10-31 08:00'
+updated_date: '2026-11-06 15:33'
 labels:
   - web-app
 dependencies: []
 priority: low
+ordinal: 16000
 ---
 
 ## Description

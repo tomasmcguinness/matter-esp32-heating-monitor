@@ -1,15 +1,16 @@
 ---
 id: TASK-34
 title: Stop the CHIP event queue filling and aborting the monitor
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-01 16:50'
-updated_date: '2026-11-01 17:46'
+updated_date: '2026-11-06 15:33'
 labels:
   - firmware
   - bug
 dependencies: []
 priority: high
+ordinal: 15000
 ---
 
 ## Description

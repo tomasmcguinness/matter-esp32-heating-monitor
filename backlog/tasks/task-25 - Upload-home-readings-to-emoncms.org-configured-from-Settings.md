@@ -1,12 +1,13 @@
 ---
 id: TASK-25
 title: 'Upload home readings to emoncms.org, configured from Settings'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-10-11 07:53'
-updated_date: '2026-10-11 08:01'
+updated_date: '2026-11-06 15:33'
 labels: []
 dependencies: []
+ordinal: 24000
 ---
 
 ## Description

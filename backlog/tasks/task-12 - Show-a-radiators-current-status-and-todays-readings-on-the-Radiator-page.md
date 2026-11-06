@@ -1,12 +1,13 @@
 ---
 id: TASK-12
 title: Show a radiator's current status and today's readings on the Radiator page
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-09-26 05:40'
-updated_date: '2026-10-01 06:00'
+updated_date: '2026-11-06 15:32'
 labels: []
 dependencies: []
+ordinal: 14000
 ---
 
 ## Description
