@@ -13,6 +13,36 @@ import HeatPump, { type HeatPumpData } from "./HeatPump";
 import PageHeader from "./PageHeader";
 import { useHome } from "./HomeContext";
 
+// The underfloor heating's probes, and what they say about the circuit. The implied flow rate is
+// the derived output over the measured delta, so it is only as good as the radiator model the
+// output comes from: an implausible figure is a sign that model is off, not the circuit.
+//
+function UnderfloorHeating({ flow, ret, output }: { flow: number | null | undefined; ret: number | null | undefined; output: number | null | undefined }) {
+  const deltaC = flow != null && ret != null ? Math.abs(flow - ret) / 100 : null;
+  const impliedLph = output != null && output > 0 && deltaC != null && deltaC >= 0.5 ? Math.round(output / (1.163 * deltaC)) : null;
+
+  return (
+    <div className="card-group" style={{ marginBottom: '5px' }}>
+      <div className="card">
+        <div className="card-header">UFH Flow</div>
+        <div className="card-body"><p className="card-title"><h3><Temperature>{flow}</Temperature></h3></p></div>
+      </div>
+      <div className="card">
+        <div className="card-header">UFH Return</div>
+        <div className="card-body"><p className="card-title"><h3><Temperature>{ret}</Temperature></h3></p></div>
+      </div>
+      <div className="card">
+        <div className="card-header">UFH &Delta;T</div>
+        <div className="card-body"><p className="card-title"><h3>{deltaC == null ? '-' : `${deltaC.toFixed(1)}°C`}</h3></p></div>
+      </div>
+      <div className="card">
+        <div className="card-header">UFH Implied Flow</div>
+        <div className="card-body"><p className="card-title"><h3>{impliedLph == null ? '-' : `${impliedLph} l/h`}</h3></p></div>
+      </div>
+    </div>
+  );
+}
+
 function Home() {
 
   let [averageInternalTemperature, setAverageInternalTemperature] = useState<number | null | undefined>(undefined);
@@ -30,6 +60,10 @@ function Home() {
   // let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
   let [radiatorCount, setRadiatorCount] = useState<number | undefined>(undefined);
   let [totalRadiatorOutput, setTotalRadiatorOutput] = useState<number | undefined>(undefined);
+  const [ufhOutput, setUfhOutput] = useState<number | null | undefined>(undefined);
+  const [ufhFlowSensorNodeId, setUfhFlowSensorNodeId] = useState<number | undefined>(undefined);
+  const [ufhFlowTemperature, setUfhFlowTemperature] = useState<number | null | undefined>(undefined);
+  const [ufhReturnTemperature, setUfhReturnTemperature] = useState<number | null | undefined>(undefined);
   let [heatPumpNodeId, setHeatPumpNodeId] = useState<number | undefined>(undefined);
   let [heatPumpSubscription, setHeatPumpSubscription] = useState<string | undefined>(undefined);
   let [heatPump, setHeatPump] = useState<HeatPumpData | null | undefined>(undefined);
@@ -66,6 +100,10 @@ function Home() {
     // setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
     setRadiatorCount(data.radiatorCount);
     setTotalRadiatorOutput(data.totalRadiatorOutput);
+    setUfhOutput(data.ufhOutput);
+    setUfhFlowSensorNodeId(data.ufhFlowSensorNodeId);
+    setUfhFlowTemperature(data.ufhFlowTemperature);
+    setUfhReturnTemperature(data.ufhReturnTemperature);
 
     setHeatPumpNodeId(data.heatPumpNodeId);
     setHeatPumpSubscription(data.heatPumpSubscription);
@@ -200,10 +238,13 @@ function Home() {
             UFH Output
           </div>
           <div className="card-body">
-            <p className="card-title"><h3>N/A</h3></p>
+            {/* The heat meter less the radiators, so a dash while either is missing -- see
+                update_ufh_output() in the firmware. */}
+            <p className="card-title"><h3>{ufhOutput == null ? '-' : `${ufhOutput}W`}</h3></p>
           </div>
         </div>
       </div>
+      {!!ufhFlowSensorNodeId && <UnderfloorHeating flow={ufhFlowTemperature} ret={ufhReturnTemperature} output={ufhOutput} />}
       <h4 className="d-flex justify-content-between align-items-center" style={{marginTop: '20px'}}>Electricity<SubscriptionPill state={electricalMeterSubscription} /></h4>
       {electricalMeterNodeId === 0 ?
         <div className="alert alert-info">No electrical meter is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</div> :

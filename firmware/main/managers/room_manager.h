@@ -28,6 +28,13 @@ typedef struct room
     int16_t current_temperature;
     int16_t total_radiator_output;
 
+    // This room's share of the underfloor heating, set by update_room_heat_loss() from the home's
+    // share table, and the watts that share comes to. The input is absent while the underfloor
+    // heating's output is.
+    uint8_t ufh_share_pct;
+    bool has_ufh_input;
+    uint16_t ufh_input_w;
+
     int16_t measured_heat_loss_per_degree;
 
     int16_t measured_heat_loss_at_target_temperature;

@@ -172,6 +172,14 @@ static size_t build_record(uint8_t *out)
         r.heating_running = h->heating_running ? 1 : 0;
     }
 
+    if (h->has_ufh_flow_temperature) {
+        r.ufh_flow_temp_c100 = clamp_i16(h->ufh_flow_temperature);
+    }
+
+    if (h->has_ufh_return_temperature) {
+        r.ufh_return_temp_c100 = clamp_i16(h->ufh_return_temperature);
+    }
+
     if (h->has_electrical_voltage) {
         int64_t mv = h->electrical_voltage_mv;
         r.elec_voltage_dv = clamp_u16(mv / 100);

@@ -676,6 +676,44 @@ Electricity Meter power at this moment's price. It falls to standby pence betwee
 tariff is treated as kWh, which is why the card says "Approx". It is not recorded in history, and
 it is not on MQTT or the companion API.
 
+**Underfloor heating:**
+
+There is one underfloor heating circuit, configured on Edit Home: a flow and a return probe (device
+type 770) and a share table of `(room_id, pct)` pairs, up to `UFH_MAX_SHARES`, summing to at most
+100. It is stored at the **end** of the `home_manager` NVS blob, after the commodity price, with the
+same size check, so an older blob loads with no UFH set. `PUT /api/home` takes `ufhFlowSensor*`,
+`ufhReturnSensor*` and `ufhShares` as optional, and checks the shares before changing anything:
+an unknown room, a duplicate, a value outside 0 to 100 or a total over 100 is a 400 and leaves the
+home as it was. 0% entries are dropped. Removing a room drops its share.
+
+**The output is a residual, not a measurement.** There is no UFH flow meter, so
+`update_ufh_output()` (in `calculations_manager.cpp`) takes the heat meter's output and subtracts
+the radiators' modelled output. Every radiator modelling error lands in it. That is why it is:
+
+- **absent** with no heat meter power, no heating state, or any radiator that is in a room but
+  has no output. Otherwise a radiator without readings would be counted as floor heat.
+- **0 W** outside space heating, during hot water (the heat meter is then measuring the cylinder),
+  or when the probes are picked and show under `UFH_MIN_DELTA_T_C100` (0.5 K) across the circuit,
+  which means it isn't circulating. If the probes are picked but either has no reading, the
+  output is absent. The gate uses |flow − return|, so probes fitted the wrong way round still work.
+- otherwise **max(0, heat meter − radiators)**.
+
+It runs at the start of `update_room_heat_loss()` and in `update_home()`. A room's heat input for
+its measured heat loss is its radiators plus `pct × ufhOutput`, so a room heated only by the floor
+gets a measured figure too. The heat meter reports every few seconds, so `update_ufh_rooms()` in
+`app_main.cpp` recomputes the rooms with a share at most every 30 s; a probe report or a change of
+heating or hot water state forces it. Room JSON carries `ufhShare` and `ufhInput`. `GET /api/home`
+and the `home` channel carry the config, `ufhFlowTemperature`, `ufhReturnTemperature` and
+`ufhOutput`. MQTT's home state carries the same three. The Home page derives an implied UFH flow
+rate in the browser (output / (1.163 × ΔT)). A flow rate that's implausible points at the
+radiator model, not the circuit.
+
+**The probes are recorded, the output is not.** UFH flow and return took `rec_home_t`'s last two
+spare fields (`ufh_flow_temp_c100`, `ufh_return_temp_c100`), so earlier days read them as null. Any
+further home quantity needs a new record kind or a breaking widening. The output is derived from
+radiator ratings, so it is not recorded, on the same principle as radiator output. MCP lists
+`ufh_flow_temp_c` and `ufh_return_temp_c`.
+
 **Keeping the CHIP task's event queue from filling:**
 
 lwIP's task posts every incoming UDP packet to the CHIP platform event queue, and **CHIP aborts if the

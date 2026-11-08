@@ -18,8 +18,8 @@ import PageHeader from "./PageHeader";
 //
 // Field order matches rec_home_t in firmware/main/storage/history_format.h. The firmware
 // also sends the names in "fields", but the chart needs to know which is which, so the
-// order is relied on here and asserted against that list below. The reserved columns are
-// placeholders for quantities not yet recorded; they always read null.
+// order is relied on here and asserted against that list below. The underfloor heating's two
+// columns read null on days recorded before its probes were picked.
 const FIELDS = [
   "heatPowerW",
   "elecPowerW",
@@ -33,8 +33,8 @@ const FIELDS = [
   "elecVoltageDv",
   "elecCurrentCa",
   "heatingRunning",
-  "reserved1",
-  "reserved2",
+  "ufhFlowTempC100",
+  "ufhReturnTempC100",
 ];
 
 // Column index within a point row. Element 0 is the timestamp, so a field's index is its
@@ -47,6 +47,8 @@ const COL = {
   outdoorTemp: 6,
   averageInternalTemp: 7,
   cop: 8,
+  ufhFlowTemp: 13,
+  ufhReturnTemp: 14,
 } as const;
 
 const POWER_SERIES = [
@@ -59,6 +61,8 @@ const TEMP_SERIES = [
   { label: "Return", stroke: "#5bc0de" },
   { label: "Outdoor", stroke: "#5cb85c" },
   { label: "Average Indoor", stroke: "#f0ad4e" },
+  { label: "UFH Flow", stroke: "#a94442" },
+  { label: "UFH Return", stroke: "#31708f" },
 ];
 
 const COP_SERIES = [{ label: "COP", stroke: "#9354d9" }];
@@ -166,8 +170,8 @@ function History() {
   const tempData = hasPoints
     ? toPlotData(
         points,
-        [COL.flowTemp, COL.returnTemp, COL.outdoorTemp, COL.averageInternalTemp],
-        [0.01, 0.01, 0.01, 0.01]
+        [COL.flowTemp, COL.returnTemp, COL.outdoorTemp, COL.averageInternalTemp, COL.ufhFlowTemp, COL.ufhReturnTemp],
+        [0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
       )
     : null;
   const copData = hasPoints ? toPlotData(points, [COL.cop], [0.01]) : null;

@@ -128,7 +128,7 @@ static const char *field_names_for(uint8_t kind)
                            "\"returnTempC100\",\"flowLph\",\"outdoorTempC100\","
                            "\"averageInternalTempC100\",\"copX100\",\"dhwRunning\","
                            "\"elecVoltageDv\",\"elecCurrentCa\","
-                           "\"heatingRunning\",\"reserved1\",\"reserved2\"";
+                           "\"heatingRunning\",\"ufhFlowTempC100\",\"ufhReturnTempC100\"";
     case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"reserved1\",\"reserved2\"";
     case KIND_RADIATOR: return "\"flowTempC100\",\"returnTempC100\","
                                "\"reserved0\",\"reserved1\"";

@@ -134,6 +134,7 @@ static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
 static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
 static void forget_commodity_price_if_unsubscribed(uint64_t node_id);
 static void update_heat_pump_running(void);
+static void update_ufh_rooms(bool force);
 static void broadcast_radiator_state(const radiator_t *radiator);
 static void forget_readings_if_unsubscribed(uint64_t node_id);
 static void add_number_or_null(cJSON *object, const char *name, bool has_value, double value);
@@ -1004,6 +1005,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGI(TAG, "Heat meter power: %lld mW", g_home_manager.heat_meter_power_mw);
             }
+
+            // The underfloor heating's output is what is left of this after the radiators.
+            update_ufh_rooms(false);
             break;
         }
 
@@ -1240,6 +1244,33 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
         set_endpoint_measured_value(&g_node_manager, remote_node_id, path.mEndpointId, has_value, temperature);
 
         bool hasMatched = false;
+
+        // The underfloor heating's probes. Not a match that returns: the same multi-probe node
+        // can carry a radiator's probes on its other endpoints, and those are matched below.
+        //
+        bool is_ufh_flow = g_home_manager.ufh_flow_node_id == remote_node_id && g_home_manager.ufh_flow_endpoint_id == path.mEndpointId;
+        bool is_ufh_return = g_home_manager.ufh_return_node_id == remote_node_id && g_home_manager.ufh_return_endpoint_id == path.mEndpointId;
+
+        if (is_ufh_flow || is_ufh_return)
+        {
+            ESP_LOGI(TAG, "Device is the underfloor heating's %s probe", is_ufh_flow ? "flow" : "return");
+
+            if (is_ufh_flow)
+            {
+                g_home_manager.has_ufh_flow_temperature = has_value;
+                g_home_manager.ufh_flow_temperature = temperature;
+            }
+            else
+            {
+                g_home_manager.has_ufh_return_temperature = has_value;
+                g_home_manager.ufh_return_temperature = temperature;
+            }
+
+            // The probes gate the output, and the rooms with a share take theirs from it.
+            update_ufh_rooms(true);
+
+            schedule_home_broadcast();
+        }
 
         // If this TemperatureMeasurement is set in the home, update it's value.
         //
@@ -2877,6 +2908,10 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
         add_number_or_null(jNode, "measuredHeatLoss", room->has_measured_heat_loss, room->measured_heat_loss_per_degree);
         add_number_or_null(jNode, "heatLossDifference", room->has_measured_heat_loss, room->heat_loss_difference);
 
+        // Its share of the underfloor heating, in percent, and the watts that comes to now.
+        cJSON_AddNumberToObject(jNode, "ufhShare", home_ufh_share_for_room(&g_home_manager, room->room_id));
+        add_number_or_null(jNode, "ufhInput", room->has_ufh_input, room->ufh_input_w);
+
         uint16_t total_radiator_output = 0;
 
         // The room's radiators are carried inline so a caller that needs the whole system at once --
@@ -2979,6 +3014,9 @@ static esp_err_t room_get_handler(httpd_req_t *req)
 
     add_number_or_null(root, "predictedHeatLossAtTargetTemperature", room->has_predicted_heat_loss, room->predicted_heat_loss_at_target_temperature);
     add_number_or_null(root, "measuredHeatLossAtTargetTemperature", room->has_measured_heat_loss, room->measured_heat_loss_at_target_temperature);
+
+    cJSON_AddNumberToObject(root, "ufhShare", home_ufh_share_for_room(&g_home_manager, room->room_id));
+    add_number_or_null(root, "ufhInput", room->has_ufh_input, room->ufh_input_w);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -3146,6 +3184,13 @@ static esp_err_t rooms_delete_handler(httpd_req_t *req)
     if (remove_room(&g_room_manager, room_id) == ESP_OK && is_mqtt_connected)
     {
         ha_discovery_remove_room(_mqtt_client, room_id, mqtt_name.c_str());
+    }
+
+    // Its share of the underfloor heating goes with it, rather than lingering against a room id
+    // the next new room could be given.
+    if (home_ufh_forget_room(&g_home_manager, room_id))
+    {
+        save_home_to_nvs(&g_home_manager);
     }
 
     broadcast_home_state();
@@ -3445,7 +3490,28 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "commodityPriceEndpointId", g_home_manager.commodity_price_endpoint_id);
     cJSON_AddStringToObject(root, "commodityPriceSubscription", home_sensor_subscription_state(g_home_manager.commodity_price_node_id));
     add_commodity_price_json(root);
-    
+
+    // The underfloor heating: its probes, their readings, its derived output and the rooms it is
+    // split between. Readings and output are null when absent -- see update_ufh_output().
+    //
+    cJSON_AddNumberToObject(root, "ufhFlowSensorNodeId", g_home_manager.ufh_flow_node_id);
+    cJSON_AddNumberToObject(root, "ufhFlowSensorEndpointId", g_home_manager.ufh_flow_endpoint_id);
+    cJSON_AddNumberToObject(root, "ufhReturnSensorNodeId", g_home_manager.ufh_return_node_id);
+    cJSON_AddNumberToObject(root, "ufhReturnSensorEndpointId", g_home_manager.ufh_return_endpoint_id);
+    add_number_or_null(root, "ufhFlowTemperature", g_home_manager.has_ufh_flow_temperature, g_home_manager.ufh_flow_temperature);
+    add_number_or_null(root, "ufhReturnTemperature", g_home_manager.has_ufh_return_temperature, g_home_manager.ufh_return_temperature);
+    add_number_or_null(root, "ufhOutput", g_home_manager.has_ufh_output, g_home_manager.ufh_output_w);
+
+    cJSON *ufhShares = cJSON_AddArrayToObject(root, "ufhShares");
+
+    for (uint8_t i = 0; i < g_home_manager.ufh_share_count; i++)
+    {
+        cJSON *share = cJSON_CreateObject();
+        cJSON_AddNumberToObject(share, "roomId", g_home_manager.ufh_shares[i].room_id);
+        cJSON_AddNumberToObject(share, "pct", g_home_manager.ufh_shares[i].pct);
+        cJSON_AddItemToArray(ufhShares, share);
+    }
+
     cJSON_AddNumberToObject(root, "loggingIntervalSeconds", history_logger_interval());
     cJSON_AddNumberToObject(root, "loggingIntervalActiveSeconds", history_logger_active_interval());
 
@@ -3757,6 +3823,7 @@ static void update_heat_pump_running(void)
     }
 
     bool was_heating = g_home_manager.has_heating_running && g_home_manager.heating_running;
+    bool was_dhw = g_home_manager.has_dhw_running && g_home_manager.dhw_running;
 
     g_home_manager.dhw_running = dhw;
     g_home_manager.has_dhw_running = has_dhw;
@@ -3773,6 +3840,45 @@ static void update_heat_pump_running(void)
             broadcast_radiator_state(radiator);
         }
     }
+
+    // The underfloor heating's output is zero outside space heating and during hot water, so the
+    // rooms sharing it change with either.
+    if ((has_heating && heating) != was_heating || (has_dhw && dhw) != was_dhw)
+    {
+        update_ufh_rooms(true);
+    }
+}
+
+// Recalculates the rooms that take a share of the underfloor heating, whose input moves with the
+// heat meter. Its power reports every few seconds, and each room recalculation publishes the
+// room's MQTT state, so unless `force` is set this runs at most once every UFH_ROOM_UPDATE_US.
+// Ends in update_home() either way, which keeps the home's ufhOutput current.
+#define UFH_ROOM_UPDATE_US (30LL * 1000 * 1000)
+
+static void update_ufh_rooms(bool force)
+{
+    static int64_t s_last_us = 0;
+    int64_t now = esp_timer_get_time();
+
+    if (!force && s_last_us != 0 && now - s_last_us < UFH_ROOM_UPDATE_US)
+    {
+        update_ufh_output(&g_home_manager, &g_room_manager, &g_radiator_manager);
+        return;
+    }
+
+    s_last_us = now;
+
+    for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+    {
+        bool had_input = room->has_ufh_input;
+
+        if (home_ufh_share_for_room(&g_home_manager, room->room_id) > 0 || had_input)
+        {
+            update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, room);
+        }
+    }
+
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 }
 
 // Pushes a radiator's readings and its output to the web UI. The Layout schematic shows watts per
@@ -3824,6 +3930,22 @@ static void forget_readings_if_unsubscribed(uint64_t node_id)
         g_home_manager.has_electrical_voltage = false;
         g_home_manager.has_electrical_current = false;
         g_home_manager.has_electrical_power = false;
+        changed = true;
+    }
+
+    // The underfloor heating's probes. update_all_rooms_heat_loss() below then re-derives its
+    // output, which goes absent without them.
+    if (node_id == g_home_manager.ufh_flow_node_id)
+    {
+        g_home_manager.has_ufh_flow_temperature = false;
+        g_home_manager.ufh_flow_temperature = 0;
+        changed = true;
+    }
+
+    if (node_id == g_home_manager.ufh_return_node_id)
+    {
+        g_home_manager.has_ufh_return_temperature = false;
+        g_home_manager.ufh_return_temperature = 0;
         changed = true;
     }
 
@@ -3906,7 +4028,9 @@ static void broadcast_home_if_home_sensor(uint64_t node_id)
         node_id == g_home_manager.heat_meter_node_id ||
         node_id == g_home_manager.heat_pump_node_id ||
         node_id == g_home_manager.electrical_meter_node_id ||
-        node_id == g_home_manager.commodity_price_node_id)
+        node_id == g_home_manager.commodity_price_node_id ||
+        node_id == g_home_manager.ufh_flow_node_id ||
+        node_id == g_home_manager.ufh_return_node_id)
     {
         broadcast_home_state();
     }
@@ -3993,6 +4117,101 @@ static esp_err_t home_put_handler(httpd_req_t *req)
         }
     }
 
+    // Optional, like the heat pump below, but checked before anything is changed: a share table
+    // that is refused leaves the whole home as it was.
+    //
+    const cJSON *ufhSharesJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhShares");
+    ufh_share_t ufh_shares[UFH_MAX_SHARES];
+    uint8_t ufh_share_count = 0;
+
+    if (ufhSharesJSON != NULL)
+    {
+        const char *problem = NULL;
+        uint32_t total = 0;
+
+        if (!cJSON_IsArray(ufhSharesJSON))
+        {
+            problem = "ufhShares must be an array";
+        }
+
+        const cJSON *share = NULL;
+
+        cJSON_ArrayForEach(share, ufhSharesJSON)
+        {
+            if (problem)
+            {
+                break;
+            }
+
+            const cJSON *roomIdJSON = cJSON_GetObjectItemCaseSensitive(share, "roomId");
+            const cJSON *pctJSON = cJSON_GetObjectItemCaseSensitive(share, "pct");
+
+            if (!cJSON_IsNumber(roomIdJSON) || !cJSON_IsNumber(pctJSON))
+            {
+                problem = "Each UFH share needs a numeric roomId and pct";
+                break;
+            }
+
+            int pct = pctJSON->valueint;
+
+            if (pct < 0 || pct > 100)
+            {
+                problem = "A UFH share must be 0 to 100";
+                break;
+            }
+
+            if (pct == 0)
+            {
+                continue;
+            }
+
+            if (roomIdJSON->valueint < 0 || roomIdJSON->valueint > UINT8_MAX ||
+                find_room(&g_room_manager, (uint8_t)roomIdJSON->valueint) == NULL)
+            {
+                problem = "A UFH share names a room that does not exist";
+                break;
+            }
+
+            for (uint8_t i = 0; i < ufh_share_count; i++)
+            {
+                if (ufh_shares[i].room_id == roomIdJSON->valueint)
+                {
+                    problem = "A room has two UFH shares";
+                    break;
+                }
+            }
+
+            if (!problem && ufh_share_count == UFH_MAX_SHARES)
+            {
+                problem = "Too many UFH shares";
+            }
+
+            if (problem)
+            {
+                break;
+            }
+
+            ufh_shares[ufh_share_count].room_id = (uint8_t)roomIdJSON->valueint;
+            ufh_shares[ufh_share_count].pct = (uint8_t)pct;
+            ufh_share_count++;
+            total += pct;
+        }
+
+        if (!problem && total > 100)
+        {
+            problem = "The UFH shares add up to more than 100%";
+        }
+
+        if (problem)
+        {
+            ESP_LOGE(TAG, "Home update refused: %s", problem);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_send(req, problem, HTTPD_RESP_USE_STRLEN);
+            cJSON_Delete(root);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
     g_home_manager.outdoor_temp_node_id = (uint64_t)outdoorTemperatureSensorNodeIdJSON->valueint;
     g_home_manager.outdoor_temp_endpoint_id = (uint16_t)outdoorTemperatureSensorEndpointIdJSON->valueint;
 
@@ -4026,6 +4245,31 @@ static esp_err_t home_put_handler(httpd_req_t *req)
         g_home_manager.commodity_price_endpoint_id = (uint16_t)commodityPriceEndpointIdJSON->valueint;
     }
 
+    // Optional, for the same reason. Each probe is a node and endpoint pair; node 0 clears it.
+    //
+    const cJSON *ufhFlowNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhFlowSensorNodeId");
+    const cJSON *ufhFlowEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhFlowSensorEndpointId");
+    const cJSON *ufhReturnNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhReturnSensorNodeId");
+    const cJSON *ufhReturnEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhReturnSensorEndpointId");
+
+    if (cJSON_IsNumber(ufhFlowNodeIdJSON) && cJSON_IsNumber(ufhFlowEndpointIdJSON))
+    {
+        g_home_manager.ufh_flow_node_id = (uint64_t)ufhFlowNodeIdJSON->valueint;
+        g_home_manager.ufh_flow_endpoint_id = (uint16_t)ufhFlowEndpointIdJSON->valueint;
+    }
+
+    if (cJSON_IsNumber(ufhReturnNodeIdJSON) && cJSON_IsNumber(ufhReturnEndpointIdJSON))
+    {
+        g_home_manager.ufh_return_node_id = (uint64_t)ufhReturnNodeIdJSON->valueint;
+        g_home_manager.ufh_return_endpoint_id = (uint16_t)ufhReturnEndpointIdJSON->valueint;
+    }
+
+    if (ufhSharesJSON != NULL)
+    {
+        memcpy(g_home_manager.ufh_shares, ufh_shares, sizeof(ufh_share_t) * ufh_share_count);
+        g_home_manager.ufh_share_count = ufh_share_count;
+    }
+
     // Optional: a client that omits it leaves the logger alone rather than resetting it.
     //
     const cJSON *loggingIntervalJSON = cJSON_GetObjectItemCaseSensitive(root, "loggingIntervalSeconds");
@@ -4044,6 +4288,14 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     // has been lost has no reading to copy, and leaves it absent.
     //
     g_home_manager.has_outdoor_temperature = get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
+
+    // The same for the underfloor heating's probes, and then every room, since the share table and
+    // the probes' gate both feed each room's heat input.
+    //
+    g_home_manager.has_ufh_flow_temperature = get_endpoint_measured_value(&g_node_manager, g_home_manager.ufh_flow_node_id, g_home_manager.ufh_flow_endpoint_id, &g_home_manager.ufh_flow_temperature);
+    g_home_manager.has_ufh_return_temperature = get_endpoint_measured_value(&g_node_manager, g_home_manager.ufh_return_node_id, g_home_manager.ufh_return_endpoint_id, &g_home_manager.ufh_return_temperature);
+
+    update_all_rooms_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
 
     broadcast_home_state();
 

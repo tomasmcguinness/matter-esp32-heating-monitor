@@ -129,6 +129,36 @@ esp_err_t load_home_from_nvs(home_manager_t *manager)
         ptr += sizeof(uint16_t);
     }
 
+    // The underfloor heating, appended after the commodity price: its probes, then a count and
+    // that many (room id, percent) pairs.
+    if ((size_t)(ptr - buffer) + 2 * (sizeof(uint64_t) + sizeof(uint16_t)) + sizeof(uint8_t) <= required_size)
+    {
+        manager->ufh_flow_node_id = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+        manager->ufh_flow_endpoint_id = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+        manager->ufh_return_node_id = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+        manager->ufh_return_endpoint_id = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+
+        uint8_t count = *ptr++;
+
+        if (count > UFH_MAX_SHARES || (size_t)(ptr - buffer) + count * 2 > required_size)
+        {
+            ESP_LOGW(TAG, "Ignoring a malformed underfloor heating share table (%u entries)", count);
+            count = 0;
+        }
+
+        for (uint8_t i = 0; i < count; i++)
+        {
+            manager->ufh_shares[i].room_id = *ptr++;
+            manager->ufh_shares[i].pct = *ptr++;
+        }
+
+        manager->ufh_share_count = count;
+    }
+
     free(buffer);
 
     return ESP_OK;
@@ -159,6 +189,12 @@ esp_err_t save_home_to_nvs(home_manager_t *manager)
     required_size += sizeof(uint16_t); // heat_pump_endpoint_id
     required_size += sizeof(uint64_t); // commodity_price_node_id
     required_size += sizeof(uint16_t); // commodity_price_endpoint_id
+    required_size += sizeof(uint64_t); // ufh_flow_node_id
+    required_size += sizeof(uint16_t); // ufh_flow_endpoint_id
+    required_size += sizeof(uint64_t); // ufh_return_node_id
+    required_size += sizeof(uint16_t); // ufh_return_endpoint_id
+    required_size += sizeof(uint8_t);  // ufh_share_count
+    required_size += manager->ufh_share_count * 2; // (room_id, pct) pairs
 
     uint8_t *buffer = (uint8_t *)malloc(required_size);
     if (!buffer)
@@ -201,6 +237,23 @@ esp_err_t save_home_to_nvs(home_manager_t *manager)
     *((uint16_t *)ptr) = manager->commodity_price_endpoint_id;
     ptr += sizeof(uint16_t);
 
+    *((uint64_t *)ptr) = manager->ufh_flow_node_id;
+    ptr += sizeof(uint64_t);
+    *((uint16_t *)ptr) = manager->ufh_flow_endpoint_id;
+    ptr += sizeof(uint16_t);
+    *((uint64_t *)ptr) = manager->ufh_return_node_id;
+    ptr += sizeof(uint64_t);
+    *((uint16_t *)ptr) = manager->ufh_return_endpoint_id;
+    ptr += sizeof(uint16_t);
+
+    *ptr++ = manager->ufh_share_count;
+
+    for (uint8_t i = 0; i < manager->ufh_share_count; i++)
+    {
+        *ptr++ = manager->ufh_shares[i].room_id;
+        *ptr++ = manager->ufh_shares[i].pct;
+    }
+
     err = nvs_set_blob(nvs_handle, NVS_KEY, buffer, required_size);
     free(buffer);
 
@@ -212,4 +265,32 @@ esp_err_t save_home_to_nvs(home_manager_t *manager)
     nvs_close(nvs_handle);
 
     return err;
+}
+
+uint8_t home_ufh_share_for_room(const home_manager_t *manager, uint8_t room_id)
+{
+    for (uint8_t i = 0; i < manager->ufh_share_count; i++)
+    {
+        if (manager->ufh_shares[i].room_id == room_id)
+        {
+            return manager->ufh_shares[i].pct;
+        }
+    }
+
+    return 0;
+}
+
+bool home_ufh_forget_room(home_manager_t *manager, uint8_t room_id)
+{
+    for (uint8_t i = 0; i < manager->ufh_share_count; i++)
+    {
+        if (manager->ufh_shares[i].room_id == room_id)
+        {
+            manager->ufh_shares[i] = manager->ufh_shares[manager->ufh_share_count - 1];
+            manager->ufh_share_count--;
+            return true;
+        }
+    }
+
+    return false;
 }

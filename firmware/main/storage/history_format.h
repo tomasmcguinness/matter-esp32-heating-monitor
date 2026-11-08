@@ -104,8 +104,10 @@ typedef struct __attribute__((packed)) {
     uint16_t elec_voltage_dv;     // Voltage,       mV -> 0.1 V
     uint16_t elec_current_ca;     // ActiveCurrent, mA -> 0.01 A
     int16_t  heating_running;     // 0 or 1, heat pump space heating
-    int16_t  reserved1;
-    int16_t  reserved2;
+    // The underfloor heating's probes, 0.01 degC. These took the last two spare fields: a further
+    // home quantity means a new record kind or a breaking widening, not another spare.
+    int16_t  ufh_flow_temp_c100;
+    int16_t  ufh_return_temp_c100;
 } rec_home_t;
 
 HIST_STATIC_ASSERT(sizeof(rec_home_t) == 28, "rec_home_t must stay 28 bytes");

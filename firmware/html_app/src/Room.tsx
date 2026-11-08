@@ -78,6 +78,17 @@ function Room() {
             <p className="card-title"><h3>{room.heatLossPerDegree}</h3></p>
           </div>
         </div>
+        {/* Set on Edit Home. The watts are this room's share of the underfloor heating's derived
+            output, and count toward its measured heat loss alongside its radiators. */}
+        {room.ufhShare > 0 &&
+          <div className="card">
+            <div className="card-header">
+              Underfloor Heating
+            </div>
+            <div className="card-body">
+              <p className="card-title"><h3>{room.ufhShare}%{room.ufhInput != null && <> &middot; {room.ufhInput}W</>}</h3></p>
+            </div>
+          </div>}
       </div>
 
       <RoomTodayChart roomId={room.roomId} />

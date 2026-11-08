@@ -27,6 +27,10 @@ const mcp_series_t MCP_SERIES[] = {
      "logged."},
     {"voltage_v", "Supply voltage", "V", 9, 10, 1, NULL},
     {"current_a", "Supply current", "A", 10, 100, 2, NULL},
+    {"ufh_flow_temp_c", "Underfloor heating flow temperature", "degC", 12, 100, 2,
+     "Measured by a probe on the underfloor heating's flow. Null on days recorded before it was "
+     "fitted."},
+    {"ufh_return_temp_c", "Underfloor heating return temperature", "degC", 13, 100, 2, NULL},
 };
 
 const size_t MCP_SERIES_COUNT = sizeof(MCP_SERIES) / sizeof(MCP_SERIES[0]);

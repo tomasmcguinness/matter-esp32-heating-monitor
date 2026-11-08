@@ -155,9 +155,120 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
     update_home(home_manager, room_manager, radiator_manager, mqtt_client);
 }
 
+// True if radiator_id is listed in any room. A radiator in no room never gets an output, so it
+// cannot be counted against the heat meter either way and is left out of the UFH residual.
+static bool radiator_is_in_a_room(room_manager_t *room_manager, uint8_t radiator_id)
+{
+    for (room_t *room = room_manager->room_list; room != NULL; room = room->next)
+    {
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            if (room->radiators[r] == radiator_id)
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// The underfloor heating has no flow meter, so its output is the residual: the heat meter's
+// output less the radiators' modelled output. Every radiator modelling error lands in it, which
+// is why it is only given when it can be honest:
+//
+//   absent  - no heat meter power, or no heating state, or a radiator that is in a room has no
+//             output. A radiator without readings would otherwise be booked as floor heat.
+//   0 W     - not space heating, or making hot water (the heat meter is then measuring the
+//             cylinder), or the probes are picked and show under UFH_MIN_DELTA_T_C100 across the
+//             circuit, so it is not circulating.
+//   else    - max(0, heat meter - radiators).
+//
+// |flow - return| rather than flow - return, so a probe pair fitted the wrong way round gates the
+// same as one fitted correctly, as the radiators' fabs() does.
+void update_ufh_output(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
+{
+    home_manager->has_ufh_output = false;
+    home_manager->ufh_output_w = 0;
+
+    if (!home_manager->has_heat_meter_power || !home_manager->has_heating_running)
+    {
+        return;
+    }
+
+    int32_t radiator_w = 0;
+
+    for (radiator_t *radiator = radiator_manager->radiator_list; radiator != NULL; radiator = radiator->next)
+    {
+        if (!radiator_is_in_a_room(room_manager, radiator->radiator_id))
+        {
+            continue;
+        }
+
+        if (!radiator->has_heat_output)
+        {
+            return;
+        }
+
+        radiator_w += radiator->heat_output;
+    }
+
+    home_manager->has_ufh_output = true;
+
+    bool heating = home_manager->heating_running && !(home_manager->has_dhw_running && home_manager->dhw_running);
+
+    if (!heating)
+    {
+        return;
+    }
+
+    bool probes_picked = home_manager->ufh_flow_node_id != 0 && home_manager->ufh_return_node_id != 0;
+
+    if (probes_picked)
+    {
+        if (!home_manager->has_ufh_flow_temperature || !home_manager->has_ufh_return_temperature)
+        {
+            // Picked, but a probe has no reading: whether the circuit is running is not known.
+            home_manager->has_ufh_output = false;
+            return;
+        }
+
+        int32_t delta = home_manager->ufh_flow_temperature - home_manager->ufh_return_temperature;
+
+        if (delta < 0)
+        {
+            delta = -delta;
+        }
+
+        if (delta < UFH_MIN_DELTA_T_C100)
+        {
+            return;
+        }
+    }
+
+    int64_t residual = home_manager->heat_meter_power_mw / 1000 - radiator_w;
+
+    if (residual < 0)
+    {
+        residual = 0;
+    }
+    else if (residual > UINT16_MAX)
+    {
+        residual = UINT16_MAX;
+    }
+
+    home_manager->ufh_output_w = (uint16_t)residual;
+}
+
 void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager, esp_mqtt_client_handle_t mqtt_client, room_t *room)
 {
     ESP_LOGI(TAG, "Calculating heat loss for room %u", room->room_id);
+
+    update_ufh_output(home_manager, room_manager, radiator_manager);
+
+    room->ufh_share_pct = home_ufh_share_for_room(home_manager, room->room_id);
+    room->has_ufh_input = room->ufh_share_pct > 0 && home_manager->has_ufh_output;
+    room->ufh_input_w = room->has_ufh_input ? (uint16_t)((uint32_t)home_manager->ufh_output_w * room->ufh_share_pct / 100) : 0;
 
     int16_t current_temperature = 0;
     room->has_current_temperature = get_endpoint_measured_value(node_manager, room->room_temperature_node_id, room->room_temperature_endpoint_id, &current_temperature);
@@ -219,13 +330,14 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
             room->predicted_heat_loss_at_current_temperature = current_delta_t * room->predicted_heat_loss_per_degree;
 
-            // The measured heat loss is the radiators' output over that delta, so it also needs at
-            // least one radiator with an output, and a delta to divide by. The output has to be
-            // above zero as well: every radiator reads 0 W while the heat pump is not heating, and
-            // that says nothing about how much heat the room loses.
+            // The measured heat loss is the room's heat input over that delta: its radiators'
+            // output plus its share of the underfloor heating's. So it also needs at least one of
+            // those, and a delta to divide by. The input has to be above zero as well: every
+            // emitter reads 0 W while the heat pump is not heating, and that says nothing about
+            // how much heat the room loses.
             //
-            uint16_t total_radiator_output = 0;
-            bool has_radiator_output = false;
+            uint32_t total_radiator_output = room->ufh_input_w;
+            bool has_radiator_output = room->has_ufh_input;
 
             for (uint8_t r = 0; r < room->radiator_count; r++)
             {
@@ -240,7 +352,7 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
             if (has_radiator_output && total_radiator_output > 0 && current_delta_t != 0)
             {
-                ESP_LOGI(TAG, "Room %u has an input of %u W", room->room_id, total_radiator_output);
+                ESP_LOGI(TAG, "Room %u has an input of %lu W (%u W of it underfloor)", room->room_id, (unsigned long)total_radiator_output, room->ufh_input_w);
 
                 room->measured_heat_loss_per_degree = total_radiator_output / current_delta_t;
                 room->measured_heat_loss_at_target_temperature = target_temperature_delta_t * room->measured_heat_loss_per_degree;
@@ -257,7 +369,7 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
             }
             else
             {
-                ESP_LOGI(TAG, "Room %u has no radiator output, heat loss cannot be measured", room->room_id);
+                ESP_LOGI(TAG, "Room %u has no heat input, heat loss cannot be measured", room->room_id);
             }
         }
     }
@@ -369,7 +481,7 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
     // from the MQTT task, for the same reason: this task may walk the lists.
     ha_discovery_announce_pending(mqtt_client, room_manager, radiator_manager);
 
-    // TODO UFH.
+    update_ufh_output(home_manager, room_manager, radiator_manager);
 
     // Instantaneous coefficient of performance: heat out over electricity in, both as the
     // meters report them in mW.
@@ -444,6 +556,12 @@ static void publish_home_state(void *arg)
                         (double)home_manager->electrical_voltage_mv / 1000.0);
     add_reading_or_null(root, "electrical_current", home_manager->has_electrical_current,
                         (double)home_manager->electrical_current_ma / 1000.0);
+    add_reading_or_null(root, "ufh_flow_temperature", home_manager->has_ufh_flow_temperature,
+                        (double)home_manager->ufh_flow_temperature / 100.0);
+    add_reading_or_null(root, "ufh_return_temperature", home_manager->has_ufh_return_temperature,
+                        (double)home_manager->ufh_return_temperature / 100.0);
+    add_reading_or_null(root, "ufh_output", home_manager->has_ufh_output,
+                        (double)home_manager->ufh_output_w);
 
     if (home_manager->has_dhw_running)
     {
