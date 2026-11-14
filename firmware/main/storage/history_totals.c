@@ -46,6 +46,7 @@ HIST_STATIC_ASSERT(sizeof(totals_record_t) == 64, "totals_record_t must stay 64 
 #define FIELD_ELEC_POWER      1
 #define FIELD_DHW_RUNNING     8
 #define FIELD_HEATING_RUNNING 11
+#define FIELD_DEFROSTING      (offsetof(rec_home_t, defrosting) / 2)
 
 // A signed home field, or false when it holds the sentinel.
 static bool home_field(const uint8_t *rec, size_t index, int16_t *out)
@@ -94,6 +95,35 @@ void history_totals_add(history_totals_t *totals, const uint8_t *rec, uint16_t i
     }
 }
 
+void history_defrost_add(history_defrost_t *defrost, const uint8_t *rec, uint16_t interval_s)
+{
+    int16_t flag = 0;
+
+    if (!home_field(rec, FIELD_DEFROSTING, &flag)) {
+        return;
+    }
+
+    defrost->known_slots++;
+
+    if (flag != 1) {
+        return;
+    }
+
+    defrost->defrost_slots++;
+    defrost->seconds += interval_s;
+
+    int16_t heat = 0;
+    int16_t elec = 0;
+
+    if (home_field(rec, FIELD_HEAT_POWER, &heat)) {
+        defrost->energy.heat_ws += (int64_t)heat * interval_s;
+    }
+
+    if (home_field(rec, FIELD_ELEC_POWER, &elec)) {
+        defrost->energy.elec_ws += (int64_t)elec * interval_s;
+    }
+}
+
 void history_totals_accumulate(history_totals_t *into, const history_totals_t *from)
 {
     into->overall.heat_ws   += from->overall.heat_ws;
@@ -114,9 +144,7 @@ bool history_totals_scan_file(const char *path, history_totals_t *out)
     }
 
     history_header_t hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != HISTORY_MAGIC ||
-        hdr.version != HISTORY_VERSION || hdr.sensor_kind != KIND_HOME ||
-        hdr.record_size != sizeof(rec_home_t)) {
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || history_check_header(&hdr, KIND_HOME) != HISTORY_HEADER_OK) {
         fclose(f);
         ESP_LOGW(TAG, "Not a readable home series: %s", path);
         return false;
@@ -148,6 +176,21 @@ bool history_totals_scan_file(const char *path, history_totals_t *out)
 // nothing newer to summarise. Both are only touched from the flush task.
 static char s_last_date[12];
 static char s_caught_up_on[12];
+
+// True for a home day still in the version 2 layout, which needs converting off the device.
+static bool is_old_format(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        return false;
+    }
+
+    history_header_t hdr;
+    bool old = fread(&hdr, sizeof(hdr), 1, f) == 1 &&
+               history_check_header(&hdr, KIND_HOME) == HISTORY_HEADER_OLD_FORMAT;
+    fclose(f);
+    return old;
+}
 
 static bool is_date(const char *s)
 {
@@ -255,8 +298,18 @@ void history_totals_backfill_one(void)
 
     // A day that cannot be read is still recorded, as zeros, so the cursor moves past it rather
     // than retrying the same file every minute and never reaching the days after it.
+    //
+    // Except a day in the old record layout. That one is readable once the card is converted, and
+    // a zero cached for it now would stay in the totals after it was. So the cache waits at it:
+    // the days after it are summarised once it has been converted, and until then the all-days
+    // figures stop there. The UI is already telling the user to convert the card.
     char path[HISTORY_PATH_MAX];
     if (history_path_for_date(KIND_HOME, 0, next, path, sizeof(path))) {
+        if (is_old_format(path)) {
+            strlcpy(s_caught_up_on, today, sizeof(s_caught_up_on));
+            ESP_LOGW(TAG, "Not summarising %s until it is converted", next);
+            return;
+        }
         history_totals_scan_file(path, &rec.totals);
     }
 

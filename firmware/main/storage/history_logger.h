@@ -61,6 +61,11 @@ void     history_logger_set_interval(uint16_t interval_s);
 uint16_t history_logger_interval(void);
 uint16_t history_logger_active_interval(void);
 
+// How many home days on the card are still in the version 2 record layout and need converting
+// with history_convert/. Counted once, when the logger's task starts; 0 with no card. The logger
+// never writes to such a file, and the readers report it rather than reading it.
+uint32_t history_logger_old_format_days(void);
+
 #ifdef __cplusplus
 }
 #endif

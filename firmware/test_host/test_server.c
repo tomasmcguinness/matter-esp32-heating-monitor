@@ -21,9 +21,14 @@
 #include "mcp/mcp_server.h"
 #include "storage/history_format.h"
 #include "storage/history_paths.h"
+#include "history_convert.h"
 #include "storage/time_sync.h"
 
 #define FIXTURE_DIR "fixture_sdcard"
+// Where the night is first written, in the version 2 layout, before history_convert turns it into
+// the fixture day. Every MCP check below therefore runs against a converted day, which is what
+// shows converting changes nothing the tools report.
+#define V2_DIR      "fixture_v2"
 #define STEP_S      5
 #define NIGHT       1768435200u // 2026-01-15T00:00:00Z, also local midnight
 #define AT(h, m)    (NIGHT + (h) * 3600u + (m) * 60u)
@@ -191,10 +196,11 @@ static bool within(uint32_t ts, uint32_t from, uint32_t to) { return ts >= from 
 static void write_night(void)
 {
     mkdir(FIXTURE_DIR, 0755);
+    mkdir(V2_DIR, 0755);
 
-    FILE *f = fopen(FIXTURE_DIR "/home-2026-01-15", "wb");
-    history_header_t hdr = {.magic = HISTORY_MAGIC, .version = HISTORY_VERSION, .sensor_kind = KIND_HOME,
-                            .interval_s = STEP_S, .base_ts = NIGHT, .record_size = sizeof(rec_home_t)};
+    FILE *f = fopen(V2_DIR "/home-2026-01-15", "wb");
+    history_header_t hdr = {.magic = HISTORY_MAGIC, .version = HISTORY_HOME_V2_VERSION, .sensor_kind = KIND_HOME,
+                            .interval_s = STEP_S, .base_ts = NIGHT, .record_size = HISTORY_HOME_V2_RECORD_SIZE};
     fwrite(&hdr, sizeof(hdr), 1, f);
 
     for (uint32_t ts = NIGHT; ts < AT(6, 0); ts += STEP_S) {
@@ -214,21 +220,33 @@ static void write_night(void)
         r.outdoor_temp_c100 = 400;
         r.heating_running   = heating ? 1 : 0;
         r.dhw_running       = dhw ? 1 : 0;
-        fwrite(&r, sizeof(r), 1, f);
+        fwrite(&r, HISTORY_HOME_V2_RECORD_SIZE, 1, f); // the old record: the first 28 bytes
     }
     fclose(f);
+
+    history_convert_summary_t sum;
+    FILE                     *quiet = fopen("/dev/null", "w");
+    CHECK(history_convert_dir(V2_DIR, FIXTURE_DIR, quiet, &sum) == 0);
+    fclose(quiet);
+    CHECK(sum.converted == 1 && sum.failed == 0);
+
+    remove(V2_DIR "/home-2026-01-15");
+    rmdir(V2_DIR);
 }
 
 // The kitchen and its radiator over the same night. The radiator's file starts an hour in, as one
 // does when its sensor first reports mid-day: the slots before that are simply not in range of
 // anything, and a reader that joined on array index rather than time would be an hour out.
+//
+// Both are written at version 2 with the same record sizes as before the home record was widened:
+// rooms and radiators did not change, so a file from before the upgrade must still read.
 static void write_rooms(void)
 {
     mkdir(FIXTURE_DIR "/room-1", 0755);
     mkdir(FIXTURE_DIR "/rad-3", 0755);
 
     FILE *f = fopen(FIXTURE_DIR "/room-1/2026-01-15", "wb");
-    history_header_t hdr = {.magic = HISTORY_MAGIC, .version = HISTORY_VERSION, .sensor_kind = KIND_ROOM,
+    history_header_t hdr = {.magic = HISTORY_MAGIC, .version = HISTORY_ROOM_VERSION, .sensor_kind = KIND_ROOM,
                             .interval_s = STEP_S, .base_ts = NIGHT, .record_size = sizeof(rec_room_t)};
     fwrite(&hdr, sizeof(hdr), 1, f);
     for (uint32_t ts = NIGHT; ts < AT(6, 0); ts += STEP_S) {

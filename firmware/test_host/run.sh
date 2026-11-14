@@ -1,8 +1,11 @@
 #!/bin/sh
-# Builds and runs the host tests for the MCP server. No board needed.
+# Builds and runs the host tests for the MCP server, the history converter and the history totals. No board needed.
 #
+#   test_convert the offline history converter (../history_convert) and the format header checks
+#   test_totals  the history totals' defrost accounting (the History page's defrost electricity)
 #   test_mcp     the plain-C modules: cycle detection, point caps, timestamps, the zone table
-#   test_server  the HTTP and JSON-RPC layer, against a day file in a temporary directory
+#   test_server  the HTTP and JSON-RPC layer, against a day file in a temporary directory, written
+#                in the old record layout and converted with history_convert first
 #
 # test_server uses ESP-IDF's copy of cJSON, so it needs IDF_PATH (or the usual install location).
 set -e
@@ -11,7 +14,14 @@ cd "$(dirname "$0")"
 IDF="${IDF_PATH:-$HOME/esp/esp-idf-v5.5.4}"
 CJSON="$IDF/components/json/cJSON"
 MCP=../main/mcp
+CONVERT=../history_convert
 FLAGS="-std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined"
+
+cc $FLAGS -I $CONVERT -I ../main/storage test_convert.c $CONVERT/history_convert.c -o test_convert
+./test_convert
+
+cc $FLAGS -I stubs -I ../main/storage test_totals.c ../main/storage/history_totals.c -o test_totals
+./test_totals
 
 cc $FLAGS -I $MCP -I ../main/storage test_mcp.c $MCP/mcp_cycles.c $MCP/mcp_series.c $MCP/mcp_time.c \
    ../main/storage/timezones.c -lm -o test_mcp
@@ -26,6 +36,6 @@ cc $FLAGS -I $MCP -I ../main/storage test_mcp.c $MCP/mcp_cycles.c $MCP/mcp_serie
 
 # mcp_server.c is built on its own so that only its opendir is pointed at the fixture directory.
 cc $FLAGS -I stubs -I ../main -I "$CJSON" -Dopendir=test_opendir -c $MCP/mcp_server.c -o mcp_server.o
-cc $FLAGS -I stubs -I ../main -I "$CJSON" test_server.c mcp_server.o tools_json.gen.c \
-   $MCP/mcp_cycles.c $MCP/mcp_series.c $MCP/mcp_time.c "$CJSON/cJSON.c" -lm -o test_server
+cc $FLAGS -I stubs -I ../main -I ../main/storage -I $CONVERT -I "$CJSON" test_server.c mcp_server.o tools_json.gen.c \
+   $CONVERT/history_convert.c $MCP/mcp_cycles.c $MCP/mcp_series.c $MCP/mcp_time.c "$CJSON/cJSON.c" -lm -o test_server
 ./test_server

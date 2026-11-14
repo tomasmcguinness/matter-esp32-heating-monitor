@@ -23,6 +23,17 @@ function PageHeader({ title, children }: { title: ReactNode, children?: ReactNod
         <span className="page-header-actions">{children}</span>
       </h1>
       <hr />
+      {/* On every tab, because a card left unconverted is otherwise only a line in the serial log:
+          those days can't be charted or totalled, and today's samples aren't being recorded if
+          today's file is one of them. */}
+      {!!home?.historyNeedsConversion && (
+        <div className="alert alert-warning">
+          {home.historyNeedsConversion} {home.historyNeedsConversion === 1 ? "day" : "days"} of
+          history on the SD card {home.historyNeedsConversion === 1 ? "is" : "are"} in the old
+          format and can't be read until the card is converted. Nothing is written to those days.
+          Power the monitor off and follow "Converting the SD card" in firmware/CLAUDE.md.
+        </div>
+      )}
     </>
   );
 }

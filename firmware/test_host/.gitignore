@@ -3,3 +3,9 @@ test_server
 *.o
 *.gen.c
 fixture_sdcard/
+test_convert
+convert_in/
+convert_out/
+convert_out2/
+fixture_v2/
+test_totals

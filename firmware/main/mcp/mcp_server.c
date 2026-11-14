@@ -281,9 +281,9 @@ static FILE *open_day(uint8_t kind, uint8_t inst, uint32_t day, history_header_t
         return NULL;
     }
 
-    if (fread(hdr, sizeof(*hdr), 1, f) != 1 || hdr->magic != HISTORY_MAGIC ||
-        hdr->version != HISTORY_VERSION || hdr->sensor_kind != kind ||
-        hdr->record_size != history_record_size(kind) || hdr->interval_s == 0) {
+    // A home day still in the old record layout is skipped like any other unreadable file: the
+    // tools see it as a day with nothing recorded, and the web UI is where the user is told.
+    if (fread(hdr, sizeof(*hdr), 1, f) != 1 || history_check_header(hdr, kind) != HISTORY_HEADER_OK) {
         fclose(f);
         return NULL;
     }

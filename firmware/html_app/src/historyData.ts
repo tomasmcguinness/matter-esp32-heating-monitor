@@ -9,6 +9,9 @@ import type uPlot from "uplot";
 
 // The response from GET /api/history and GET /api/history/room|radiator. energyWh and cop are
 // KIND_HOME only: the other kinds carry no power column, so the firmware omits the tail.
+// `storage` is "ok", "unavailable" with no SD card, or "needsConversion" for a home day still in
+// the record layout from before defrost was recorded -- the card was not converted before the
+// firmware was flashed.
 export type HistoryResponse = {
   storage: string;
   kind?: number;
@@ -23,12 +26,18 @@ export type HistoryResponse = {
   // KIND_HOME only: the same energy over just the slots recorded as heating and as hot water.
   // Absent from firmware that predates the split.
   modes?: { heating?: ModeEnergy; hotWater?: ModeEnergy };
+  // What the slots flagged as defrosting used: part of energyWh and modes, not in addition to them.
+  // Null for a day on which the defrost flag was never recorded (absent from older firmware).
+  defrost?: DefrostEnergy | null;
   reason?: string;
 };
 
 // Energy over a set of slots, and the COP it gives: heat out / electricity in, null when no
 // electricity was recorded.
 export type ModeEnergy = { heatWh: number; electricalWh: number; cop: number | null };
+
+// Heat is the heat meter's net figure while defrosting, normally negative.
+export type DefrostEnergy = { heatWh: number; electricalWh: number; minutes: number };
 
 // The response from GET /api/history/totals: every recorded day summed. `from`, `to` and the
 // three figures are absent when `days` is 0.
@@ -73,9 +82,13 @@ export function fieldsMatch(body: HistoryResponse, expected: string[]): boolean 
 // A stretch of the day the heat pump spent in one mode, as unix seconds. Idle time has no span.
 // "noData" is a stretch where neither state was recorded -- the heat pump's subscription was lost,
 // or the device was not running -- so an outage is not mistaken for the heat pump being idle.
-export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" | "noData" };
+//
+// "defrost" is not a mode: it happens inside a heating or hot water run, and its spans overlap
+// theirs. Chart draws it on a row of its own under the mode strip for that reason.
+export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" | "noData" | "defrost" };
 
-// The heat pump's mode over a day, from the home series' heatingRunning and dhwRunning columns.
+// The heat pump's mode over a day, from the home series' heatingRunning and dhwRunning columns,
+// plus when it was defrosting.
 // Those are found by name rather than position, so this does not care where they sit in the
 // record, and a day recorded before either existed -- or by firmware without them -- is simply a
 // day with no spans.
@@ -90,7 +103,49 @@ export type ModeSpan = { from: number; to: number; mode: "heating" | "hotWater" 
 // A bucket with both columns null is "noData", but only on a day where the mode was recorded at
 // least once. A day where it never was -- recorded before the columns existed, or with no heat
 // pump picked -- is still a day with no spans, rather than a strip that is grey end to end.
+//
+// The defrost spans follow the mode spans in the list, built the same way from the defrosting
+// column -- see defrostSpans().
 export function modeSpans(body: HistoryResponse | null): ModeSpan[] {
+  return [...runningSpans(body), ...defrostSpans(body)];
+}
+
+// When the heat pump was defrosting, from the home series' defrosting column. Only time it was
+// recorded as defrosting gets a span: a day recorded before the column existed, by a heat pump with
+// no defrost endpoint, or converted from the old format reads null throughout and has none.
+//
+// The same bucket caveat as the modes applies, and matters more: a defrost lasts minutes, so one
+// shorter than a bucket can read 0 in every bucket it touches and not be drawn at all.
+function defrostSpans(body: HistoryResponse | null): ModeSpan[] {
+  const points = body?.points ?? [];
+  const col = (body?.fields?.indexOf("defrosting") ?? -1) + 1;
+
+  if (points.length === 0 || col === 0) {
+    return [];
+  }
+
+  const bucketWidth = (body?.interval ?? 0) * (body?.stride ?? 1);
+  const spans: ModeSpan[] = [];
+
+  for (const point of points) {
+    if ((point[col] ?? 0) <= 0) {
+      continue;
+    }
+
+    const ts = point[0] as number;
+    const last = spans[spans.length - 1];
+
+    if (last && ts <= last.to) {
+      last.to = ts + bucketWidth;
+    } else {
+      spans.push({ from: ts, to: ts + bucketWidth, mode: "defrost" });
+    }
+  }
+
+  return spans;
+}
+
+function runningSpans(body: HistoryResponse | null): ModeSpan[] {
   const points = body?.points ?? [];
   const heatingCol = (body?.fields?.indexOf("heatingRunning") ?? -1) + 1;
   const dhwCol = (body?.fields?.indexOf("dhwRunning") ?? -1) + 1;

@@ -5,6 +5,7 @@
 #include <ctime>
 #include <algorithm>
 #include <vector>
+#include <dirent.h>
 #include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
@@ -38,7 +39,7 @@ static const char *TAG = "history_logger";
 //
 // This is only a safety valve: flush_once drains the buffer every minute whether or not a card
 // is there to write to, so the cap is reached only if the flush task itself is starved. 4096
-// still leaves a dozen flushes of headroom at that size, and bounds the memory at ~160 KB.
+// still leaves a dozen flushes of headroom at that size, and bounds the memory at ~210 KB.
 #define MAX_PENDING 4096
 
 struct pending_t {
@@ -170,6 +171,12 @@ static size_t build_record(uint8_t *out)
 
     if (h->has_heating_running) {
         r.heating_running = h->heating_running ? 1 : 0;
+    }
+
+    // Unknown -- the sentinel -- for a heat pump with no defrost endpoint, as well as before one
+    // has reported. 0 means the heat pump said it was not defrosting.
+    if (h->has_defrosting) {
+        r.defrosting = h->defrosting ? 1 : 0;
     }
 
     if (h->has_electrical_voltage) {
@@ -417,7 +424,7 @@ static void write_series_day(uint8_t kind, uint8_t inst, uint32_t base_ts,
         }
         history_header_t hdr;
         hdr.magic       = HISTORY_MAGIC;
-        hdr.version     = HISTORY_VERSION;
+        hdr.version     = history_version(kind);
         hdr.sensor_kind = kind;
         hdr.interval_s  = s_interval_s;
         hdr.base_ts     = base_ts;
@@ -433,11 +440,23 @@ static void write_series_day(uint8_t kind, uint8_t inst, uint32_t base_ts,
     // The interval in the header is what this file was written at. If the user changed it
     // mid-day, keep writing at the old cadence rather than corrupting the slot arithmetic;
     // the new interval takes effect with tomorrow's file.
+    //
+    // A file this firmware did not write is never appended to, overwritten or truncated: the day's
+    // samples are dropped instead. In particular a home day still in the version 2 layout -- the
+    // card was not converted before this firmware was flashed -- keeps every record it has, and
+    // stays convertible. The flush task's scan has already counted it for the warning in the UI.
     history_header_t hdr;
     fseek(f, 0, SEEK_SET);
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != HISTORY_MAGIC ||
-        hdr.record_size != rec_size) {
-        ESP_LOGE(TAG, "Bad header in %s, skipping", path);
+    history_header_status_t status = HISTORY_HEADER_BAD;
+    if (fread(&hdr, sizeof(hdr), 1, f) == 1) {
+        status = history_check_header(&hdr, kind);
+    }
+    if (status != HISTORY_HEADER_OK) {
+        if (status == HISTORY_HEADER_OLD_FORMAT) {
+            ESP_LOGE(TAG, "%s is in the old history format and needs converting; not writing to it", path);
+        } else {
+            ESP_LOGE(TAG, "Bad header in %s, skipping", path);
+        }
         fclose(f);
         return;
     }
@@ -544,8 +563,67 @@ static void flush_once(void)
     }
 }
 
+// How many home days on the card are still in the version 2 layout, found once at start-up.
+// Written by the flush task only, read from anywhere: a 32-bit store is atomic on this core.
+static volatile uint32_t s_old_format_days;
+
+// Counts the home days the card holds in the old layout. The firmware has no migration code --
+// the card is converted offline, see history_convert/ -- so all it can do is make a missed
+// conversion obvious rather than leave it to a "Bad header" line in the serial log. Once is
+// enough: the board is off while the card is being converted, so the answer can only change
+// across a restart.
+//
+// Rooms and radiators are not scanned. Their format did not change, so none can be old.
+static void scan_old_format_days(void)
+{
+    if (!sd_card_available()) {
+        return;
+    }
+
+    DIR *dir = opendir(SD_CARD_MOUNT_POINT);
+    if (!dir) {
+        return;
+    }
+
+    uint32_t       found = 0;
+    struct dirent *ent;
+    char           path[HISTORY_PATH_MAX];
+
+    while ((ent = readdir(dir)) != NULL) {
+        if (strncmp(ent->d_name, "home-", 5) != 0) {
+            continue;
+        }
+        if (snprintf(path, sizeof(path), "%s/%s", SD_CARD_MOUNT_POINT, ent->d_name) >= (int)sizeof(path)) {
+            continue;
+        }
+
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            continue;
+        }
+
+        history_header_t hdr;
+        if (fread(&hdr, sizeof(hdr), 1, f) == 1 &&
+            history_check_header(&hdr, KIND_HOME) == HISTORY_HEADER_OLD_FORMAT) {
+            found++;
+        }
+        fclose(f);
+    }
+    closedir(dir);
+
+    s_old_format_days = found;
+
+    if (found) {
+        ESP_LOGE(TAG, "%lu home history days are in the old format and need converting -- see "
+                      "\"Converting the SD card\" in firmware/CLAUDE.md",
+                 (unsigned long)found);
+    }
+}
+
 static void flush_task(void *arg)
 {
+    scan_old_format_days();
+
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(FLUSH_INTERVAL_MS));
         flush_once();
@@ -593,6 +671,11 @@ uint16_t history_logger_interval(void)
 uint16_t history_logger_active_interval(void)
 {
     return s_interval_s;
+}
+
+uint32_t history_logger_old_format_days(void)
+{
+    return s_old_format_days;
 }
 
 esp_err_t history_logger_init(home_manager_t *home_manager)

@@ -68,6 +68,14 @@ typedef struct {
     bool has_heating_running;
     bool heating_running;
 
+    // True while the heat pump is defrosting its outdoor coil. Independent of the two above: a
+    // defrost happens during heating or hot water and does not change which is running. From the
+    // StateValue of the picked heat pump node's Boolean State endpoint labelled "Defrost" -- see
+    // update_heat_pump_running(). Absent for a heat pump with no such endpoint, and until it reports.
+    // Transient like the rest of the readings: not in the NVS blob.
+    bool has_defrosting;
+    bool defrosting;
+
     // Instantaneous coefficient of performance, 0.01 units, derived by update_home().
     bool has_cop;
     int16_t cop_x100;

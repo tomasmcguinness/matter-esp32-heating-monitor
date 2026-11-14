@@ -8,8 +8,13 @@
 #define DEVICE_TYPE_THERMOSTAT 769
 #define DEVICE_TYPE_WATER_HEATER 1295
 
-// Endpoints we keep readings for, across every heat pump node. The Kronoterm adapter uses three:
-// the heat pump itself, one heating loop and the hot water tank.
+// The Descriptor TagList label of the Boolean State sub-part whose StateValue is true while the heat
+// pump defrosts. Agreed with the Kronoterm ADAPT adapter (matter-esp32-modbus-adapter, TASK-4.1).
+// Matched without regard to case.
+#define HEAT_PUMP_DEFROST_LABEL "Defrost"
+
+// Endpoints we keep readings for, across every heat pump node. The Kronoterm adapter uses four:
+// the heat pump itself, one heating loop, the hot water tank and the defrost flag.
 #define HEAT_PUMP_MAX_ENDPOINTS 8
 
 // Water Heater Mode's SupportedModes, as far as we keep it. The spec allows a label 64 characters.
@@ -68,6 +73,11 @@ typedef struct
 
     uint8_t supported_mode_count;
     heat_pump_mode_t supported_modes[HEAT_PUMP_MAX_MODES];
+
+    // BooleanState.StateValue. Kept for any Boolean State endpoint of a heat pump node; only the one
+    // labelled "Defrost" means anything today -- see HEAT_PUMP_DEFROST_LABEL.
+    bool has_state_value;
+    bool state_value;
 } heat_pump_endpoint_t;
 
 typedef struct

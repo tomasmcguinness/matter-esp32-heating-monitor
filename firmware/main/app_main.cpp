@@ -1201,6 +1201,40 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             schedule_home_broadcast();
         }
     }
+    else if (path.mClusterId == BooleanState::Id && path.mAttributeId == BooleanState::Attributes::StateValue::Id &&
+             node_has_device_type(find_node(&g_node_manager, remote_node_id), DEVICE_TYPE_HEAT_PUMP))
+    {
+        // A heat pump's Boolean State sub-part -- the defrost flag, on the Kronoterm adapter. Kept for
+        // every heat pump node, picked or not, like the readings above. Which endpoint is the defrost
+        // one is worked out from its label in update_heat_pump_running(), not here, so a node paired
+        // before its label was read still keeps the state.
+        //
+        bool value;
+
+        if (chip::app::DataModel::Decode(*data, value) != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to decode BooleanState StateValue");
+            return;
+        }
+
+        heat_pump_endpoint_t *heat_pump = heat_pump_get_endpoint(&g_heat_pump_manager, remote_node_id, path.mEndpointId);
+
+        if (heat_pump == NULL)
+        {
+            return;
+        }
+
+        heat_pump->has_state_value = true;
+        heat_pump->state_value = value;
+
+        ESP_LOGI(TAG, "Heat pump endpoint %u: BooleanState %s", path.mEndpointId, value ? "true" : "false");
+
+        if (g_home_manager.heat_pump_node_id == remote_node_id)
+        {
+            update_heat_pump_running();
+            schedule_home_broadcast();
+        }
+    }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
         ESP_LOGI(TAG, "Processing TemperatureMeasurement->MeasuredValue attribute response...");
@@ -3287,6 +3321,31 @@ static bool endpoint_has_device_type(const endpoint_entry_t *endpoint, uint32_t 
     return false;
 }
 
+// The heat pump node's defrost endpoint: the one named HEAT_PUMP_DEFROST_LABEL. The name comes from
+// the sub-part's Descriptor TagList label, read when the node is interviewed at commissioning, so a
+// heat pump paired before it had such an endpoint has to be re-paired for it to be found. NULL for a
+// heat pump without one, which leaves defrost unknown.
+//
+static const endpoint_entry_t *find_defrost_endpoint(const matter_node_t *node)
+{
+    if (node == NULL)
+    {
+        return NULL;
+    }
+
+    for (uint16_t i = 0; i < node->endpoints_count; i++)
+    {
+        const endpoint_entry_t *endpoint = &node->endpoints[i];
+
+        if (endpoint->name && strcasecmp(endpoint->name, HEAT_PUMP_DEFROST_LABEL) == 0)
+        {
+            return endpoint;
+        }
+    }
+
+    return NULL;
+}
+
 // The Home page's Heat Pump section: the power the heat pump draws, plus whatever sits on the same
 // node -- its temperature sensors, and a zone for each heating loop (Thermostat) and hot water
 // tank (Water Heater). Null while no heat pump is picked or the node is gone. Everything is in the
@@ -3329,6 +3388,20 @@ static void add_heat_pump_json(cJSON *root)
     heat_pump_endpoint_t *self = heat_pump_find_endpoint(&g_heat_pump_manager, node->node_id, g_home_manager.heat_pump_endpoint_id);
 
     add_number_or_null(heat_pump, "power", self && self->has_active_power, self ? (double)self->active_power_mw : 0);
+
+    // Only for a heat pump that has a defrost endpoint, so the section has no Defrost card at all
+    // for one that cannot report it. Null until the endpoint has reported.
+    if (find_defrost_endpoint(node) != NULL)
+    {
+        if (g_home_manager.has_defrosting)
+        {
+            cJSON_AddBoolToObject(heat_pump, "defrosting", g_home_manager.defrosting);
+        }
+        else
+        {
+            cJSON_AddNullToObject(heat_pump, "defrosting");
+        }
+    }
 
     cJSON *temperatures = cJSON_AddArrayToObject(heat_pump, "temperatures");
     cJSON *zones = cJSON_AddArrayToObject(heat_pump, "zones");
@@ -3564,6 +3637,20 @@ static cJSON *build_home_json(void)
         cJSON_AddNullToObject(root, "dhwRunning");
     }
 
+    // Null with no heat pump picked, for one with no defrost endpoint, and until it has reported.
+    if (g_home_manager.has_defrosting)
+    {
+        cJSON_AddBoolToObject(root, "defrosting", g_home_manager.defrosting);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "defrosting");
+    }
+
+    // How many home days on the SD card are still in the old record layout. Not 0 means the card
+    // was not converted before this firmware was flashed; every tab shows a warning until it is.
+    cJSON_AddNumberToObject(root, "historyNeedsConversion", history_logger_old_format_days());
+
     cJSON_AddNumberToObject(root, "totalPredictedHeatLoss", g_home_manager.total_predicted_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "totalMeasuredHeatLoss", g_home_manager.total_measured_heat_loss_per_degree);
     cJSON_AddNumberToObject(root, "predictedHeatLossAtCurrentTemperature", g_home_manager.total_predicted_heat_loss_at_current_temperature);
@@ -3711,17 +3798,38 @@ static void forget_commodity_price_if_unsubscribed(uint64_t node_id)
 // A state is absent until an endpoint of its kind has reported, and again once the node's readings
 // are dropped with its subscription, so history records the sentinel rather than a stale mode.
 //
+// Defrosting is worked out here too, from the StateValue of the endpoint labelled "Defrost" (see
+// find_defrost_endpoint()). It is absent for a heat pump without one, and has no bearing on the two
+// modes.
+//
 static void update_heat_pump_running(void)
 {
     bool has_heating = false;
     bool heating = false;
     bool has_dhw = false;
     bool dhw = false;
+    bool has_defrosting = false;
+    bool defrosting = false;
 
     matter_node_t *node = find_node(&g_node_manager, g_home_manager.heat_pump_node_id);
 
     if (g_home_manager.heat_pump_node_id != 0 && node != NULL)
     {
+        // Defrost is a flag of its own, not a third mode: it happens inside a heating run or a hot
+        // water run, and neither of those changes because of it.
+        const endpoint_entry_t *defrost = find_defrost_endpoint(node);
+
+        if (defrost != NULL)
+        {
+            heat_pump_endpoint_t *state = heat_pump_find_endpoint(&g_heat_pump_manager, node->node_id, defrost->endpoint_id);
+
+            if (state != NULL && state->has_state_value)
+            {
+                has_defrosting = true;
+                defrosting = state->state_value;
+            }
+        }
+
         for (uint16_t i = 0; i < node->endpoints_count; i++)
         {
             const endpoint_entry_t *endpoint = &node->endpoints[i];
@@ -3762,6 +3870,8 @@ static void update_heat_pump_running(void)
     g_home_manager.has_dhw_running = has_dhw;
     g_home_manager.heating_running = heating;
     g_home_manager.has_heating_running = has_heating;
+    g_home_manager.defrosting = defrosting;
+    g_home_manager.has_defrosting = has_defrosting;
 
     // A radiator's output is zero unless the heat pump is heating, so every one of them has a new
     // figure the moment that starts or stops, without any temperature having moved.

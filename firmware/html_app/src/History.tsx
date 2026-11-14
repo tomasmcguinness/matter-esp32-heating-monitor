@@ -35,6 +35,12 @@ const FIELDS = [
   "heatingRunning",
   "reserved1",
   "reserved2",
+  "defrosting",
+  "reserved3",
+  "reserved4",
+  "reserved5",
+  "reserved6",
+  "reserved7",
 ];
 
 // Column index within a point row. Element 0 is the timestamp, so a field's index is its
@@ -79,13 +85,17 @@ function CopCard({ title, cop }: { title: string; cop: number | null | undefined
   );
 }
 
-function EnergyCard({ title, kwh }: { title: string; kwh: number | null }) {
+// `note` is shown small and muted after the figure, in brackets, e.g. the defrost share.
+function EnergyCard({ title, kwh, note }: { title: string; kwh: number | null; note?: string | null }) {
   return (
     <div className="card">
       <div className="card-header">{title}</div>
       <div className="card-body">
         <p className="card-title">
-          <h3>{kwh != null ? `${kwh.toFixed(1)} kWh` : "-"}</h3>
+          <h3>
+            {kwh != null ? `${kwh.toFixed(1)} kWh` : "-"}
+            {kwh != null && note && <small className="text-muted fs-6 ms-2">({note})</small>}
+          </h3>
         </p>
       </div>
     </div>
@@ -177,6 +187,10 @@ function History() {
 
   const elecKwh = (data?.energyWh?.electrical ?? 0) / 1000;
 
+  // The part of that used while defrosting. No brackets on a day without the defrost flag, since
+  // unknown is not zero.
+  const defrostNote = data?.defrost ? `${(data.defrost.electricalWh / 1000).toFixed(1)} kWh defrost` : null;
+
   return (
     <>
       <PageHeader title="History" />
@@ -191,6 +205,13 @@ function History() {
         <div className="alert alert-warning">
           No SD card is fitted, so nothing is being recorded. Fit a FAT32-formatted card and
           restart the device.
+        </div>
+      )}
+
+      {!loading && !error && data?.storage === "needsConversion" && (
+        <div className="alert alert-warning">
+          {date} was recorded in the old history format, so it can't be shown until the SD card
+          has been converted. Nothing has been lost: the day is still on the card as it was.
         </div>
       )}
 
@@ -218,7 +239,7 @@ function History() {
           <div className="card-group" style={{ marginBottom: "20px" }}>
             <EnergyCard title="Heating" kwh={modeHeatKwh(data?.modes?.heating)} />
             <EnergyCard title="Hot water" kwh={modeHeatKwh(data?.modes?.hotWater)} />
-            <EnergyCard title="Electricity in" kwh={elecKwh} />
+            <EnergyCard title="Electricity in" kwh={elecKwh} note={defrostNote} />
           </div>
 
           {/* The day's energy out over energy in: for the slots recorded as heating, for those

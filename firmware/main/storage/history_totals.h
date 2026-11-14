@@ -38,6 +38,27 @@ void history_totals_add(history_totals_t *totals, const uint8_t *rec, uint16_t i
 
 void history_totals_accumulate(history_totals_t *into, const history_totals_t *from);
 
+// What defrosting used over a stretch of the home series (TASK-41). Separate from
+// history_totals_t because that is the cop-totals cache record, whose layout is fixed.
+//
+// Defrost is a flag of its own, never a mode: a defrost slot is also in `overall` and in whichever
+// mode it happened in, so this energy is part of those totals, not in addition to them. Heat is
+// the heat meter's net figure while defrosting, normally negative -- the cycle runs in reverse.
+//
+// `known_slots` counts slots that recorded the flag at all. While it is 0 the defrost figures are
+// unknown -- a day from before defrost was recorded, or one converted to the wider record -- not
+// zero, and callers report them as null.
+typedef struct {
+    uint32_t      known_slots;
+    uint32_t      defrost_slots;
+    uint32_t      seconds;     // defrost_slots times the interval
+    energy_pair_t energy;
+} history_defrost_t;
+
+// Adds one rec_home_t slot. As history_totals_add, a power field holding the sentinel is skipped
+// on its own.
+void history_defrost_add(history_defrost_t *defrost, const uint8_t *rec, uint16_t interval_s);
+
 // Totals for one whole home day file. False if it cannot be opened or is not a home series this
 // firmware can read, in which case `out` is left zeroed.
 bool history_totals_scan_file(const char *path, history_totals_t *out);

@@ -28,6 +28,8 @@ type HeatPumpZone = {
 
 export type HeatPumpData = {
   power: number | null;
+  // Only present for a heat pump with a defrost endpoint; null until that has reported.
+  defrosting?: boolean | null;
   temperatures: HeatPumpTemperature[];
   zones: HeatPumpZone[];
 };
@@ -117,6 +119,8 @@ function HeatPump({ heatPump, subscription }: { heatPump: HeatPumpData | null | 
       <h4 className="d-flex justify-content-between align-items-center" style={{ marginTop: '20px' }}>Heat Pump<SubscriptionPill state={subscription} /></h4>
       <div className="card-group" style={{ marginBottom: '5px' }}>
         <Card title="Power"><ElectricalPower>{heatPump?.power}</ElectricalPower></Card>
+        {heatPump?.defrosting !== undefined &&
+          <Card title="Defrost">{heatPump.defrosting === null ? "-" : heatPump.defrosting ? "Defrosting" : "No"}</Card>}
         {heatPump?.temperatures.map(t =>
           <Card key={t.endpointId} title={`${t.name ?? `Endpoint ${t.endpointId}`} Temperature`}><Temperature>{t.temperature}</Temperature></Card>
         )}

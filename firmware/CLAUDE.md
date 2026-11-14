@@ -120,7 +120,9 @@ The project has two distinct parts that must both be built:
 
 Other directories under `main/`: `storage/` (SD card history), `mqtt/` (Home Assistant), `mcp/`
 (the read-only MCP server), `emoncms/` (the emoncms uploader), `commands/` and `utilities/`. `test_host/`, beside `main/`, holds
-desktop tests for the parts of `mcp/` that need no board.
+desktop tests for the parts of `mcp/` that need no board, and for `history_convert/`, also beside
+`main/`: the PC program that converts a card's history to the current format (see *Converting the
+SD card*).
 
 All manager state bar the heat pump's is persisted to **NVS (Non-Volatile Storage)** via `save_*_to_nvs` / `load_*_from_nvs` functions.
 
@@ -148,6 +150,22 @@ also in the MQTT home state (`heating_running`, `dhw_running`; true, false or nu
 to Home Assistant as binary sensors. `GET /api/home` and the `home` channel carry them as
 `heatingRunning` and `dhwRunning` (same nulls), which `HomeStatus.tsx` shows as the mode icon in the
 Home page's heading, beside the outdoor and average indoor temperatures.
+
+**Defrost** reaches history too, as a third flag (`home_manager`'s `has_defrosting` / `defrosting`,
+the record's `defrosting`), **never a third mode**: a heat pump defrosts in the middle of a heating
+run or a hot water run, and that run's flag does not change because of it. The source is a **Boolean
+State sub-part labelled `Defrost`** (`HEAT_PUMP_DEFROST_LABEL`) — the Kronoterm ADAPT adapter's,
+from register 2011, agreed in that repo's TASK-4.1. `send_subscription()` subscribes heat pump nodes
+to `BooleanState::StateValue` on a wildcard endpoint, `attribute_data_cb` keeps it per endpoint in
+`heat_pump_manager` (`has_state_value` / `state_value`), and `update_heat_pump_running()` takes it
+from whichever endpoint of the picked node is *named* `Defrost` (`find_defrost_endpoint()`, case
+insensitive). The name comes from the Descriptor TagList label, which is read at commissioning and
+on an interview only, so **a heat pump paired before it had the endpoint must be interviewed again**
+(the Interview button on its device page; re-pairing is not needed) for defrost to be found. A heat
+pump with no such endpoint leaves defrost unknown: `defrosting` is null in `GET /api/home`, the
+`heatPump` object has no `defrosting` key (so `HeatPump.tsx` shows no Defrost card), and history
+records the sentinel. With one, `heatPump.defrosting` is true, false or null until it reports. It is
+not on MQTT or Home Assistant yet.
 
 The section is built from **everything on the heat pump's node**, not from the heat pump endpoint's
 `PartsList`, which is never read:
@@ -210,7 +228,7 @@ There are three series, **all sampled on one shared interval**:
 
 | Kind | File | Record |
 |---|---|---|
-| `KIND_HOME` | `/sdcard/home-YYYY-MM-DD` | `rec_home_t`, 28 B |
+| `KIND_HOME` | `/sdcard/home-YYYY-MM-DD` | `rec_home_t`, 40 B (version 3) |
 | `KIND_ROOM` | `/sdcard/room-<id>/YYYY-MM-DD` | `rec_room_t`, 8 B |
 | `KIND_RADIATOR` | `/sdcard/rad-<id>/YYYY-MM-DD` | `rec_radiator_t`, 8 B |
 
@@ -291,7 +309,7 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
 - `history_format.h` — the on-disk layout. **Records carry no timestamp**: a 16-byte header
   holds `base_ts`, `interval_s` and `record_size`, so slot `i` is `base_ts + i*interval_s`
   and `offset = 16 + slot*record_size`. Lookup is O(1) arithmetic, with no index and no
-  scan. `rec_home_t` is 28 bytes of 16-bit fields. `INT16_MIN`/`UINT16_MAX` mean "no
+  scan. `rec_home_t` is 40 bytes of 16-bit fields. `INT16_MIN`/`UINT16_MAX` mean "no
   reading" — zero cannot, because 0 W is a real reading and 0.00 °C a real temperature. That
   holds for every kind: rooms and radiators carry `has_*` flags, the logger writes the sentinel
   when one is false, and `history_field_is_null()` treats only the sentinel as null. Room and
@@ -301,6 +319,25 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   The record ends with **reserved fields**, and they are the point of the design. There were
   three; `heating_running` took the first, which is why it sits after the electrical columns
   rather than next to `dhw_running`.
+
+  **Versions are per kind** (`history_version()`): home is **3**, rooms and radiators are still
+  **2**. Version 3 widened `rec_home_t` from 28 to 40 bytes for the defrost flag. The 14 fields of
+  version 2, `reserved1` and `reserved2` included, are unchanged and in place. `defrosting`
+  (field 14) and `reserved3`–`reserved7` were appended after them. Versioning per kind is what
+  kept every room and radiator file readable without being rewritten. Every reader and the writer
+  check a header with `history_check_header()`, which tells a version 2 home day
+  (`HISTORY_HEADER_OLD_FORMAT`) from one that is just unreadable. **The firmware never converts or
+  writes to an old-format day**: the card is converted offline (see *Converting the SD card*
+  below). Until it is:
+  - the logger skips writing to such a file, so if today's file is one, today's samples are lost;
+  - `GET /api/history` answers a day like that with `storage: "needsConversion"`, which History
+    explains;
+  - the MCP tools treat it as a day with nothing recorded;
+  - the totals backfill stops at it rather than caching it as zeros that would outlive the
+    conversion;
+  - the flush task counts such days once at start-up (`history_logger_old_format_days()`).
+    `GET /api/home` reports the count as `historyNeedsConversion`, and `PageHeader.tsx` shows a
+    warning on every tab while it is not 0.
   `record_size` is what makes the offset arithmetic correct, so widening the record is a
   breaking change — the reader rejects a file whose `record_size` disagrees with its kind.
   A quantity added later fills a reserved field instead: `record_size` never moves, days
@@ -308,8 +345,9 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   `history_api.c` names the columns in its response so the UI picks the new one up from the
   device. Field order is load-bearing in two places — `history_api.c` integrates fields 0
   and 1 for `energyWh`/COP, and `History.tsx` charts by position. **Append to the reserved
-  tail; never reorder.** `history_unsigned_mask()` is a `uint16_t`, one bit per field, which
-  caps any record at 16 fields.
+  tail; never reorder.** Spend the seven spares before widening again: another widening means
+  another version, another offline conversion and every reader revisited. `history_unsigned_mask()`
+  is a `uint32_t`, one bit per field, which caps any record at 32 fields.
 - `history_logger.cpp` — an `esp_timer` samples every series into a RAM buffer; a separate
   task flushes once a minute (its own task because the esp_timer stack is 3584 bytes, too
   small for FATFS). Missed slots are padded with sentinels so the offset arithmetic stays
@@ -330,14 +368,23 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   striding slots and integrates energy over every slot, so kWh and COP do not change with the
   requested resolution. Energy and COP are emitted for `KIND_HOME` only — the other kinds
   carry no power column by design. Note `s_read_buf` is
-  `READ_CHUNK_RECORDS × HISTORY_MAX_RECORD_SIZE`; scale the first down if the record ever
-  widens.
+  `READ_CHUNK_RECORDS × HISTORY_MAX_RECORD_SIZE`, kept near 7 KB: `READ_CHUNK_RECORDS` went from
+  256 to 176 when the home record grew to 40 bytes. Scale it down again if the record widens.
 
   The home response's tail also carries `modes`: the same energy over only the slots recorded as
   heating and as hot water, each with its own `cop`. `GET /api/history/totals` gives the same
   three figures -- `overall`, `heating`, `hotWater` -- summed over every day on the card, with
   `from`, `to` and `days`. It is routed inside the `/api/history/*` wildcard, so it costs no URI
   handler.
+
+  It also carries **`defrost`**: `{heatWh, electricalWh, minutes}` over the slots flagged as
+  defrosting (`history_defrost_add()` in `history_totals.c`). That energy is **part of** `energyWh`
+  and of whichever mode it happened in, not in addition to them, and its heat is net, normally
+  negative. It is **null** when no slot of the day recorded the flag -- a converted day, or a heat
+  pump without a defrost endpoint -- since unknown is not zero. A day on which recording began
+  part-way covers only the recorded part. `history_defrost_t` is kept out of `history_totals_t`
+  on purpose: that struct is the 64-byte `cop-totals` cache record, so `/api/history/totals` has
+  no defrost figures.
 
   **The API is a chart endpoint and is lossy**: buckets average across `stride` slots and
   `MAX_POINTS` is 2000 against 17280 slots in a 5 s day. The exception is **`points=0`, which
@@ -379,8 +426,44 @@ flat where it already is, so history written before the other series existed is 
 made in both.
 
 There is **no retention or pruning**: files accumulate indefinitely. At the 5 s default that is
-484 KB/day for the home series plus 138 KB/day for each room and each radiator — roughly
+691 KB/day for the home series plus 138 KB/day for each room and each radiator — roughly
 3 MB/day (~1.1 GB/year) for a house with 8 rooms and 12 radiators.
+
+**Converting the SD card (home history version 2 → 3):**
+
+Firmware from TASK-40 on reads and writes only version 3 home days, and contains no migration code.
+A card with history recorded by earlier firmware has to be converted on a PC **before** the new
+firmware is flashed. `history_convert/` is that converter: a small C program built from the
+firmware's own `history_format.h`, so the two cannot disagree about the layout.
+
+1. **Power the monitor off** and take the SD card out.
+2. **Back up the whole card first**, as an untouched copy you will not run anything on:
+   `cp -a /mnt/<card>/. ~/heating-card-backup/`. Keep it until the new firmware has run for a few days.
+3. Copy the card again to a working copy: `cp -a /mnt/<card>/. ~/heating-card-copy/`.
+4. Build the converter, from the same commit as the firmware you are about to flash:
+   `firmware/history_convert/build.sh`.
+5. Convert the copy into an empty directory:
+   `firmware/history_convert/history_convert ~/heating-card-copy ~/heating-card-converted`.
+   It prints one line per home day — `converted`, `already converted`, or `FAILED` with the reason —
+   and a summary, and exits non-zero if any day failed. It never writes to its input, and refuses
+   to run if the two directories are the same.
+6. **Check the report.** A `FAILED` day is not in the output and its original is untouched on the
+   card. It stays in the old format, the UI keeps warning about it, and it can be investigated from
+   the backup. A converted day ending in a partial record (power lost mid-write) has that record
+   dropped and says so. The firmware's readers already ignored it.
+7. `firmware/history_convert/history_convert --check ~/heating-card-converted` should report every
+   day in the current format.
+8. Copy the converted days **over** the card's: `cp ~/heating-card-converted/home-* /mnt/<card>/`.
+   Only `home-*` files are written; leave everything else on the card as it is. Room and radiator
+   directories did not change format, and `cop-totals` stays valid because no value changed.
+9. `history_convert --check /mnt/<card>` should now report every day in the current format.
+10. Put the card back, flash the new firmware and boot it. No warning on any tab means the
+    firmware found no old-format day.
+
+Running the converter on a card that is already converted copies every day unchanged, so a second
+run is harmless. Getting the order wrong is not destructive either. If the new firmware boots on an
+unconverted card, it leaves every old day as it is (only today's samples are lost while today's file
+is old) and shows the warning. Power off and convert as above.
 
 The sampling interval is stored in the `home_manager` NVS blob and changed through
 `PUT /api/home`. A change takes effect at the next local midnight, because a file's records
@@ -556,14 +639,25 @@ Things that are deliberately so:
 - **A call covers at most 31 days** (`MCP_MAX_RANGE_DAYS`). Each day is a 484 KB read on the httpd
   task, and everything else the web server does waits behind it.
 - **The rated output is a tool argument**, `rated_output_w`, defaulting to a placeholder 8000 W.
-- **No target flow temperature and no defrost state** -- neither is recorded. Mode is the
+- **No target flow temperature, and no defrost in the tools yet.** Target flow is not recorded.
+  Defrost is recorded, in `rec_home_t`'s `defrosting` field, but no tool exposes or accounts for it
+  yet (TASK-41), so the tool descriptions still say there is none. Mode is the
   `heating_running` / `dhw_running` flags; a run on a day from before they were logged is `unknown`.
 - A mode change shorter than `min_run_seconds` is folded into its neighbour, and a sample in
   neither mode takes the mode around it: the flags are thermostat demand and can drop a moment
   before the compressor does. A changeover from hot water into heating is not a compressor start.
 
+`test_host/run.sh` also runs `test_totals.c`, which tests the defrost accounting above
+(`history_defrost_add()`) against hand-built slots: unknown on a day without the flag, zero when
+recorded with no defrost, defrosts in both modes staying inside the mode totals, and a missing power
+reading.
+
 `mcp_cycles`, `mcp_series` and `mcp_time` have no ESP-IDF in them, so **`test_host/run.sh` tests
-them on a desktop** against a synthetic night. It also builds the real `mcp_server.c` against
+them on a desktop** against a synthetic night. The night is written as a **version 2** home day and
+put through `history_convert` before any tool runs, so every MCP expectation also checks that
+converting a day changes nothing the tools report. `test_convert.c`, also run by `run.sh`, tests the
+converter itself: values preserved and defrost null, a second run byte-for-byte unchanged, the input
+never written to, a bad day reported and left out, and the defrost flag reading back. It also builds the real `mcp_server.c` against
 stand-in headers (`test_host/stubs/`) and a day file in a temporary directory, and parses every
 response back as JSON. Run it after any change under `mcp/`. `test_server --serve` answers
 requests from stdin, for putting that build behind an HTTP shim and a real MCP client.
@@ -739,6 +833,12 @@ the device was down -- is a grey "No data" span, so an outage is not read as the
 off; the key lists it only when there is some. A day with no mode recorded at all has no strip.
 `modeSpans()` in `historyData.ts` builds them from the home
 series' `heatingRunning` and `dhwRunning` columns, found by name; hot water wins when both are on.
+It also returns **defrost** spans, from the `defrosting` column, which `Chart` draws on a thinner
+row of their own just under the strip (with a "Defrost" key entry when there are any). They
+overlap the heating and hot water spans rather than replacing them, so a defrost during a hot water
+run shows as both. A day with no defrost recorded — converted, or from a heat pump with no defrost
+endpoint — has no row. A defrost shorter than a bucket can disappear entirely, for the reason
+below.
 `History.tsx` derives them from the response it already has, and the room and radiator charts get
 them from `useHeatPumpModes()`, which fetches the home series for the day. The spans are absolute
 times, so nothing is joined against the chart's own points. A bucket is an integer mean, so it
@@ -747,7 +847,9 @@ reads as on only when the mode held throughout — a run is drawn up to one buck
 `History.tsx`'s first row of cards is the day's heat by mode -- Heating and Hot water, from
 `modes.*.heatWh` -- and Electricity in, which is the whole day's. The day's total heat is not
 shown, and heat metered in neither mode is in neither card. A mode card dashes when its COP card
-does.
+does. Electricity in adds the day's defrost share in small muted brackets, `6.6 kWh (0.4 kWh
+defrost)`, from the response's `defrost.electricalWh`; it is a share of the figure, not added to
+it, and a day with `defrost` null shows no brackets.
 
 `History.tsx` shows three COP cards for the day being viewed (Heating, Hot water, Overall, from the
 response's `modes` and `cop`) and three across every recorded day (Heating, Hot water, SCOP, from

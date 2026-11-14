@@ -20,10 +20,11 @@ static const char *TAG = "history_api";
 #define DEFAULT_POINTS 500
 #define MAX_POINTS     2000
 
-// Records read per disk pass. 256 x 28 bytes is around 7 KB -- a couple of sectors' worth
+// Records read per disk pass. 176 x 40 bytes is around 7 KB -- a couple of sectors' worth
 // of the widest record, and keeps this off the httpd task's stack. Scale this down if the
-// record ever widens again: the buffer below is the product of the two.
-#define READ_CHUNK_RECORDS 256
+// record ever widens again: the buffer below is the product of the two, and it was 256 x 28
+// before the home record grew.
+#define READ_CHUNK_RECORDS 176
 
 static uint8_t s_read_buf[READ_CHUNK_RECORDS * HISTORY_MAX_RECORD_SIZE];
 
@@ -128,7 +129,9 @@ static const char *field_names_for(uint8_t kind)
                            "\"returnTempC100\",\"flowLph\",\"outdoorTempC100\","
                            "\"averageInternalTempC100\",\"copX100\",\"dhwRunning\","
                            "\"elecVoltageDv\",\"elecCurrentCa\","
-                           "\"heatingRunning\",\"reserved1\",\"reserved2\"";
+                           "\"heatingRunning\",\"reserved1\",\"reserved2\","
+                           "\"defrosting\",\"reserved3\",\"reserved4\",\"reserved5\","
+                           "\"reserved6\",\"reserved7\"";
     case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"reserved1\",\"reserved2\"";
     case KIND_RADIATOR: return "\"flowTempC100\",\"returnTempC100\","
                                "\"reserved0\",\"reserved1\"";
@@ -159,7 +162,7 @@ static int32_t field_value(uint8_t kind, size_t index, const uint8_t *rec)
 // are all sentinel emits null, so the chart draws a gap rather than a line across an
 // outage. Energy integrates every slot, not the buckets, so the totals do not change
 // with the requested resolution.
-static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
+static esp_err_t stream_file(httpd_req_t *req, uint8_t kind, const char *path, int points)
 {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -168,9 +171,24 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
         return ESP_OK;
     }
 
-    history_header_t hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != HISTORY_MAGIC ||
-        hdr.version != HISTORY_VERSION) {
+    history_header_t        hdr;
+    history_header_status_t status = HISTORY_HEADER_BAD;
+    if (fread(&hdr, sizeof(hdr), 1, f) == 1) {
+        status = history_check_header(&hdr, kind);
+    }
+
+    // A home day recorded before the record was widened. It is the card that needs fixing, not
+    // the request, so this is a state like "unavailable" rather than an error: the page says the
+    // card needs converting instead of showing a bare status code.
+    if (status == HISTORY_HEADER_OLD_FORMAT) {
+        fclose(f);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"storage\":\"needsConversion\",\"points\":[],"
+                                "\"reason\":\"this day was recorded in the old history format\"}");
+        return ESP_OK;
+    }
+
+    if (status != HISTORY_HEADER_OK) {
         fclose(f);
         ESP_LOGW(TAG, "Bad or unknown header in %s", path);
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -180,14 +198,6 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
 
     size_t rec_size = hdr.record_size;
     size_t fields   = history_field_count(hdr.sensor_kind);
-
-    if (rec_size == 0 || rec_size > HISTORY_MAX_RECORD_SIZE ||
-        rec_size != history_record_size(hdr.sensor_kind)) {
-        fclose(f);
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "{\"error\":\"record size mismatch\"}");
-        return ESP_OK;
-    }
 
     fseek(f, 0, SEEK_END);
     long   end         = ftell(f);
@@ -201,10 +211,10 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
 
     httpd_resp_set_type(req, "application/json");
 
-    // Must hold the whole preamble including every field name -- about 300 characters for
-    // rec_home_t's fourteen. snprintf would truncate silently and emit malformed JSON, so
+    // Must hold the whole preamble including every field name -- about 400 characters for
+    // rec_home_t's twenty. snprintf would truncate silently and emit malformed JSON, so
     // grow this alongside the record rather than trimming it to today's exact need.
-    char head[512];
+    char head[768];
     snprintf(head, sizeof(head),
              "{\"storage\":\"ok\",\"kind\":%u,\"interval\":%u,\"baseTs\":%lu,"
              "\"slots\":%u,\"stride\":%u,\"fields\":[%s],\"points\":[",
@@ -224,11 +234,14 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     // The same energy split by what the heat pump was doing. Home series only.
     history_totals_t totals = {0};
 
+    // What defrosting used, inside those same totals. Home series only.
+    history_defrost_t defrost = {0};
+
     size_t slot        = 0;
     size_t in_bucket   = 0;
     size_t bucket_base = 0;
     bool   first_point = true;
-    char   point[256];
+    char   point[384];
 
     while (slot < total_slots) {
         size_t want = total_slots - slot;
@@ -264,6 +277,7 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
 
             if (hdr.sensor_kind == KIND_HOME) {
                 history_totals_add(&totals, rec, hdr.interval_s);
+                history_defrost_add(&defrost, rec, hdr.interval_s);
             }
 
             slot++;
@@ -277,7 +291,7 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
                     n = (size_t)w;
                 }
 
-                // A timestamp plus fourteen fields is about 130 characters, so `point` has
+                // A timestamp plus twenty fields is about 180 characters, so `point` has
                 // headroom; the guard is here so a wider record can never overrun it.
                 for (size_t fi = 0; fi < fields && n + 1 < sizeof(point); fi++) {
                     if (bucket_n[fi] == 0) {
@@ -312,7 +326,10 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
     //
     // "modes" splits the same energy into the slots recorded as heating and as hot water -- see
     // history_totals.h. Slots in neither mode are in the figures above and in neither of these.
-    char tail[448];
+    //
+    // "defrost" is what the slots flagged as defrosting used. It is part of every figure above,
+    // not in addition to them, and null for a day on which no slot recorded the flag at all.
+    char tail[512];
     if (hdr.sensor_kind == KIND_HOME) {
         double heat_wh = (double)energy_sum[0] / 3600.0;
         double elec_wh = (double)energy_sum[1] / 3600.0;
@@ -333,7 +350,16 @@ static esp_err_t stream_file(httpd_req_t *req, const char *path, int points)
         n += format_energy(tail + n, sizeof(tail) - n, "heating", &totals.heating);
         n += strlcpy(tail + n, ",", sizeof(tail) - n);
         n += format_energy(tail + n, sizeof(tail) - n, "hotWater", &totals.hot_water);
-        strlcpy(tail + n, "}}", sizeof(tail) - n);
+        n += strlcpy(tail + n, "}", sizeof(tail) - n);
+
+        if (defrost.known_slots == 0) {
+            snprintf(tail + n, sizeof(tail) - n, ",\"defrost\":null}");
+        } else {
+            snprintf(tail + n, sizeof(tail) - n,
+                         ",\"defrost\":{\"heatWh\":%.1f,\"electricalWh\":%.1f,\"minutes\":%.1f}}",
+                         (double)defrost.energy.heat_ws / 3600.0, (double)defrost.energy.elec_ws / 3600.0,
+                         (double)defrost.seconds / 60.0);
+        }
     } else {
         snprintf(tail, sizeof(tail), "]}");
     }
@@ -432,7 +458,7 @@ static esp_err_t history_get_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    return stream_file(req, path, requested_points(req));
+    return stream_file(req, KIND_HOME, path, requested_points(req));
 }
 
 // GET /api/history/dates, /api/history/room/dates, /api/history/radiator/dates -- which
@@ -520,7 +546,7 @@ static esp_err_t instance_series_handler(httpd_req_t *req, uint8_t kind, uint8_t
         return ESP_OK;
     }
 
-    return stream_file(req, path, requested_points(req));
+    return stream_file(req, kind, path, requested_points(req));
 }
 
 // GET /api/history/totals -- heat and electrical energy, and the COP they give, across every day

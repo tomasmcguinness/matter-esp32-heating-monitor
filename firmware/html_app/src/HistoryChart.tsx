@@ -37,11 +37,20 @@ export type ChartProps = {
 
 // The strip's colours, and its height in CSS pixels. Idle time is left blank; time with no recorded
 // mode is grey, so an outage reads differently from the heat pump being off.
-const MODE_COLOURS = { heating: "#fd7e14", hotWater: "#6f42c1", noData: "#adb5bd" } as const;
-const MODE_LABELS = { heating: "Heating", hotWater: "Hot water", noData: "No data" } as const;
+const MODE_COLOURS = { heating: "#fd7e14", hotWater: "#6f42c1", noData: "#adb5bd", defrost: "#0dcaf0" } as const;
+const MODE_LABELS = { heating: "Heating", hotWater: "Hot water", noData: "No data", defrost: "Defrost" } as const;
 const MODE_BAR_PX = 8;
 // Clear space above and below the strip, between the plot's bottom edge and the time labels.
 const MODE_BAR_MARGIN_PX = 3;
+// Defrost has a thinner row of its own, just under the mode strip. It overlaps a heating or hot
+// water run rather than replacing it, so sharing the strip would hide whichever was drawn first --
+// on its own row a defrost in the middle of a hot water run shows as both.
+const DEFROST_BAR_PX = 4;
+const DEFROST_GAP_PX = 1;
+
+// The extra axis height a defrost row takes, when the day has one.
+const defrostRowPx = (modes: ModeSpan[] | undefined) =>
+  modes?.some((span) => span.mode === "defrost") ? DEFROST_GAP_PX + DEFROST_BAR_PX : 0;
 
 // Fills each span just under the plot area, in the x axis's tick zone, so the strip never covers a
 // line running along the bottom of the plot. Positions come from the x scale, so the strip stays
@@ -50,6 +59,8 @@ function drawModes(u: uPlot, modes: ModeSpan[]) {
   const { ctx, bbox } = u;
   const barHeight = MODE_BAR_PX * devicePixelRatio;
   const top = bbox.top + bbox.height + MODE_BAR_MARGIN_PX * devicePixelRatio;
+  const defrostTop = top + barHeight + DEFROST_GAP_PX * devicePixelRatio;
+  const defrostHeight = DEFROST_BAR_PX * devicePixelRatio;
   const right = bbox.left + bbox.width;
 
   ctx.save();
@@ -60,7 +71,12 @@ function drawModes(u: uPlot, modes: ModeSpan[]) {
 
     if (x1 > x0) {
       ctx.fillStyle = MODE_COLOURS[span.mode];
-      ctx.fillRect(x0, top, x1 - x0, barHeight);
+
+      if (span.mode === "defrost") {
+        ctx.fillRect(x0, defrostTop, x1 - x0, defrostHeight);
+      } else {
+        ctx.fillRect(x0, top, x1 - x0, barHeight);
+      }
     }
   }
 
@@ -135,6 +151,7 @@ export function Chart({
 
     const drawn = smooth ? smoothData(data) : data;
     const hasModes = !!modes && modes.length > 0;
+    const stripPx = MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX + defrostRowPx(modes);
 
     // uPlot sizes itself once, so it is rebuilt on data change and on resize rather than
     // being asked to reflow.
@@ -182,8 +199,8 @@ export function Chart({
             // by the same amount, so the time labels move down to clear it.
             hasModes
               ? {
-                  ticks: { size: MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX },
-                  size: 50 + MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX - 10,
+                  ticks: { size: stripPx },
+                  size: 50 + stripPx - 10,
                 }
               : {},
             { label: unit },
@@ -213,15 +230,15 @@ export function Chart({
       <div ref={holder} />
       {modes && modes.length > 0 && (
         <div className="text-muted small" style={{ textAlign: "center" }}>
-          {(["heating", "hotWater", "noData"] as const)
-            .filter((mode) => mode !== "noData" || modes.some((span) => span.mode === "noData"))
+          {(["heating", "hotWater", "noData", "defrost"] as const)
+            .filter((mode) => (mode !== "noData" && mode !== "defrost") || modes.some((span) => span.mode === mode))
             .map((mode) => (
             <span key={mode} style={{ margin: "0 8px" }}>
               <span
                 style={{
                   display: "inline-block",
                   width: "12px",
-                  height: `${MODE_BAR_PX}px`,
+                  height: `${mode === "defrost" ? DEFROST_BAR_PX : MODE_BAR_PX}px`,
                   marginRight: "4px",
                   background: MODE_COLOURS[mode],
                 }}

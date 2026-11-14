@@ -237,7 +237,7 @@ static void send_subscription(intptr_t arg)
     }
 
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 8 : 0) + (wants_commodity_price ? 3 : 0) + (wants_battery ? 2 : 0));
+    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 9 : 0) + (wants_commodity_price ? 3 : 0) + (wants_battery ? 2 : 0));
 
     if (!attr_paths.Get())
     {
@@ -304,6 +304,11 @@ static void send_subscription(intptr_t arg)
         attr_paths[path_index++] = AttributePathParams(WaterHeaterManagement::Id, WaterHeaterManagement::Attributes::BoostState::Id);
         attr_paths[path_index++] = AttributePathParams(WaterHeaterMode::Id, WaterHeaterMode::Attributes::SupportedModes::Id);
         attr_paths[path_index++] = AttributePathParams(WaterHeaterMode::Id, WaterHeaterMode::Attributes::CurrentMode::Id);
+
+        // Defrost, from a Boolean State sub-part labelled "Defrost" (the Kronoterm adapter's, from
+        // register 2011). Wildcard like the rest, so a heat pump without one simply reports nothing;
+        // which endpoint is the defrost one is decided from its label in update_heat_pump_running().
+        attr_paths[path_index++] = AttributePathParams(BooleanState::Id, BooleanState::Attributes::StateValue::Id);
     }
 
     if (wants_commodity_price)
