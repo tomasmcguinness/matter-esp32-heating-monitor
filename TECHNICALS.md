@@ -1,7 +1,7 @@
 # Technicals
 
-, which
-carries a W5500 SPI Ethernet controller. Network access is provide by the Ethernet — plug in a cable and the
+This project runs on a Waveshare ESP32-S3-ETH, which
+carries a W5500 SPI Ethernet controller. Network access is provided by the Ethernet — plug in a cable and the
 board comes up on DHCP. BLE is still used to commission the Thread temperature sensors.
 
 W5500 wiring (see `external_platform/ESP32_custom/NetworkCommissioningDriver_Ethernet.cpp`):
@@ -18,7 +18,7 @@ W5500 wiring (see `external_platform/ESP32_custom/NetworkCommissioningDriver_Eth
 
 ## Building
 
-This project uses `esp-idf` and `esp-matter`, so ensure both of these frameworks are installed. 
+This project uses `esp-idf` and `esp-matter`, so ensure both of these frameworks are installed.
 
 >[!NOTE]
 >I had to make changes to the `esp-matter` SDK to better support subscriptions - these are pendings as a PR https://github.com/espressif/esp-matter/pull/1690
@@ -47,7 +47,7 @@ then re-apply the two local changes (the `chip_enable_ethernet` block in `BUILD.
 without that rewrite the copied sources pull in the original headers alongside the custom ones and
 fail with redefinition errors.
 
-You will need to set the Thread Network Dataset in code. This can be found in the `nodes_post_handler` function. 
+You will need to set the Thread Network Dataset in code. This can be found in the `nodes_post_handler` function.
 
 ```
 char *dataset = "0e080000000000000000000300001935060004001fffc0..."
@@ -78,7 +78,7 @@ console step. Watch for `Ethernet Connected` followed by the DHCP address in the
 Open `http://heating-monitor.local` from your browser (the address is also in the logs) and
 navigate to the Device tab. Click the `Add Device` button.
 
-![alt text](image.png)
+![Device tab showing the Add Device button](image.png)
 
 Enter the setup code from your device and click `Add Device`.
 
@@ -86,9 +86,9 @@ I don't have any callbacks or anything to tell you when this completes, so keep 
 
 When it's done, the device will appear under the Device tab.
 
-![alt text](image-1.png)
+![Device tab showing the commissioned device](image-1.png)
 
-# TODO
+## TODO
 
 * [ ] Improve subscriptions
 * [ ] Real-Time UI updates
@@ -98,7 +98,8 @@ When it's done, the device will appear under the Device tab.
 * [ ] Indicate subscription status in the UI
 * [x] mDNS support for easier access
 
-# Thanks
+## Thanks
 
 I want to thank the author of the ESP_MATTER_CONTROLLER project as it gave me a lot of guidance, pointers and clues! https://github.com/Live-Control-Project/ESP_MATTER_CONTROLLER
+
 I'm also using this project to help parse some of the URIs https://github.com/sidoh/path_variable_handlers
