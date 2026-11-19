@@ -76,6 +76,7 @@
 
 #include "mqtt/ha_discovery.h"
 #include "mqtt/mqtt_publisher.h"
+#include "mqtt/config_topic.h"
 #include "mqtt/mqtt_settings.h"
 #include "storage/history_api.h"
 #include "storage/status_api.h"
@@ -91,6 +92,7 @@
 #include "companion_api.h"
 #include "mcp/mcp_server.h"
 #include "emoncms/emoncms_uploader.h"
+#include "myheatpump/myheatpump_pusher.h"
 
 #include "mqtt_client.h"
 #include "esp_app_desc.h"
@@ -134,6 +136,8 @@ static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
 static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
 static void forget_commodity_price_if_unsubscribed(uint64_t node_id);
 static void update_heat_pump_running(void);
+static void update_ufh_rooms(bool force);
+static room_t *find_room_listing_radiator(uint8_t radiator_id);
 static void broadcast_radiator_state(const radiator_t *radiator);
 static void forget_readings_if_unsubscribed(uint64_t node_id);
 static void add_number_or_null(cJSON *object, const char *name, bool has_value, double value);
@@ -1004,6 +1008,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGI(TAG, "Heat meter power: %lld mW", g_home_manager.heat_meter_power_mw);
             }
+
+            // The UFH manifolds' output is what is left of this after the radiators.
+            update_ufh_rooms(false);
             break;
         }
 
@@ -1297,56 +1304,64 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             return;
         }
 
-        // Find the appropriate radiator for this node/endpoint combination.
+        // Find the radiators (and UFH manifolds) this node/endpoint feeds. Matched on the endpoint as
+        // well as the node, and every one of them, not just the first: a multi-probe node can carry
+        // a manifold's probes and a radiator's on different endpoints.
         //
-        radiator_t *radiator = g_radiator_manager.radiator_list;
-
-        while (radiator)
+        for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
         {
-            if (radiator->flow_temp_node_id == remote_node_id || radiator->return_temp_node_id == remote_node_id)
+            bool is_flow = radiator->flow_temp_node_id == remote_node_id && radiator->flow_temp_endpoint_id == path.mEndpointId;
+            bool is_return = radiator->return_temp_node_id == remote_node_id && radiator->return_temp_endpoint_id == path.mEndpointId;
+
+            if (!is_flow && !is_return)
             {
-                ESP_LOGI(TAG, "Device is assigned to radiator %u", radiator->radiator_id);
-
-                cJSON *root = cJSON_CreateObject();
-                cJSON_AddStringToObject(root, "channel", "radiator");
-                cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
-
-                if (radiator->flow_temp_endpoint_id == path.mEndpointId)
-                {
-                    ESP_LOGI(TAG, "Reading Flow Temperature value");
-                    radiator->has_flow_temperature = has_value;
-                    radiator->flow_temperature = temperature;
-                    add_number_or_null(root, "flowTemp", has_value, temperature);
-                }
-                else if (radiator->return_temp_endpoint_id == path.mEndpointId)
-                {
-                    ESP_LOGI(TAG, "Reading Return Temperature value");
-                    radiator->has_return_temperature = has_value;
-                    radiator->return_temperature = temperature;
-                    add_number_or_null(root, "returnTemp", has_value, temperature);
-                }
-
-                update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
-
-                // Added after the recalculation, not with the fields above, or the push would carry
-                // the output from the previous reading. The Layout schematic shows watts per radiator
-                // and only ever sees this channel, so a stale figure would sit there until a reload.
-                //
-                add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
-
-                ws_broadcast_json(root);
-
-                cJSON_Delete(root);
-
-                // The radiator's output feeds totalRadiatorOutput and the measured heat loss totals.
-                schedule_home_broadcast();
-
-                hasMatched = true;
-
-                break;
+                continue;
             }
 
-            radiator = radiator->next;
+            ESP_LOGI(TAG, "Device is assigned to %s %u", is_ufh_manifold(radiator) ? "UFH manifold" : "radiator", radiator->radiator_id);
+
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddStringToObject(root, "channel", "radiator");
+            cJSON_AddNumberToObject(root, "radiatorId", radiator->radiator_id);
+
+            if (is_flow)
+            {
+                ESP_LOGI(TAG, "Reading Flow Temperature value");
+                radiator->has_flow_temperature = has_value;
+                radiator->flow_temperature = temperature;
+                add_number_or_null(root, "flowTemp", has_value, temperature);
+            }
+
+            if (is_return)
+            {
+                ESP_LOGI(TAG, "Reading Return Temperature value");
+                radiator->has_return_temperature = has_value;
+                radiator->return_temperature = temperature;
+                add_number_or_null(root, "returnTemp", has_value, temperature);
+            }
+
+            update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
+
+            // Added after the recalculation, not with the fields above, or the push would carry
+            // the output from the previous reading. The Layout schematic shows watts per radiator
+            // and only ever sees this channel, so a stale figure would sit there until a reload.
+            //
+            add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
+
+            ws_broadcast_json(root);
+
+            cJSON_Delete(root);
+
+            // A manifold's probes gate its output, which every other manifold's share depends on.
+            if (is_ufh_manifold(radiator))
+            {
+                update_ufh_rooms(true);
+            }
+
+            // The radiator's output feeds totalRadiatorOutput and the measured heat loss totals.
+            schedule_home_broadcast();
+
+            hasMatched = true;
         }
 
         // Find the appropriate room for this node/endpoint combination.
@@ -2419,6 +2434,152 @@ static esp_err_t node_put_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// The room whose radiators[] lists this radiator, or NULL. radiator_t::room_id is never assigned,
+// so this walk is the only link there is.
+static room_t *find_room_listing_radiator(uint8_t radiator_id)
+{
+    for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+    {
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            if (room->radiators[r] == radiator_id)
+            {
+                return room;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+// Reads a room's ufhShares, [{emitterId, pct}], into `out`. Returns NULL if they are acceptable, or
+// why not. Checked in full before the handler changes anything, so a refused request leaves the
+// room as it was. room_id is the room being edited, 0 for a new one: its own current shares are
+// not counted against the 100% each manifold can give out.
+static const char *parse_ufh_shares(const cJSON *json, uint8_t room_id, ufh_share_t *out, uint8_t *out_count)
+{
+    *out_count = 0;
+
+    if (!cJSON_IsArray(json))
+    {
+        return "ufhShares must be an array";
+    }
+
+    const cJSON *share = NULL;
+
+    cJSON_ArrayForEach(share, json)
+    {
+        const cJSON *emitterIdJSON = cJSON_GetObjectItemCaseSensitive(share, "emitterId");
+        const cJSON *pctJSON = cJSON_GetObjectItemCaseSensitive(share, "pct");
+
+        if (!cJSON_IsNumber(emitterIdJSON) || !cJSON_IsNumber(pctJSON))
+        {
+            return "Each UFH share needs a numeric emitterId and pct";
+        }
+
+        int pct = pctJSON->valueint;
+
+        if (pct < 0 || pct > 100)
+        {
+            return "A UFH share must be 0 to 100";
+        }
+
+        if (pct == 0)
+        {
+            continue;
+        }
+
+        if (emitterIdJSON->valueint <= 0 || emitterIdJSON->valueint > UINT8_MAX)
+        {
+            return "A UFH share names an emitter that does not exist";
+        }
+
+        uint8_t emitter_id = (uint8_t)emitterIdJSON->valueint;
+        radiator_t *manifold = find_radiator(&g_radiator_manager, emitter_id);
+
+        if (manifold == NULL || !is_ufh_manifold(manifold))
+        {
+            return "A UFH share names an emitter that is not a UFH manifold";
+        }
+
+        for (uint8_t i = 0; i < *out_count; i++)
+        {
+            if (out[i].emitter_id == emitter_id)
+            {
+                return "A room has two shares of one UFH manifold";
+            }
+        }
+
+        if (*out_count == ROOM_MAX_UFH_SHARES)
+        {
+            return "Too many UFH shares";
+        }
+
+        uint32_t total = pct;
+
+        for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+        {
+            if (room->room_id != room_id)
+            {
+                total += room_ufh_share_pct(room, emitter_id);
+            }
+        }
+
+        if (total > 100)
+        {
+            return "The rooms' shares of a UFH manifold add up to more than 100%";
+        }
+
+        out[*out_count].emitter_id = emitter_id;
+        out[*out_count].pct = (uint8_t)pct;
+        (*out_count)++;
+    }
+
+    return NULL;
+}
+
+// Rejects a radiatorIds list that names a UFH manifold: rooms take a share of one instead.
+static const char *check_room_radiator_ids(const cJSON *json)
+{
+    const cJSON *iterator = NULL;
+
+    cJSON_ArrayForEach(iterator, json)
+    {
+        radiator_t *radiator = cJSON_IsNumber(iterator) ? find_radiator(&g_radiator_manager, (uint8_t)iterator->valueint) : NULL;
+
+        if (radiator && is_ufh_manifold(radiator))
+        {
+            return "A UFH manifold cannot be one of a room's radiators; give the room a share of it instead";
+        }
+    }
+
+    return NULL;
+}
+
+// The room's UFH shares, each with the manifold's name and the watts the share comes to now, and
+// the room's total UFH input. Inputs are null when absent -- see update_ufh_outputs().
+static void add_room_ufh_json(cJSON *parent, const room_t *room)
+{
+    cJSON *shares = cJSON_AddArrayToObject(parent, "ufhShares");
+
+    for (uint8_t i = 0; i < room->ufh_share_count; i++)
+    {
+        radiator_t *manifold = find_radiator(&g_radiator_manager, room->ufh_shares[i].emitter_id);
+
+        cJSON *share = cJSON_CreateObject();
+        cJSON_AddNumberToObject(share, "emitterId", room->ufh_shares[i].emitter_id);
+        cJSON_AddStringToObject(share, "name", manifold && manifold->name ? manifold->name : "");
+        cJSON_AddNumberToObject(share, "pct", room->ufh_shares[i].pct);
+
+        bool has_input = manifold && manifold->has_heat_output;
+        add_number_or_null(share, "input", has_input, has_input ? (uint32_t)manifold->heat_output * room->ufh_shares[i].pct / 100 : 0);
+
+        cJSON_AddItemToArray(shares, share);
+    }
+
+    add_number_or_null(parent, "ufhInput", room->has_ufh_input, room->ufh_input_w);
+}
+
 static esp_err_t radiators_post_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Adding a radiator");
@@ -2471,7 +2632,17 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
     new_radiator->has_flow_temperature = get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
     new_radiator->has_return_temperature = get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
 
+    // A new UFH manifold changes how the residual is split, so every manifold is recalculated.
+    if (is_ufh_manifold(new_radiator))
+    {
+        update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, new_radiator);
+        update_ufh_rooms(true);
+    }
+
     broadcast_home_state();
+
+    // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+    config_topic_mark_pending();
 
     ESP_LOGI(TAG, "Radiator saved");
 
@@ -2512,6 +2683,7 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(jNode, "radiatorId", radiator->radiator_id);
         cJSON_AddStringToObject(jNode, "name", radiator->name);
         cJSON_AddNumberToObject(jNode, "type", radiator->type);
+        cJSON_AddStringToObject(jNode, "kind", is_ufh_manifold(radiator) ? "ufhManifold" : "radiator");
         cJSON_AddNumberToObject(jNode, "output", radiator->output_dt_50);
 
         add_number_or_null(jNode, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
@@ -2571,22 +2743,12 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
     add_number_or_null(root, "meanWaterTemperature", radiator->has_mean_water_temperature, radiator->mean_water_temperature);
     add_number_or_null(root, "currentOutput", radiator->has_heat_output, radiator->heat_output);
 
-    // The room this radiator is in. radiator_t::room_id is never assigned, so room->radiators[]
-    // is the only real link -- the same walk update_radiator_outputs() does. Null when the
-    // radiator has not been put in a room.
-    room_t *owning_room = NULL;
+    cJSON_AddStringToObject(root, "kind", is_ufh_manifold(radiator) ? "ufhManifold" : "radiator");
 
-    for (room_t *room = g_room_manager.room_list; room != NULL && owning_room == NULL; room = room->next)
-    {
-        for (uint8_t r = 0; r < room->radiator_count; r++)
-        {
-            if (room->radiators[r] == radiator->radiator_id)
-            {
-                owning_room = room;
-                break;
-            }
-        }
-    }
+    // The room this radiator is in, from room->radiators[] -- the same walk update_radiator_outputs()
+    // does. Null when the radiator has not been put in a room, and always for a UFH manifold, which
+    // is in no room's list: the rooms that take a share of it are listed under `shares` instead.
+    room_t *owning_room = find_room_listing_radiator(radiator->radiator_id);
 
     if (owning_room)
     {
@@ -2599,6 +2761,28 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
         cJSON_AddNullToObject(root, "roomId");
         cJSON_AddNullToObject(root, "roomName");
         cJSON_AddNullToObject(root, "roomTemperature");
+    }
+
+    if (is_ufh_manifold(radiator))
+    {
+        cJSON *shares = cJSON_AddArrayToObject(root, "shares");
+
+        for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+        {
+            uint8_t pct = room_ufh_share_pct(room, radiator->radiator_id);
+
+            if (pct == 0)
+            {
+                continue;
+            }
+
+            cJSON *share = cJSON_CreateObject();
+            cJSON_AddNumberToObject(share, "roomId", room->room_id);
+            cJSON_AddStringToObject(share, "roomName", room->name);
+            cJSON_AddNumberToObject(share, "pct", pct);
+            add_number_or_null(share, "input", radiator->has_heat_output, radiator->has_heat_output ? (uint32_t)radiator->heat_output * pct / 100 : 0);
+            cJSON_AddItemToArray(shares, share);
+        }
     }
 
     httpd_resp_set_type(req, "application/json");
@@ -2650,13 +2834,42 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
     const cJSON *returnSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorNodeId");
     const cJSON *returnSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "returnSensorEndpointId");
 
+    if (!cJSON_IsString(nameJSON) || !cJSON_IsString(mqttNameJSON) || !cJSON_IsNumber(typeJSON) || !cJSON_IsNumber(outputJSON) ||
+        !cJSON_IsNumber(flowSensorNodeIdJSON) || !cJSON_IsNumber(flowSensorEndpointIdJSON) ||
+        !cJSON_IsNumber(returnSensorNodeIdJSON) || !cJSON_IsNumber(returnSensorEndpointIdJSON))
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Missing required field", HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    radiator_t *existing = find_radiator(&g_radiator_manager, radiator_id);
+
+    if (existing == NULL)
+    {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "No such radiator", HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    bool was_manifold = is_ufh_manifold(existing);
+    bool becomes_manifold = typeJSON->valueint == EMITTER_TYPE_UFH_MANIFOLD;
+
+    // Rooms list radiators and take shares of manifolds; one emitter cannot be both.
+    if (becomes_manifold && !was_manifold && find_room_listing_radiator(radiator_id) != NULL)
+    {
+        const char *problem = "This radiator is in a room; take it out of the room before making it a UFH manifold";
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, problem, HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     // The HA device is keyed on the MQTT name, so a rename has to remove the one under the old
     // name. Copied now, before update_radiator() frees it.
-    std::string previous_mqtt_name;
-    if (radiator_t *existing = find_radiator(&g_radiator_manager, radiator_id))
-    {
-        previous_mqtt_name = existing->mqtt_name ? existing->mqtt_name : "";
-    }
+    std::string previous_mqtt_name = existing->mqtt_name ? existing->mqtt_name : "";
 
     radiator_t *updated_radiator = update_radiator(&g_radiator_manager,
                                                    radiator_id,
@@ -2673,6 +2886,27 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
 
     updated_radiator->has_flow_temperature = get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &updated_radiator->flow_temperature);
     updated_radiator->has_return_temperature = get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &updated_radiator->return_temperature);
+
+    // No longer a manifold: the rooms' shares of it go.
+    if (was_manifold && !becomes_manifold && room_manager_forget_ufh_emitter(&g_room_manager, radiator_id))
+    {
+        save_rooms_to_nvs(&g_room_manager);
+    }
+
+    // New probes, rating or kind: recalculate it, and every manifold's share if either side of the
+    // change was one.
+    update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, updated_radiator);
+
+    if (was_manifold || becomes_manifold)
+    {
+        update_ufh_rooms(true);
+    }
+
+    broadcast_radiator_state(updated_radiator);
+    broadcast_home_state();
+
+    // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+    config_topic_mark_pending();
 
     if (is_mqtt_connected && updated_radiator)
     {
@@ -2712,15 +2946,33 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
 
     uint8_t id = (uint8_t)strtoul(id_str, NULL, 10);
 
+    radiator_t *doomed = find_radiator(&g_radiator_manager, id);
+    bool was_manifold = doomed != NULL && is_ufh_manifold(doomed);
+
     char mqtt_name[50];
     esp_err_t err = remove_radiator(&g_radiator_manager, id, &mqtt_name[0]);
 
     if (err == ESP_OK)
     {
+        // The rooms' shares of a deleted manifold go with it, and the residual is split again
+        // between the manifolds that are left.
+        if (was_manifold)
+        {
+            if (room_manager_forget_ufh_emitter(&g_room_manager, id))
+            {
+                save_rooms_to_nvs(&g_room_manager);
+            }
+
+            update_ufh_rooms(true);
+        }
+
         if (is_mqtt_connected)
         {
             ha_discovery_remove_radiator(_mqtt_client, id, mqtt_name);
         }
+
+        // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+        config_topic_mark_pending();
 
         broadcast_home_state();
 
@@ -2791,6 +3043,26 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
     char *mqtt_name = cJSON_IsString(mqttNameJSON) ? mqttNameJSON->valuestring : (char *)"";
     uint8_t heat_loss_per_degree = cJSON_IsNumber(heatLossPerDegreeJSON) ? (uint8_t)heatLossPerDegreeJSON->valueint : 0;
 
+    // Optional, and checked before the room is created, so a refused request creates nothing.
+    const cJSON *ufhSharesJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhShares");
+    ufh_share_t ufh_shares[ROOM_MAX_UFH_SHARES];
+    uint8_t ufh_share_count = 0;
+    const char *problem = check_room_radiator_ids(radiatorIdsJSON);
+
+    if (!problem && ufhSharesJSON != NULL)
+    {
+        problem = parse_ufh_shares(ufhSharesJSON, 0, ufh_shares, &ufh_share_count);
+    }
+
+    if (problem)
+    {
+        ESP_LOGE(TAG, "Room refused: %s", problem);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, problem, HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     room_t *new_room = add_room(&g_room_manager,
                                 nameJSON->valuestring,
                                 mqtt_name,
@@ -2831,7 +3103,12 @@ static esp_err_t rooms_post_handler(httpd_req_t *req)
         free(radiator_ids);
     }
 
+    set_room_ufh_shares(new_room, ufh_share_count, ufh_shares);
+
     save_rooms_to_nvs(&g_room_manager);
+
+    // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+    config_topic_mark_pending();
 
     // Before update_room_heat_loss(), so the device exists by the time its state is published.
     if (is_mqtt_connected)
@@ -2946,7 +3223,11 @@ static esp_err_t rooms_get_handler(httpd_req_t *req)
             }
         }
 
-        cJSON_AddNumberToObject(jNode, "heatInput", total_radiator_output);
+        add_room_ufh_json(jNode, room);
+
+        // Everything the room is given: its radiators plus its UFH shares.
+        cJSON_AddNumberToObject(jNode, "radiatorInput", total_radiator_output);
+        cJSON_AddNumberToObject(jNode, "heatInput", (uint32_t)total_radiator_output + room->ufh_input_w);
 
         cJSON_AddItemToArray(root, jNode);
     }
@@ -3013,6 +3294,8 @@ static esp_err_t room_get_handler(httpd_req_t *req)
 
     add_number_or_null(root, "predictedHeatLossAtTargetTemperature", room->has_predicted_heat_loss, room->predicted_heat_loss_at_target_temperature);
     add_number_or_null(root, "measuredHeatLossAtTargetTemperature", room->has_measured_heat_loss, room->measured_heat_loss_at_target_temperature);
+
+    add_room_ufh_json(root, room);
 
     cJSON *radiators;
     cJSON_AddItemToObject(root, "radiators", radiators = cJSON_CreateArray());
@@ -3091,6 +3374,34 @@ static esp_err_t room_put_handler(httpd_req_t *req)
     const cJSON *temperatureSensorNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorNodeId");
     const cJSON *temperatureSensorEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "temperatureSensorEndpointId");
 
+    if (find_room(&g_room_manager, room_id) == NULL)
+    {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "No such room", HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    // Optional: absent leaves the room's UFH shares as they are. Checked before anything changes.
+    const cJSON *ufhSharesJSON = cJSON_GetObjectItemCaseSensitive(root, "ufhShares");
+    ufh_share_t ufh_shares[ROOM_MAX_UFH_SHARES];
+    uint8_t ufh_share_count = 0;
+    const char *problem = check_room_radiator_ids(radiatorIdsJSON);
+
+    if (!problem && ufhSharesJSON != NULL)
+    {
+        problem = parse_ufh_shares(ufhSharesJSON, room_id, ufh_shares, &ufh_share_count);
+    }
+
+    if (problem)
+    {
+        ESP_LOGE(TAG, "Room update refused: %s", problem);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, problem, HTTPD_RESP_USE_STRLEN);
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     uint8_t radiator_count = cJSON_GetArraySize(radiatorIdsJSON);
     uint8_t *radiator_ids = (uint8_t *)calloc(radiator_count, sizeof(u_int8_t));
 
@@ -3126,7 +3437,15 @@ static esp_err_t room_put_handler(httpd_req_t *req)
                                        (uint64_t)temperatureSensorNodeIdJSON->valueint,
                                        (uint8_t)temperatureSensorEndpointIdJSON->valueint);
 
+    if (ufhSharesJSON != NULL)
+    {
+        set_room_ufh_shares(updated_room, ufh_share_count, ufh_shares);
+    }
+
     save_rooms_to_nvs(&g_room_manager);
+
+    // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+    config_topic_mark_pending();
 
     updated_room->has_current_temperature = get_endpoint_measured_value(&g_node_manager, temperatureSensorNodeIdJSON->valueint, temperatureSensorEndpointIdJSON->valueint, &updated_room->current_temperature);
 
@@ -3142,6 +3461,8 @@ static esp_err_t room_put_handler(httpd_req_t *req)
     }
 
     update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, updated_room);
+
+    broadcast_home_state();
 
     free(radiator_ids);
     httpd_resp_set_status(req, "200 Ok");
@@ -3182,6 +3503,9 @@ static esp_err_t rooms_delete_handler(httpd_req_t *req)
         ha_discovery_remove_room(_mqtt_client, room_id, mqtt_name.c_str());
     }
 
+    // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+    config_topic_mark_pending();
+
     broadcast_home_state();
 
     httpd_resp_set_status(req, "200 OK");
@@ -3194,6 +3518,9 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
 {
     radiator_manager_reset_and_reload(&g_radiator_manager);
     room_manager_reset_and_reload(&g_room_manager);
+
+    // heating_monitor/config goes out on the next update_home(), the task that may walk the lists.
+    config_topic_mark_pending();
 
     if (is_mqtt_connected)
     {
@@ -3658,6 +3985,12 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "radiatorCount", g_home_manager.radiator_count);
     cJSON_AddNumberToObject(root, "totalRadiatorOutput", g_home_manager.total_radiator_output);
 
+    // UFH manifolds are counted apart from the radiators above. Both figures are null while the
+    // manifolds' output is unknown -- see update_ufh_outputs().
+    cJSON_AddNumberToObject(root, "ufhManifoldCount", g_home_manager.ufh_manifold_count);
+    add_number_or_null(root, "totalUfhOutput", g_home_manager.has_ufh_output, g_home_manager.total_ufh_output);
+    add_number_or_null(root, "ufhUnassignedOutput", g_home_manager.has_ufh_output, g_home_manager.ufh_unassigned_output);
+
     return root;
 }
 
@@ -3865,6 +4198,7 @@ static void update_heat_pump_running(void)
     }
 
     bool was_heating = g_home_manager.has_heating_running && g_home_manager.heating_running;
+    bool was_dhw = g_home_manager.has_dhw_running && g_home_manager.dhw_running;
 
     g_home_manager.dhw_running = dhw;
     g_home_manager.has_dhw_running = has_dhw;
@@ -3880,6 +4214,51 @@ static void update_heat_pump_running(void)
         for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
         {
             update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
+            broadcast_radiator_state(radiator);
+        }
+    }
+
+    // The UFH manifolds' output is zero outside space heating and during hot water, so the rooms
+    // sharing it change with either.
+    if ((has_heating && heating) != was_heating || (has_dhw && dhw) != was_dhw)
+    {
+        update_ufh_rooms(true);
+    }
+}
+
+// Recalculates the rooms that take a share of a UFH manifold, whose input moves with the heat meter,
+// and pushes every manifold's output. The heat meter reports every few seconds, and each room
+// recalculation publishes the room's MQTT state, so unless `force` is set this runs at most once
+// every UFH_ROOM_UPDATE_US; in between only the figures are brought up to date.
+#define UFH_ROOM_UPDATE_US (30LL * 1000 * 1000)
+
+static void update_ufh_rooms(bool force)
+{
+    static int64_t s_last_us = 0;
+    int64_t now = esp_timer_get_time();
+
+    if (!force && s_last_us != 0 && now - s_last_us < UFH_ROOM_UPDATE_US)
+    {
+        update_ufh_outputs(&g_home_manager, &g_room_manager, &g_radiator_manager);
+        return;
+    }
+
+    s_last_us = now;
+
+    for (room_t *room = g_room_manager.room_list; room != NULL; room = room->next)
+    {
+        if (room->ufh_share_count > 0 || room->has_ufh_input)
+        {
+            update_room_heat_loss(&g_node_manager, &g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client, room);
+        }
+    }
+
+    update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+
+    for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
+    {
+        if (is_ufh_manifold(radiator))
+        {
             broadcast_radiator_state(radiator);
         }
     }
@@ -4520,6 +4899,112 @@ static esp_err_t emoncms_test_post_handler(httpd_req_t *req)
 
 #pragma endregion
 
+#pragma region MyHeatPump API
+
+// Like emoncms, the API key never leaves the device: the response says only whether one is stored.
+static esp_err_t myheatpump_config_get_handler(httpd_req_t *req)
+{
+    myheatpump_config_t config;
+    bool key_set = false;
+
+    myheatpump_pusher_get_config(&config, &key_set);
+
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddBoolToObject(root, "enabled", config.enabled);
+    cJSON_AddStringToObject(root, "base_url", config.base_url);
+    cJSON_AddBoolToObject(root, "key_set", key_set);
+    cJSON_AddNumberToObject(root, "interval_s", config.interval_s);
+
+    return send_json_response(req, root);
+}
+
+// Fields left out keep their saved values. An empty api_key keeps the stored key, and
+// "clear_key": true removes it, since the server only checks a key when it has one.
+static esp_err_t myheatpump_config_put_handler(httpd_req_t *req)
+{
+    cJSON *root = read_json_body(req);
+
+    if (root == NULL)
+    {
+        return ESP_OK;
+    }
+
+    myheatpump_config_t config;
+    myheatpump_pusher_get_config(&config, NULL);
+
+    bool valid = copy_json_string(root, "base_url", config.base_url, sizeof(config.base_url)) &&
+                 copy_json_string(root, "api_key", config.api_key, sizeof(config.api_key));
+
+    const cJSON *enabled = cJSON_GetObjectItem(root, "enabled");
+
+    if (cJSON_IsBool(enabled))
+    {
+        config.enabled = cJSON_IsTrue(enabled);
+    }
+
+    const cJSON *interval = cJSON_GetObjectItem(root, "interval_s");
+
+    if (cJSON_IsNumber(interval))
+    {
+        config.interval_s = interval->valuedouble >= 0 && interval->valuedouble <= UINT16_MAX ? (uint16_t)interval->valuedouble : 0;
+    }
+
+    bool clear_key = cJSON_IsTrue(cJSON_GetObjectItem(root, "clear_key"));
+
+    cJSON_Delete(root);
+
+    esp_err_t err = valid ? myheatpump_pusher_set_config(&config, clear_key) : ESP_ERR_INVALID_ARG;
+
+    if (err == ESP_ERR_INVALID_ARG)
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "The URL must be empty or start with http:// or https://, and the interval must be "
+                                "between 10 and 3600 seconds.");
+        return ESP_OK;
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save the MyHeatPump configuration, err:%d", err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Could not save the configuration.");
+        return ESP_OK;
+    }
+
+    return myheatpump_config_get_handler(req);
+}
+
+static esp_err_t myheatpump_status_get_handler(httpd_req_t *req)
+{
+    myheatpump_status_t status;
+    myheatpump_pusher_get_status(&status);
+
+    cJSON *root = cJSON_CreateObject();
+
+    add_timestamp_or_null(root, "last_success", status.last_success_ts);
+
+    if (status.last_error_ts)
+    {
+        cJSON *error = cJSON_AddObjectToObject(root, "last_error");
+        cJSON_AddNumberToObject(error, "time", status.last_error_ts);
+        cJSON_AddNumberToObject(error, "http_status", status.last_error_http_status);
+        cJSON_AddStringToObject(error, "response", status.last_error);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "last_error");
+    }
+
+    cJSON_AddNumberToObject(root, "posts_ok", status.posts_ok);
+    cJSON_AddNumberToObject(root, "posts_failed", status.posts_failed);
+    cJSON_AddNumberToObject(root, "last_payload_bytes", status.last_payload_bytes);
+
+    return send_json_response(req, root);
+}
+
+#pragma endregion
+
 #pragma region MQTT settings API
 
 static void restart_mqtt_service(void);
@@ -4673,10 +5158,10 @@ httpd_handle_t start_webserver(void)
         ESP_LOGE(TAG, "Failed to create the commissioning semaphores");
     }
 
-    // 40 are registered: 29 here, 2 for history, 1 for status, 5 for the companion API, 2 for MCP
-    // and the wildcard. Registration past the cap fails with only a log line, so count them
+    // 43 are registered: 33 here (the wildcard among them), 2 for history, 1 for status, 5 for the
+    // companion API and 2 for MCP. Registration past the cap fails with only a log line, so count them
     // before adding more.
-    config.max_uri_handlers = 44;
+    config.max_uri_handlers = 48;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
@@ -4828,6 +5313,24 @@ httpd_handle_t start_webserver(void)
         .handler = emoncms_test_post_handler,
         .user_ctx = NULL};
 
+    const httpd_uri_t myheatpump_config_get_uri = {
+        .uri = "/api/myheatpump/config",
+        .method = HTTP_GET,
+        .handler = myheatpump_config_get_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t myheatpump_config_put_uri = {
+        .uri = "/api/myheatpump/config",
+        .method = HTTP_PUT,
+        .handler = myheatpump_config_put_handler,
+        .user_ctx = NULL};
+
+    const httpd_uri_t myheatpump_status_get_uri = {
+        .uri = "/api/myheatpump/status",
+        .method = HTTP_GET,
+        .handler = myheatpump_status_get_handler,
+        .user_ctx = NULL};
+
     const httpd_uri_t mqtt_config_get_uri = {
         .uri = "/api/mqtt/config",
         .method = HTTP_GET,
@@ -4889,6 +5392,9 @@ httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &emoncms_config_put_uri);
         httpd_register_uri_handler(server, &emoncms_status_get_uri);
         httpd_register_uri_handler(server, &emoncms_test_post_uri);
+        httpd_register_uri_handler(server, &myheatpump_config_get_uri);
+        httpd_register_uri_handler(server, &myheatpump_config_put_uri);
+        httpd_register_uri_handler(server, &myheatpump_status_get_uri);
         httpd_register_uri_handler(server, &mqtt_config_get_uri);
         httpd_register_uri_handler(server, &mqtt_config_put_uri);
         httpd_register_uri_handler(server, &time_config_get_uri);
@@ -5257,6 +5763,14 @@ extern "C" void app_main()
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to start the emoncms uploader, err:%d", err);
+    }
+
+    // Not fatal: without it nothing is pushed to the MyHeatPump server. It asks for the web
+    // server's handle each time, because the server only starts once Ethernet has an address.
+    err = myheatpump_pusher_init(&g_home_manager, []() -> httpd_handle_t { return server; });
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start the MyHeatPump pusher, err:%d", err);
     }
 
     //heap_caps_print_heap_info(MALLOC_CAP_DEFAULT);

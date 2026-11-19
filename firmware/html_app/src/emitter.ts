@@ -32,3 +32,23 @@ export function emitterToRadiatorJson(emitter: Emitter): string {
     returnSensorEndpointId
   });
 }
+
+// The radiator `type` the firmware reserves for an underfloor heating manifold
+// (EMITTER_TYPE_UFH_MANIFOLD in radiator_manager.h). A manifold is added on the Emitters tab, never
+// in a room's emitter list: rooms take a percentage of its output instead.
+//
+export const UFH_MANIFOLD_TYPE = 100;
+
+export function isUfhManifold(emitter: { type: number }): boolean {
+  return emitter.type === UFH_MANIFOLD_TYPE;
+}
+
+// A room's percentage of each UFH manifold's output, keyed by the manifold's radiator id.
+export type UfhShares = Record<number, number>;
+
+// The ufhShares body PUT/POST /api/rooms takes: only shares above 0%.
+export function ufhSharesToJson(shares: UfhShares): { emitterId: number; pct: number }[] {
+  return Object.entries(shares)
+    .filter(([, pct]) => pct > 0)
+    .map(([emitterId, pct]) => ({ emitterId: parseInt(emitterId), pct }));
+}

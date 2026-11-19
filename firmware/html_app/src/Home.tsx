@@ -2,7 +2,6 @@ import { NavLink } from "react-router"
 import Temperature from "./Temperature"
 import { useCallback, useEffect, useState } from "react";
 import FlowRate from "./FlowRate";
-// import Power from "./Power";
 import Voltage from "./Voltage";
 import Current from "./Current";
 import ElectricalPower from "./ElectricalPower";
@@ -12,6 +11,7 @@ import SubscriptionPill from "./SubscriptionPill";
 import HeatPump, { type HeatPumpData } from "./HeatPump";
 import PageHeader from "./PageHeader";
 import { useHome } from "./HomeContext";
+import Power from "./Power";
 
 function Home() {
 
@@ -30,6 +30,8 @@ function Home() {
   // let [totalMeasuredHeatLoss, setTotalMeasuredHeatLoss] = useState<number | undefined>(undefined);
   let [radiatorCount, setRadiatorCount] = useState<number | undefined>(undefined);
   let [totalRadiatorOutput, setTotalRadiatorOutput] = useState<number | undefined>(undefined);
+  const [ufhManifoldCount, setUfhManifoldCount] = useState<number | undefined>(undefined);
+  const [totalUfhOutput, setTotalUfhOutput] = useState<number | null | undefined>(undefined);
   let [heatPumpNodeId, setHeatPumpNodeId] = useState<number | undefined>(undefined);
   let [heatPumpSubscription, setHeatPumpSubscription] = useState<string | undefined>(undefined);
   let [heatPump, setHeatPump] = useState<HeatPumpData | null | undefined>(undefined);
@@ -66,6 +68,8 @@ function Home() {
     // setTotalMeasuredHeatLoss(data.measuredHeatLossAtCurrentTemperature);
     setRadiatorCount(data.radiatorCount);
     setTotalRadiatorOutput(data.totalRadiatorOutput);
+    setUfhManifoldCount(data.ufhManifoldCount);
+    setTotalUfhOutput(data.totalUfhOutput);
 
     setHeatPumpNodeId(data.heatPumpNodeId);
     setHeatPumpSubscription(data.heatPumpSubscription);
@@ -192,7 +196,7 @@ function Home() {
             Radiator Output
           </div>
           <div className="card-body">
-            <p className="card-title"><h3>{totalRadiatorOutput}W</h3></p>
+            <p className="card-title"><h3><Power>{totalRadiatorOutput}</Power></h3></p>
           </div>
         </div>
         <div className="card">
@@ -200,7 +204,9 @@ function Home() {
             UFH Output
           </div>
           <div className="card-body">
-            <p className="card-title"><h3>N/A</h3></p>
+            {ufhManifoldCount === 0 ?
+              <span>No UFH manifolds. <NavLink to={`/emitters`}>Add one</NavLink>.</span> :
+              <p className="card-title"><h3><Power>{totalUfhOutput}</Power></h3></p>}
           </div>
         </div>
       </div>

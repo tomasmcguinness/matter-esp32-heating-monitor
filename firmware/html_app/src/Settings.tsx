@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import EmoncmsSettings from "./EmoncmsSettings";
+import MyHeatPumpSettings from "./MyHeatPumpSettings";
 import MqttSettings from "./MqttSettings";
 import TimeSettings from "./TimeSettings";
 import PageHeader from "./PageHeader";
@@ -79,6 +80,8 @@ function Settings() {
       <MqttSettings />
 
       <EmoncmsSettings />
+
+      <MyHeatPumpSettings />
     </>
   )
 }

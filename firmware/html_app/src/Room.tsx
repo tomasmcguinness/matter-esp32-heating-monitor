@@ -3,6 +3,7 @@ import { NavLink, useNavigate, useParams } from "react-router"
 import Temperature from "./Temperature";
 import Power from "./Power";
 import RoomTodayChart from "./RoomTodayChart";
+import RadiatorType from "./RadiatorType";
 
 function Room() {
 
@@ -38,10 +39,10 @@ function Room() {
   }
 
   let radiatorRows = room.radiators.map((r: any) => {
-    return (<tr key={r.radiatorId} onClick={() => navigate(`/radiators/${r.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
+    return (<tr key={r.radiatorId} onClick={() => navigate(`/emitters/${r.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{r.radiatorId}</td>
       <td>{r.name}</td>
-      <td>{r.type}</td>
+      <td><RadiatorType>{r.type}</RadiatorType></td>
       <td><Temperature>{r.flowTemp}</Temperature></td>
       <td><Temperature>{r.returnTemp}</Temperature></td>
       <td><Power>{r.currentOutput}</Power></td>
@@ -78,13 +79,21 @@ function Room() {
             <p className="card-title"><h3>{room.heatLossPerDegree}</h3></p>
           </div>
         </div>
+        {(room.ufhShares ?? []).length > 0 && <div className="card">
+          <div className="card-header">
+            Underfloor Heating
+          </div>
+          <div className="card-body">
+            <h3 className="card-title"><Power>{room.ufhInput}</Power></h3>
+          </div>
+        </div>}
       </div>
 
       <RoomTodayChart roomId={room.roomId} />
 
       <div className="card" style={{ marginBottom: '5px' }}>
         <div className="card-header">
-          Radiators
+          Emitters
         </div>
         <div className="card-body">
           {radiatorRows.length == 0 && <div className="alert alert-info">No radiators have been assigned to this room</div>}
@@ -102,6 +111,26 @@ function Room() {
               </thead>
               <tbody>
                 {radiatorRows}
+              </tbody>
+            </table>
+          }
+          {(room.ufhShares ?? []).length > 0 &&
+            <table className="table table-striped table-bordered">
+              <thead>
+                <tr>
+                  <th>UFH Manifold</th>
+                  <th>Share</th>
+                  <th>Input</th>
+                </tr>
+              </thead>
+              <tbody>
+                {room.ufhShares.map((s: { emitterId: number; name: string; pct: number; input: number | null }) => (
+                  <tr key={s.emitterId} onClick={() => navigate(`/emitters/${s.emitterId}`)} style={{ 'cursor': 'pointer' }}>
+                    <td>{s.name}</td>
+                    <td>{s.pct}%</td>
+                    <td><Power>{s.input}</Power></td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           }

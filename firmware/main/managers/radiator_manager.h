@@ -6,6 +6,13 @@
 
 #pragma once
 
+// A radiator record of this type is an underfloor heating manifold rather than a radiator. It keeps
+// every radiator mechanism -- probes, NVS, the /api/radiators routes, rad-<id> history -- but its
+// output is not the dT50 formula: it is a share of the heat meter's residual, worked out by
+// update_ufh_outputs(), and output_dt_50 holds its rated output, the weight for that split.
+// Rooms do not list it in radiators[]; they take a percentage of it (room_t::ufh_shares).
+#define EMITTER_TYPE_UFH_MANIFOLD 100
+
 typedef struct radiator
 {
     uint8_t radiator_id;
@@ -43,6 +50,11 @@ typedef struct radiator
 } radiator;
 
 typedef radiator radiator_t;
+
+static inline bool is_ufh_manifold(const radiator_t *radiator)
+{
+    return radiator->type == EMITTER_TYPE_UFH_MANIFOLD;
+}
 
 typedef struct
 {

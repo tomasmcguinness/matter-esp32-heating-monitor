@@ -53,6 +53,13 @@ esp_err_t history_logger_init(home_manager_t *home_manager);
 // and it already traverses both lists.
 void history_logger_snapshot(room_manager_t *room_manager, radiator_manager_t *radiator_manager);
 
+// The latest readings in the snapshot above, for other readers that must not walk the manager
+// lists either (the MyHeatPump pusher). False when the id is not in the snapshot; otherwise each
+// has_* says whether that reading exists. Temperatures are 0.01 degC. Safe from any task.
+bool history_logger_room_reading(uint8_t room_id, bool *has_temp, int16_t *temp_c100);
+bool history_logger_radiator_reading(uint8_t radiator_id, bool *has_flow, int16_t *flow_c100,
+                                     bool *has_return, int16_t *return_c100);
+
 // The requested interval. A change waits for the next local midnight, because a file's
 // records must stay spaced at the interval its header records -- that is what makes
 // offset = header + slot * record_size correct. history_logger_active_interval() is what

@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "mqtt_publisher.h"
+#include "config_topic.h"
 
 static const char *TAG = "ha_discovery";
 
@@ -47,6 +48,7 @@ static const ha_sensor_t HOME_SENSORS[] = {
     {"total_measured_heat_loss_per_degree",  "Measured heat loss",  NULL,               "W/°C"},
     {"heating_running",                      "Heating running",     "running",          NULL, true},
     {"dhw_running",                          "Hot water running",   "running",          NULL, true},
+    {"defrosting",                           "Defrosting",          NULL,               NULL, true},
 };
 
 // The quantities update_room_heat_loss() puts on a room's state topic.
@@ -100,6 +102,11 @@ static const char *home_device_id(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     return s_device_id;
+}
+
+const char *ha_discovery_device_id(void)
+{
+    return home_device_id();
 }
 
 static bool has_mqtt_name(const char *mqtt_name)
@@ -496,4 +503,7 @@ void ha_discovery_announce_all(esp_mqtt_client_handle_t client)
     // Rooms and radiators go out on the next update_home(). Sensors report at least once a
     // minute, so that is at most a minute after connecting.
     s_children_pending = true;
+
+    // So does the retained heating_monitor/config, for the same reason: it walks both lists.
+    config_topic_mark_pending();
 }

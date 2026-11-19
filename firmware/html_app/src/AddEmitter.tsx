@@ -1,10 +1,19 @@
 import { useState } from "react";
-import { NavLink, useNavigate } from "react-router";
+import { NavLink, useNavigate, useSearchParams } from "react-router";
 import SensorSelect from "./SensorSelect";
+import { UFH_MANIFOLD_TYPE } from "./emitter";
 
-function AddRadiator() {
+// Adds a radiator, or a UFH manifold with ?kind=ufh. Both are radiator records on the device; a
+// manifold has the reserved type, and its "output" is its rated output, the weight used to split
+// the heat meter's residual between manifolds.
+//
+function AddEmitter() {
 
   let navigate = useNavigate();
+
+  const [searchParams] = useSearchParams();
+  const isManifold = searchParams.get("kind") === "ufh";
+  const noun = isManifold ? "UFH Manifold" : "Radiator";
 
   const [name, setName] = useState<string | undefined>(undefined);
   const [mqttName, setMqttName] = useState<string | undefined>(undefined);
@@ -24,9 +33,9 @@ function AddRadiator() {
 
     var object: any = {
       name,
-      mqttName: mqttName?.toLowerCase(),
-      type,
-      output,
+      mqttName: mqttName?.toLowerCase() ?? '',
+      type: isManifold ? UFH_MANIFOLD_TYPE : type,
+      output: output ?? 0,
       flowSensorNodeId,
       flowSensorEndpointId,
       returnSensorNodeId,
@@ -37,27 +46,27 @@ function AddRadiator() {
 
     fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json }).then(r => {
       if (r.ok) {
-        navigate("/radiators");
+        navigate("/emitters");
       } else {
-        alert("Failed to add radiator");
+        alert(`Failed to add ${noun.toLowerCase()}`);
       }
     });
   }
 
   return (
     <>
-      <h1>Add Radiator</h1>
+      <h1>Add {noun}</h1>
       <hr />
       <form method="post" onSubmit={handleSubmit}>
         <div className="mb-3">
           <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
-          <input type="text" name="name" maxLength={50} className="form-control" id="name" placeholder="Office" required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
+          <input type="text" name="name" maxLength={50} className="form-control" id="name" placeholder={isManifold ? "Ground floor UFH" : "Office"} required={true} value={name || ''} onChange={(e) => setName(e.target.value)} />
         </div>
         <div className="mb-3">
           <label htmlFor="mqttName" className="form-label">MQTT Name</label>
-          <input type="text" name="mqttName" maxLength={20} className="form-control" id="mqttName" placeholder="office" required={false} value={mqttName || ''} onChange={(e) => setMqttName(e.target.value)} />
+          <input type="text" name="mqttName" maxLength={20} className="form-control" id="mqttName" placeholder={isManifold ? "ground_floor_ufh" : "office"} required={false} value={mqttName || ''} onChange={(e) => setMqttName(e.target.value)} />
         </div>
-        <div className="mb-3">
+        {!isManifold && <div className="mb-3">
           <label htmlFor="type" className="form-label">Type <span style={{ 'color': 'red' }}>*</span></label>
           <select name="type" className="form-control" id="type" required={true} value={type} onChange={(e) => setType(parseInt(e.target.value))}>
             <option value="0">Designer</option>
@@ -71,22 +80,28 @@ function AddRadiator() {
             <option value="33">Type 33 (K3)</option>
             <option value="44">Type 44 (K4)</option>
           </select>
-        </div>
-        <div className="mb-3">
-          <label htmlFor="output" className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
-          <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
-        </div>
+        </div>}
+        {isManifold
+          ? <div className="mb-3">
+            <label htmlFor="output" className="form-label">Rated Output (W)</label>
+            <input type="number" name="output" min={0} className="form-control" id="output" placeholder="3000" value={output ?? ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
+            <div className="form-text">Used only to split the underfloor heat between manifolds. With one manifold, or every rating left blank, it makes no difference.</div>
+          </div>
+          : <div className="mb-3">
+            <label htmlFor="output" className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
+            <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
+          </div>}
         <div className="mb-3">
           <SensorSelect deviceType={770} title="Flow Temperature Sensor" id="flowSensor" required={true} selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
         </div>
         <div className="mb-3">
           <SensorSelect deviceType={770} title="Return Temperature Sensor" id="returnSensor" required={true} selectedSensor={returnSensor || ''} onSelectedSensorChange={(e) => setReturnSensor(e)} />
         </div>
-        <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add Radiator</button>
-        <NavLink className="btn btn-danger" to="/radiators">Cancel</NavLink>
+        <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }}>Add {noun}</button>
+        <NavLink className="btn btn-danger" to="/emitters">Cancel</NavLink>
       </form>
     </>
   )
 }
 
-export default AddRadiator
+export default AddEmitter

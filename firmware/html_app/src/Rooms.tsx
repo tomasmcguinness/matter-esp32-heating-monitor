@@ -74,7 +74,7 @@ function Rooms() {
           <tr>
             <th>Name</th>
             <th>Current Temp</th>
-            <th>Radiator Input</th>
+            <th>Heat Input</th>
             <th>Predicted Heat Loss</th>
             <th>Measured Heat Loss</th>
             <th>Difference</th>

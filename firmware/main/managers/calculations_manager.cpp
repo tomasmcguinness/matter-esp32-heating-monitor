@@ -4,6 +4,7 @@
 #include "storage/history_logger.h"
 #include "mqtt/ha_discovery.h"
 #include "mqtt/mqtt_publisher.h"
+#include "mqtt/config_topic.h"
 
 static const char *TAG = "calculations_manager";
 
@@ -71,6 +72,28 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
     //
     radiator->has_mean_water_temperature = false;
     radiator->mean_water_temperature = 0;
+
+    // A UFH manifold's output is not the dT50 formula: it is its share of the heat meter's residual,
+    // which update_ufh_outputs() works out for every manifold at once. Its probes still give it a
+    // mean water temperature, and the rooms with a share of it take a new input from it.
+    if (is_ufh_manifold(radiator))
+    {
+        if (radiator->has_flow_temperature && radiator->has_return_temperature)
+        {
+            radiator->mean_water_temperature = ((int32_t)radiator->flow_temperature + radiator->return_temperature) / 2;
+            radiator->has_mean_water_temperature = true;
+        }
+
+        update_ufh_outputs(home_manager, room_manager, radiator_manager);
+
+        publish_radiator_state(mqtt_client, radiator);
+
+        // The rooms sharing it are recalculated by the caller (update_ufh_rooms() in app_main.cpp),
+        // since a change to one manifold moves every manifold's share of the residual.
+        update_home(home_manager, room_manager, radiator_manager, mqtt_client);
+        return;
+    }
+
     radiator->has_heat_output = false;
     radiator->heat_output = 0;
 
@@ -155,9 +178,183 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
     update_home(home_manager, room_manager, radiator_manager, mqtt_client);
 }
 
+// True if radiator_id is listed in any room. A radiator in no room never gets an output, so it
+// cannot be counted against the heat meter either way and is left out of the UFH residual.
+static bool radiator_is_in_a_room(room_manager_t *room_manager, uint8_t radiator_id)
+{
+    for (room_t *room = room_manager->room_list; room != NULL; room = room->next)
+    {
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            if (room->radiators[r] == radiator_id)
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// The underfloor heating has no flow meter, so its output is the residual: the heat meter's output
+// less the radiators' modelled output, split across the manifolds that are circulating in
+// proportion to their rated output. Every radiator modelling error lands in it, which is why it is
+// only given when it can be honest. For every manifold at once, it is:
+//
+//   absent  - no heat meter power, no heating state, a radiator that is in a room has no output
+//             (it would otherwise be booked as floor heat), or any manifold is short of a probe
+//             reading (whether it is circulating, and so how the residual splits, is not known).
+//   0 W     - not space heating, or making hot water (the heat meter is then measuring the
+//             cylinder); or, for one manifold, under UFH_MIN_DELTA_T_C100 across its probes, so
+//             not circulating.
+//   else    - max(0, heat meter - radiators) x rated / sum of rated over circulating manifolds.
+//
+// |flow - return| rather than flow - return, so a probe pair fitted the wrong way round gates the
+// same as one fitted correctly, as the radiators' fabs() does.
+//
+// It then sets each room's UFH input from its shares, and the home's totals. Cheap -- no pow() --
+// so it is run from every path that needs a current figure.
+#define UFH_MIN_DELTA_T_C100 50
+
+void update_ufh_outputs(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
+{
+    bool known = home_manager->has_heat_meter_power && home_manager->has_heating_running;
+    int32_t radiator_w = 0;
+    uint32_t active_weight = 0;
+    uint8_t manifold_count = 0;
+
+    for (radiator_t *radiator = radiator_manager->radiator_list; radiator != NULL; radiator = radiator->next)
+    {
+        if (is_ufh_manifold(radiator))
+        {
+            manifold_count++;
+            radiator->has_heat_output = false;
+            radiator->heat_output = 0;
+
+            if (!radiator->has_flow_temperature || !radiator->has_return_temperature)
+            {
+                known = false;
+                continue;
+            }
+
+            int32_t delta = (int32_t)radiator->flow_temperature - radiator->return_temperature;
+
+            if (delta < 0)
+            {
+                delta = -delta;
+            }
+
+            if (delta >= UFH_MIN_DELTA_T_C100)
+            {
+                // A manifold with no rating still takes a share: weighted 1 W, so with every rating
+                // left at 0 the split is even.
+                active_weight += radiator->output_dt_50 > 0 ? radiator->output_dt_50 : 1;
+            }
+        }
+        else if (radiator_is_in_a_room(room_manager, radiator->radiator_id))
+        {
+            if (!radiator->has_heat_output)
+            {
+                known = false;
+            }
+            else
+            {
+                radiator_w += radiator->heat_output;
+            }
+        }
+    }
+
+    int64_t residual = 0;
+
+    if (known)
+    {
+        bool heating = home_manager->heating_running && !(home_manager->has_dhw_running && home_manager->dhw_running);
+
+        if (heating)
+        {
+            residual = home_manager->heat_meter_power_mw / 1000 - radiator_w;
+        }
+
+        if (residual < 0)
+        {
+            residual = 0;
+        }
+        else if (residual > UINT16_MAX)
+        {
+            residual = UINT16_MAX;
+        }
+    }
+
+    uint32_t total = 0;
+
+    if (known)
+    {
+        for (radiator_t *radiator = radiator_manager->radiator_list; radiator != NULL; radiator = radiator->next)
+        {
+            if (!is_ufh_manifold(radiator))
+            {
+                continue;
+            }
+
+            int32_t delta = (int32_t)radiator->flow_temperature - radiator->return_temperature;
+
+            if (delta < 0)
+            {
+                delta = -delta;
+            }
+
+            uint32_t weight = radiator->output_dt_50 > 0 ? radiator->output_dt_50 : 1;
+            bool active = delta >= UFH_MIN_DELTA_T_C100 && active_weight > 0;
+
+            radiator->heat_output = active ? (uint16_t)((uint64_t)residual * weight / active_weight) : 0;
+            radiator->has_heat_output = true;
+            total += radiator->heat_output;
+        }
+    }
+
+    // Each room's input from its shares. Absent if any manifold it shares has no output.
+    uint32_t assigned = 0;
+
+    for (room_t *room = room_manager->room_list; room != NULL; room = room->next)
+    {
+        uint32_t input = 0;
+        bool has_input = room->ufh_share_count > 0;
+
+        for (uint8_t i = 0; i < room->ufh_share_count; i++)
+        {
+            radiator_t *manifold = find_radiator(radiator_manager, room->ufh_shares[i].emitter_id);
+
+            if (manifold == NULL || !is_ufh_manifold(manifold))
+            {
+                continue;
+            }
+
+            if (!manifold->has_heat_output)
+            {
+                has_input = false;
+                break;
+            }
+
+            input += (uint32_t)manifold->heat_output * room->ufh_shares[i].pct / 100;
+        }
+
+        room->has_ufh_input = has_input;
+        room->ufh_input_w = has_input ? (uint16_t)(input > UINT16_MAX ? UINT16_MAX : input) : 0;
+        assigned += room->ufh_input_w;
+    }
+
+    home_manager->ufh_manifold_count = manifold_count;
+    home_manager->has_ufh_output = known && manifold_count > 0;
+    home_manager->total_ufh_output = home_manager->has_ufh_output ? (uint16_t)(total > UINT16_MAX ? UINT16_MAX : total) : 0;
+    home_manager->ufh_unassigned_output = (home_manager->has_ufh_output && total > assigned) ? (uint16_t)(total - assigned) : 0;
+}
+
 void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager, esp_mqtt_client_handle_t mqtt_client, room_t *room)
 {
     ESP_LOGI(TAG, "Calculating heat loss for room %u", room->room_id);
+
+    // Brings this room's UFH input up to date with the heat meter and the radiators.
+    update_ufh_outputs(home_manager, room_manager, radiator_manager);
 
     int16_t current_temperature = 0;
     room->has_current_temperature = get_endpoint_measured_value(node_manager, room->room_temperature_node_id, room->room_temperature_endpoint_id, &current_temperature);
@@ -219,13 +416,14 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
 
             room->predicted_heat_loss_at_current_temperature = current_delta_t * room->predicted_heat_loss_per_degree;
 
-            // The measured heat loss is the radiators' output over that delta, so it also needs at
-            // least one radiator with an output, and a delta to divide by. The output has to be
-            // above zero as well: every radiator reads 0 W while the heat pump is not heating, and
-            // that says nothing about how much heat the room loses.
+            // The measured heat loss is the room's heat input over that delta: its radiators'
+            // output plus its share of the UFH manifolds'. So it also needs at least one of those,
+            // and a delta to divide by. The input has to be above zero as well: every emitter
+            // reads 0 W while the heat pump is not heating, and that says nothing about how much
+            // heat the room loses.
             //
-            uint16_t total_radiator_output = 0;
-            bool has_radiator_output = false;
+            uint32_t total_radiator_output = room->ufh_input_w;
+            bool has_radiator_output = room->has_ufh_input;
 
             for (uint8_t r = 0; r < room->radiator_count; r++)
             {
@@ -238,9 +436,13 @@ void update_room_heat_loss(node_manager_t *node_manager, home_manager_t *home_ma
                 }
             }
 
-            if (has_radiator_output && total_radiator_output > 0 && current_delta_t != 0)
+            // A room with a UFH share whose input is not known is short of part of its heat, and
+            // its radiators alone would understate the loss, so it has no measured figure either.
+            bool ufh_input_missing = room->ufh_share_count > 0 && !room->has_ufh_input;
+
+            if (has_radiator_output && !ufh_input_missing && total_radiator_output > 0 && current_delta_t != 0)
             {
-                ESP_LOGI(TAG, "Room %u has an input of %u W", room->room_id, total_radiator_output);
+                ESP_LOGI(TAG, "Room %u has an input of %lu W (%u W of it underfloor)", room->room_id, (unsigned long)total_radiator_output, room->ufh_input_w);
 
                 room->measured_heat_loss_per_degree = total_radiator_output / current_delta_t;
                 room->measured_heat_loss_at_target_temperature = target_temperature_delta_t * room->measured_heat_loss_per_degree;
@@ -351,11 +553,15 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
 
     while (radiator)
     {
-        if (radiator->has_heat_output)
+        // Manifolds are counted under UFH, below.
+        if (!is_ufh_manifold(radiator))
         {
-            home_manager->total_radiator_output += radiator->heat_output;
+            if (radiator->has_heat_output)
+            {
+                home_manager->total_radiator_output += radiator->heat_output;
+            }
+            home_manager->radiator_count++;
         }
-        home_manager->radiator_count++;
         radiator = radiator->next;
     }
 
@@ -368,8 +574,9 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
     // After an MQTT (re)connect, the rooms and radiators are announced from here rather than
     // from the MQTT task, for the same reason: this task may walk the lists.
     ha_discovery_announce_pending(mqtt_client, room_manager, radiator_manager);
+    config_topic_publish_pending(mqtt_client, room_manager, radiator_manager);
 
-    // TODO UFH.
+    update_ufh_outputs(home_manager, room_manager, radiator_manager);
 
     // Instantaneous coefficient of performance: heat out over electricity in, both as the
     // meters report them in mW.
@@ -461,6 +668,15 @@ static void publish_home_state(void *arg)
     else
     {
         cJSON_AddNullToObject(root, "heating_running");
+    }
+
+    if (home_manager->has_defrosting)
+    {
+        cJSON_AddBoolToObject(root, "defrosting", home_manager->defrosting);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "defrosting");
     }
 
     cJSON_AddNumberToObject(root, "total_predicted_heat_loss_per_degree", home_manager->total_predicted_heat_loss_per_degree);

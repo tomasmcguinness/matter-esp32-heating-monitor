@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 import { NavLink, useNavigate } from "react-router";
 import SensorSelect from "./SensorSelect";
 import EmitterCard from "./EmitterCard"
-import { emitterToRadiatorJson, type Emitter } from "./emitter";
+import { emitterToRadiatorJson, ufhSharesToJson, type Emitter, type UfhShares } from "./emitter";
+import UfhShareInputs from "./UfhShareInputs";
 
 function AddRoom() {
 
@@ -14,6 +15,7 @@ function AddRoom() {
   const [temperatureSensor, setTemperatureSensor] = useState<string | undefined>(undefined);
 
   const [emitters, setEmitters] = useState<Emitter[]>([]);
+  const [ufhShares, setUfhShares] = useState<UfhShares>({});
   const [saving, setSaving] = useState(false);
 
   const nextEmitterKey = useRef(1);
@@ -56,7 +58,7 @@ function AddRoom() {
         var radiatorResponse = await fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: radiatorJson });
 
         if (!radiatorResponse.ok) {
-          alert(`Failed to add the emitter ${emitter.name}. The room has not been created. Any emitters already added can be found on the Radiators page.`);
+          alert(`Failed to add the emitter ${emitter.name}. The room has not been created. Any emitters already added can be found on the Emitters page.`);
           return;
         }
 
@@ -73,13 +75,15 @@ function AddRoom() {
         targetTemperature: targetTemperature! * 100,
         temperatureSensorNodeId,
         temperatureSensorEndpointId,
-        radiatorIds
+        radiatorIds,
+        ufhShares: ufhSharesToJson(ufhShares)
       });
 
       var roomResponse = await fetch('/api/rooms', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: roomJson });
 
       if (!roomResponse.ok) {
-        alert("Failed to add the room. Any emitters that were added can be found on the Radiators page.");
+        const reason = await roomResponse.text();
+        alert(`Failed to add the room${reason ? `: ${reason}` : ''}. Any emitters that were added can be found on the Emitters page.`);
         return;
       }
 
@@ -125,6 +129,8 @@ function AddRoom() {
 
         {emitters.length === 0 && <div className="alert alert-info">This room has no emitters. Add one, or assign radiators to the room later.</div>}
         {emitterCards}
+
+        <UfhShareInputs shares={ufhShares} onChange={setUfhShares} />
 
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }} disabled={saving}>{saving ? 'Adding Room...' : 'Add Room'}</button>
         <NavLink className="btn btn-cancel" to="/rooms">Cancel</NavLink>

@@ -59,6 +59,9 @@ void ha_discovery_announce_radiator(esp_mqtt_client_handle_t client, const radia
 void ha_discovery_remove_room(esp_mqtt_client_handle_t client, uint8_t room_id, const char *mqtt_name);
 void ha_discovery_remove_radiator(esp_mqtt_client_handle_t client, uint8_t radiator_id, const char *mqtt_name);
 
+// The Heating Monitor's device id, heating_monitor_<eth-mac>. Stable across reboots and updates.
+const char *ha_discovery_device_id(void);
+
 // Publishes the retained "online" availability message. Call once the broker connection is up.
 void ha_discovery_publish_online(esp_mqtt_client_handle_t client);
 

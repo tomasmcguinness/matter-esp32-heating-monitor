@@ -308,6 +308,55 @@ static bool snap_rad_at(size_t i, rad_snap_t *out)
     return ok;
 }
 
+bool history_logger_room_reading(uint8_t room_id, bool *has_temp, int16_t *temp_c100)
+{
+    bool found = false;
+    *has_temp = false;
+    *temp_c100 = 0;
+
+    if (!s_snap_mutex) {
+        return false;
+    }
+
+    xSemaphoreTake(s_snap_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_room_count; i++) {
+        if (s_rooms[i].id == room_id) {
+            *has_temp  = s_rooms[i].has_temp;
+            *temp_c100 = s_rooms[i].temp_c100;
+            found      = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_snap_mutex);
+    return found;
+}
+
+bool history_logger_radiator_reading(uint8_t radiator_id, bool *has_flow, int16_t *flow_c100,
+                                     bool *has_return, int16_t *return_c100)
+{
+    bool found = false;
+    *has_flow = *has_return = false;
+    *flow_c100 = *return_c100 = 0;
+
+    if (!s_snap_mutex) {
+        return false;
+    }
+
+    xSemaphoreTake(s_snap_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_rad_count; i++) {
+        if (s_rads[i].id == radiator_id) {
+            *has_flow    = s_rads[i].has_flow;
+            *flow_c100   = s_rads[i].flow_c100;
+            *has_return  = s_rads[i].has_return;
+            *return_c100 = s_rads[i].return_c100;
+            found        = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_snap_mutex);
+    return found;
+}
+
 // ---------------------------------------------------------------------------
 // Timers
 // ---------------------------------------------------------------------------

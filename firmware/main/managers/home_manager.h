@@ -90,7 +90,15 @@ typedef struct {
 
     uint8_t radiator_count = 0;
     uint16_t total_radiator_output = 0;
-    
+
+    // Underfloor heating, derived by update_ufh_outputs(). Transient. The total is the sum of every
+    // manifold's output; the unassigned part is what no room has a share of. Absent while any
+    // manifold has no output (see update_ufh_outputs()), and when there are no manifolds.
+    uint8_t ufh_manifold_count = 0;
+    bool has_ufh_output = false;
+    uint16_t total_ufh_output = 0;
+    uint16_t ufh_unassigned_output = 0;
+
 } home_manager_t;
 
 void home_manager_init(home_manager_t *manager);

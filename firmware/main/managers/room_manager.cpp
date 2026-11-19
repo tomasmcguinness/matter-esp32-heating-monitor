@@ -9,6 +9,11 @@
 
 #define NVS_NAMESPACE "rooms"
 #define NVS_KEY "room_list"
+// The rooms' UFH shares, kept apart from room_list so that blob's layout -- which has no version
+// and variable-length records -- is untouched, and firmware without this key loads as before.
+// Layout: u8 version (1), u8 count, then count x {u8 room_id, u8 emitter_id, u8 pct}.
+#define NVS_KEY_UFH "room_ufh"
+#define UFH_BLOB_VERSION 1
 
 static const char *TAG = "room_manager";
 
@@ -174,6 +179,202 @@ esp_err_t set_room_radiators(room_t *room, uint8_t radiator_count, uint8_t *radi
     return ESP_OK;
 }
 
+esp_err_t set_room_ufh_shares(room_t *room, uint8_t share_count, const ufh_share_t *shares)
+{
+    if (!room)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    free(room->ufh_shares);
+    room->ufh_shares = NULL;
+    room->ufh_share_count = 0;
+
+    uint8_t kept = 0;
+
+    for (uint8_t i = 0; i < share_count; i++)
+    {
+        if (shares[i].pct > 0)
+        {
+            kept++;
+        }
+    }
+
+    if (kept == 0)
+    {
+        return ESP_OK;
+    }
+
+    room->ufh_shares = (ufh_share_t *)calloc(kept, sizeof(ufh_share_t));
+
+    if (!room->ufh_shares)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (uint8_t i = 0; i < share_count; i++)
+    {
+        if (shares[i].pct > 0)
+        {
+            room->ufh_shares[room->ufh_share_count++] = shares[i];
+        }
+    }
+
+    return ESP_OK;
+}
+
+uint8_t room_ufh_share_pct(const room_t *room, uint8_t emitter_id)
+{
+    for (uint8_t i = 0; i < room->ufh_share_count; i++)
+    {
+        if (room->ufh_shares[i].emitter_id == emitter_id)
+        {
+            return room->ufh_shares[i].pct;
+        }
+    }
+
+    return 0;
+}
+
+bool room_manager_forget_ufh_emitter(room_manager_t *manager, uint8_t emitter_id)
+{
+    bool changed = false;
+
+    for (room_t *room = manager->room_list; room != NULL; room = room->next)
+    {
+        uint8_t out = 0;
+
+        for (uint8_t i = 0; i < room->ufh_share_count; i++)
+        {
+            if (room->ufh_shares[i].emitter_id == emitter_id)
+            {
+                changed = true;
+                continue;
+            }
+
+            room->ufh_shares[out++] = room->ufh_shares[i];
+        }
+
+        room->ufh_share_count = out;
+
+        if (out == 0)
+        {
+            free(room->ufh_shares);
+            room->ufh_shares = NULL;
+        }
+    }
+
+    return changed;
+}
+
+// Reads room_ufh into rooms already loaded. A missing key is no shares; a share for a room that
+// no longer exists is dropped.
+static void load_ufh_shares_from_nvs(room_manager_t *manager)
+{
+    nvs_handle_t nvs_handle;
+
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle) != ESP_OK)
+    {
+        return;
+    }
+
+    size_t size = 0;
+    esp_err_t err = nvs_get_blob(nvs_handle, NVS_KEY_UFH, NULL, &size);
+
+    if (err != ESP_OK || size < 2)
+    {
+        nvs_close(nvs_handle);
+        return;
+    }
+
+    uint8_t *buffer = (uint8_t *)malloc(size);
+
+    if (!buffer)
+    {
+        nvs_close(nvs_handle);
+        return;
+    }
+
+    err = nvs_get_blob(nvs_handle, NVS_KEY_UFH, buffer, &size);
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK || buffer[0] != UFH_BLOB_VERSION || size < 2 + (size_t)buffer[1] * 3)
+    {
+        ESP_LOGW(TAG, "Ignoring unreadable UFH share blob");
+        free(buffer);
+        return;
+    }
+
+    uint8_t count = buffer[1];
+    const uint8_t *entry = buffer + 2;
+
+    for (uint16_t i = 0; i < count; i++, entry += 3)
+    {
+        room_t *room = find_room(manager, entry[0]);
+
+        if (!room || entry[2] == 0 || room->ufh_share_count >= ROOM_MAX_UFH_SHARES)
+        {
+            continue;
+        }
+
+        ufh_share_t *grown = (ufh_share_t *)realloc(room->ufh_shares, (room->ufh_share_count + 1) * sizeof(ufh_share_t));
+
+        if (!grown)
+        {
+            break;
+        }
+
+        room->ufh_shares = grown;
+        room->ufh_shares[room->ufh_share_count].emitter_id = entry[1];
+        room->ufh_shares[room->ufh_share_count].pct = entry[2];
+        room->ufh_share_count++;
+    }
+
+    free(buffer);
+}
+
+static esp_err_t save_ufh_shares_to_nvs(nvs_handle_t nvs_handle, room_manager_t *manager)
+{
+    size_t count = 0;
+
+    for (room_t *room = manager->room_list; room != NULL; room = room->next)
+    {
+        count += room->ufh_share_count;
+    }
+
+    if (count > UINT8_MAX)
+    {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    size_t size = 2 + count * 3;
+    uint8_t *buffer = (uint8_t *)malloc(size);
+
+    if (!buffer)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+
+    buffer[0] = UFH_BLOB_VERSION;
+    buffer[1] = (uint8_t)count;
+    uint8_t *entry = buffer + 2;
+
+    for (room_t *room = manager->room_list; room != NULL; room = room->next)
+    {
+        for (uint8_t i = 0; i < room->ufh_share_count; i++, entry += 3)
+        {
+            entry[0] = room->room_id;
+            entry[1] = room->ufh_shares[i].emitter_id;
+            entry[2] = room->ufh_shares[i].pct;
+        }
+    }
+
+    esp_err_t err = nvs_set_blob(nvs_handle, NVS_KEY_UFH, buffer, size);
+    free(buffer);
+
+    return err;
+}
+
 room_t *add_room(room_manager_t *manager, char *name, char *mqtt_name, int16_t target_temperature, uint8_t survey_heat_loss_per_degree, uint64_t room_temperature_node_id, uint16_t room_temperature_endpoint_id)
 {
     uint8_t new_room_id = get_next_room_id(manager);
@@ -258,6 +459,7 @@ esp_err_t remove_room(room_manager_t *manager, uint8_t room_id)
     free(current->name);
     free(current->mqtt_name);
     free(current->radiators);
+    free(current->ufh_shares);
     free(current);
     manager->room_count--;
 
@@ -284,6 +486,7 @@ void room_manager_free(room_manager_t *manager)
         free(current->name);
         free(current->mqtt_name);
         free(current->radiators);
+        free(current->ufh_shares);
         free(current);
 
         current = next;
@@ -413,6 +616,8 @@ esp_err_t load_rooms_from_nvs(room_manager_t *manager)
     manager->room_count = room_count;
     free(buffer);
 
+    load_ufh_shares_from_nvs(manager);
+
     return ESP_OK;
 }
 
@@ -505,6 +710,11 @@ esp_err_t save_rooms_to_nvs(room_manager_t *manager)
 
     err = nvs_set_blob(nvs_handle, NVS_KEY, buffer, required_size);
     free(buffer);
+
+    if (err == ESP_OK)
+    {
+        err = save_ufh_shares_to_nvs(nvs_handle, manager);
+    }
 
     if (err == ESP_OK)
     {

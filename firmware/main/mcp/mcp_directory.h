@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 // The rooms and radiators as configured now: what list_rooms reports alongside the recorded
 // series, so a caller can tell which id is the kitchen and what a radiator is rated at.
@@ -15,6 +16,7 @@
 
 #define MCP_NAME_MAX           48
 #define MCP_ROOM_RADIATORS_MAX 16
+#define MCP_ROOM_UFH_SHARES_MAX 8
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,12 +29,16 @@ typedef struct {
     uint8_t heat_loss_w_per_c; // predicted, as entered
     uint8_t radiator_count;
     uint8_t radiators[MCP_ROOM_RADIATORS_MAX];
+    // Percentages of UFH manifolds' output this room takes.
+    uint8_t ufh_share_count;
+    struct { uint8_t manifold_id; uint8_t pct; } ufh_shares[MCP_ROOM_UFH_SHARES_MAX];
 } mcp_room_info_t;
 
 typedef struct {
     uint8_t  id;
     char     name[MCP_NAME_MAX];
-    uint16_t rated_output_w; // at a mean-water-to-air difference of 50 degC
+    uint16_t rated_output_w; // at a mean-water-to-air difference of 50 degC; for a UFH manifold, its rated output
+    bool     is_ufh_manifold;
 } mcp_radiator_info_t;
 
 // Each fills up to `max` entries and returns how many it wrote.

@@ -609,6 +609,16 @@ static void write_radiator(mcp_out_t *o, const mcp_radiator_info_t *rad)
     out_str(o, "}");
 }
 
+static void write_ufh_manifold(mcp_out_t *o, const mcp_radiator_info_t *rad)
+{
+    out_printf(o, "{\"id\":%u,\"name\":", rad->id);
+    out_json_string(o, rad->name);
+    out_printf(o, ",\"rated_output_w\":%u,\"series\":[\"radiator_%u_flow_temp_c\",\"radiator_%u_return_temp_c\"]",
+               rad->rated_output_w, rad->id, rad->id);
+    write_recorded_days(o, KIND_RADIATOR, rad->id);
+    out_str(o, "}");
+}
+
 static esp_err_t tool_list_rooms(httpd_req_t *req, const char *id)
 {
     mcp_room_info_t     *rooms = malloc(MCP_MAX_ROOMS * sizeof(mcp_room_info_t));
@@ -650,7 +660,25 @@ static esp_err_t tool_list_rooms(httpd_req_t *req, const char *id)
                 }
             }
         }
+        out_str(o, "],\"ufh_shares\":[");
+        for (uint8_t s = 0; s < room->ufh_share_count; s++) {
+            out_printf(o, "%s{\"manifold_id\":%u,\"pct\":%u}", s ? "," : "",
+                       room->ufh_shares[s].manifold_id, room->ufh_shares[s].pct);
+        }
         out_str(o, "]}");
+    }
+
+    // UFH manifolds are in no room's radiator list, so they are listed on their own, never as
+    // unassigned radiators. Their probes are recorded like a radiator's.
+    out_str(o, "],\"ufh_manifolds\":[");
+    bool any_manifold = false;
+    for (size_t k = 0; k < rad_count; k++) {
+        if (rads[k].is_ufh_manifold) {
+            out_str(o, any_manifold ? "," : "");
+            write_ufh_manifold(o, &rads[k]);
+            placed[k]    = true;
+            any_manifold = true;
+        }
     }
 
     // A radiator in no room is still recorded, so it is still listed.

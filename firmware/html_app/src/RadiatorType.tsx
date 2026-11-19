@@ -29,6 +29,8 @@ function RadiatorType({ children }: { children: any }) {
       return <span>Type 33 (K3)</span>;
     case 44:
       return <span>Type 44 (K4)</span>;
+    case 100:
+      return <span>UFH manifold</span>;
     default:
       return <span>Unknown Value: {firstChild}</span>
   }

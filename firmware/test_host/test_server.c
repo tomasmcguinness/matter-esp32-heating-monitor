@@ -169,7 +169,7 @@ size_t mcp_directory_rooms(mcp_room_info_t *out, size_t max)
 {
     static const mcp_room_info_t ROOMS[] = {
         {.id = 1, .name = "Kitchen \"big\"", .target_temp_c100 = 2100, .heat_loss_w_per_c = 45,
-         .radiator_count = 1, .radiators = {3}},
+         .radiator_count = 1, .radiators = {3}, .ufh_share_count = 1, .ufh_shares = {{.manifold_id = 12, .pct = 60}}},
         {.id = 2, .name = "Hall", .target_temp_c100 = 1850, .heat_loss_w_per_c = 20},
     };
     size_t n = sizeof(ROOMS) / sizeof(ROOMS[0]) < max ? sizeof(ROOMS) / sizeof(ROOMS[0]) : max;
@@ -182,6 +182,7 @@ size_t mcp_directory_radiators(mcp_radiator_info_t *out, size_t max)
     static const mcp_radiator_info_t RADS[] = {
         {.id = 3, .name = "Kitchen K2", .rated_output_w = 1200},
         {.id = 9, .name = "Spare", .rated_output_w = 500},
+        {.id = 12, .name = "Ground floor UFH", .rated_output_w = 3000, .is_ufh_manifold = true},
     };
     size_t n = sizeof(RADS) / sizeof(RADS[0]) < max ? sizeof(RADS) / sizeof(RADS[0]) : max;
     memcpy(out, RADS, n * sizeof(RADS[0]));
@@ -564,6 +565,19 @@ static void test_list_rooms(void)
     const cJSON *hall = cJSON_GetArrayItem(rooms, 1);
     CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(hall, "radiators")) == 0);
     CHECK(cJSON_IsNull(cJSON_GetObjectItem(hall, "first_day")));
+
+    // The kitchen takes 60% of the manifold; the hall has no shares.
+    const cJSON *shares = cJSON_GetObjectItem(kitchen, "ufh_shares");
+    CHECK(cJSON_GetArraySize(shares) == 1);
+    CHECK(num(cJSON_GetArrayItem(shares, 0), "manifold_id") == 12 && num(cJSON_GetArrayItem(shares, 0), "pct") == 60);
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(hall, "ufh_shares")) == 0);
+
+    // The manifold is listed on its own, with its probes' series, and not as an unassigned radiator.
+    const cJSON *manifolds = cJSON_GetObjectItem(r.result, "ufh_manifolds");
+    CHECK(cJSON_GetArraySize(manifolds) == 1);
+    CHECK(num(cJSON_GetArrayItem(manifolds, 0), "id") == 12 && num(cJSON_GetArrayItem(manifolds, 0), "rated_output_w") == 3000);
+    CHECK(strcmp(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(manifolds, 0), "series"), 0)->valuestring,
+                 "radiator_12_flow_temp_c") == 0);
 
     const cJSON *spare = cJSON_GetObjectItem(r.result, "unassigned_radiators");
     CHECK(cJSON_GetArraySize(spare) == 1 && num(cJSON_GetArrayItem(spare, 0), "id") == 9);

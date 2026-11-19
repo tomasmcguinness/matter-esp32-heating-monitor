@@ -1,4 +1,4 @@
-import { NavLink, Routes, Route, useLocation } from "react-router";
+import { NavLink, Navigate, Routes, Route, useLocation, useParams } from "react-router";
 import './App.css'
 import Home from './Home.tsx'
 import EditHome from './EditHome.tsx'
@@ -10,10 +10,10 @@ import AddDevice from './AddDevice.tsx'
 import EditDevice from "./EditDevice.tsx";
 import CommissioningWindow from "./CommissioningWindow.tsx";
 
-import Radiator from './Radiator.tsx'
-import Radiators from './Radiators.tsx'
-import AddRadiator from './AddRadiator.tsx'
-import EditRadiator from "./EditRadiator.tsx";
+import Emitter from './Emitter.tsx'
+import Emitters from './Emitters.tsx'
+import AddEmitter from './AddEmitter.tsx'
+import EditEmitter from "./EditEmitter.tsx";
 
 import Room from './Room.tsx'
 import Rooms from './Rooms.tsx'
@@ -27,6 +27,12 @@ import History from "./History.tsx";
 import Settings from "./Settings.tsx";
 import Status from "./Status.tsx";
 import Diagnostics from "./Diagnostics.tsx";
+
+// The Radiators tab became Emitters. Old links and bookmarks still land on the same page.
+function RadiatorRedirect({ suffix = "" }: { suffix?: string }) {
+  const { radiatorId } = useParams();
+  return <Navigate replace to={radiatorId ? `/emitters/${radiatorId}${suffix}` : `/emitters${suffix}`} />;
+}
 
 function App() {
 
@@ -55,7 +61,7 @@ function App() {
                 <NavLink className="nav-link" to="/rooms">Rooms</NavLink>
               </li>
               <li className="nav-item">
-                <NavLink className="nav-link" to="/radiators">Radiators</NavLink>
+                <NavLink className="nav-link" to="/emitters">Emitters</NavLink>
               </li>
               <li className="nav-item">
                 <NavLink className="nav-link" to="/devices">Devices</NavLink>
@@ -91,10 +97,15 @@ function App() {
             <Route path="/rooms/:roomId/edit" element={<EditRoom />} />
             <Route path="/rooms/:roomId/history" element={<RoomHistory />} />
 
-            <Route path="/radiators" element={<Radiators />} />
-            <Route path="/radiators/add" element={<AddRadiator />} />
-            <Route path="/radiators/:radiatorId" element={<Radiator />} />
-            <Route path="/radiators/:radiatorId/edit" element={<EditRadiator />} />
+            <Route path="/emitters" element={<Emitters />} />
+            <Route path="/emitters/add" element={<AddEmitter />} />
+            <Route path="/emitters/:radiatorId" element={<Emitter />} />
+            <Route path="/emitters/:radiatorId/edit" element={<EditEmitter />} />
+
+            <Route path="/radiators" element={<RadiatorRedirect />} />
+            <Route path="/radiators/add" element={<RadiatorRedirect suffix="/add" />} />
+            <Route path="/radiators/:radiatorId" element={<RadiatorRedirect />} />
+            <Route path="/radiators/:radiatorId/edit" element={<RadiatorRedirect suffix="/edit" />} />
 
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/add" element={<AddDevice />} />

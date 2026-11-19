@@ -26,6 +26,13 @@ size_t mcp_directory_rooms(mcp_room_info_t *out, size_t max)
         {
             info->radiators[info->radiator_count++] = room->radiators[r];
         }
+
+        for (uint8_t s = 0; s < room->ufh_share_count && info->ufh_share_count < MCP_ROOM_UFH_SHARES_MAX; s++)
+        {
+            info->ufh_shares[info->ufh_share_count].manifold_id = room->ufh_shares[s].emitter_id;
+            info->ufh_shares[info->ufh_share_count].pct = room->ufh_shares[s].pct;
+            info->ufh_share_count++;
+        }
     }
 
     return count;
@@ -43,6 +50,7 @@ size_t mcp_directory_radiators(mcp_radiator_info_t *out, size_t max)
         info->id = radiator->radiator_id;
         strlcpy(info->name, radiator->name ? radiator->name : "", sizeof(info->name));
         info->rated_output_w = radiator->output_dt_50;
+        info->is_ufh_manifold = is_ufh_manifold(radiator);
     }
 
     return count;

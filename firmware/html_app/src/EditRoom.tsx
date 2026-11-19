@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import { NavLink, useParams, useNavigate } from "react-router"
 import SensorSelect from "./SensorSelect"
 import EmitterCard from "./EmitterCard"
-import { emitterToRadiatorJson, type Emitter } from "./emitter"
+import { emitterToRadiatorJson, ufhSharesToJson, type Emitter, type UfhShares } from "./emitter"
+import UfhShareInputs from "./UfhShareInputs"
 
 function EditRoom() {
 
@@ -17,6 +18,7 @@ function EditRoom() {
   const [temperatureSensor, setTemperatureSensor] = useState<string>('0|0');
 
   const [emitters, setEmitters] = useState<Emitter[]>([]);
+  const [ufhShares, setUfhShares] = useState<UfhShares>({});
   const [saving, setSaving] = useState(false);
 
   // The radiators the room had when it was loaded. Any that are no longer on the form when it is
@@ -39,6 +41,7 @@ function EditRoom() {
       setTargetTemperature(data.targetTemperature / 100);
       setHeatLossPerDegree(data.heatLossPerDegree);
       setTemperatureSensor(`${data.temperatureSensorNodeId}|${data.temperatureSensorEndpointId}`);
+      setUfhShares(Object.fromEntries((data.ufhShares ?? []).map((s: { emitterId: number; pct: number }) => [s.emitterId, s.pct])));
 
       // The room only summarises its radiators, so fetch each one for the fields the form edits.
       const radiatorIds: number[] = data.radiators.map((r: { radiatorId: number }) => r.radiatorId);
@@ -121,7 +124,7 @@ function EditRoom() {
           const response = await fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body });
 
           if (!response.ok) {
-            alert(`Failed to add the emitter ${emitter.name}. The room has not been saved. Any emitters already added can be found on the Radiators page.`);
+            alert(`Failed to add the emitter ${emitter.name}. The room has not been saved. Any emitters already added can be found on the Emitters page.`);
             return;
           }
 
@@ -141,12 +144,14 @@ function EditRoom() {
         radiatorIds,
         temperatureSensorNodeId,
         temperatureSensorEndpointId,
+        ufhShares: ufhSharesToJson(ufhShares),
       });
 
       const roomResponse = await fetch(`/api/rooms/${roomId}`, { method: "PUT", headers: { 'Content-Type': 'application/json' }, body: roomJson });
 
       if (!roomResponse.ok) {
-        alert("Failed to update the room. Any emitters that were added can be found on the Radiators page.");
+        const reason = await roomResponse.text();
+        alert(`Failed to update the room${reason ? `: ${reason}` : ''}. Any emitters that were added can be found on the Emitters page.`);
         return;
       }
 
@@ -156,7 +161,7 @@ function EditRoom() {
         const response = await fetch(`/api/radiators/${radiatorId}`, { method: "DELETE" });
 
         if (!response.ok) {
-          alert(`Failed to delete a removed emitter. It can still be found on the Radiators page.`);
+          alert(`Failed to delete a removed emitter. It can still be found on the Emitters page.`);
         }
       }
 
@@ -201,6 +206,8 @@ function EditRoom() {
 
         {emitters.length === 0 && <div className="alert alert-info">This room has no emitters.</div>}
         {emitterCards}
+
+        <UfhShareInputs roomId={roomId ? parseInt(roomId) : undefined} shares={ufhShares} onChange={setUfhShares} />
 
         <button type="submit" className="btn btn-primary" style={{ 'marginRight': '5px' }} disabled={saving}>{saving ? 'Saving...' : 'Save'}</button>
         <NavLink className="btn btn-danger" to={`/rooms/${roomId}`}>Cancel</NavLink>

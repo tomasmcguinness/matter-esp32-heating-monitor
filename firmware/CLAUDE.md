@@ -119,7 +119,7 @@ The project has two distinct parts that must both be built:
 | `calculations_manager` | (no global) | Derives heat loss and radiator output from the other managers |
 
 Other directories under `main/`: `storage/` (SD card history), `mqtt/` (Home Assistant), `mcp/`
-(the read-only MCP server), `emoncms/` (the emoncms uploader), `commands/` and `utilities/`. `test_host/`, beside `main/`, holds
+(the read-only MCP server), `emoncms/` (the emoncms uploader), `myheatpump/` (the MyHeatPump status pusher), `commands/` and `utilities/`. `test_host/`, beside `main/`, holds
 desktop tests for the parts of `mcp/` that need no board, and for `history_convert/`, also beside
 `main/`: the PC program that converts a card's history to the current format (see *Converting the
 SD card*).
@@ -164,8 +164,9 @@ on an interview only, so **a heat pump paired before it had the endpoint must be
 (the Interview button on its device page; re-pairing is not needed) for defrost to be found. A heat
 pump with no such endpoint leaves defrost unknown: `defrosting` is null in `GET /api/home`, the
 `heatPump` object has no `defrosting` key (so `HeatPump.tsx` shows no Defrost card), and history
-records the sentinel. With one, `heatPump.defrosting` is true, false or null until it reports. It is
-not on MQTT or Home Assistant yet.
+records the sentinel. With one, `heatPump.defrosting` is true, false or null until it reports. The
+MQTT home state carries it as `defrosting` (true, false or null), announced to Home Assistant as a
+binary sensor.
 
 The section is built from **everything on the heat pump's node**, not from the heat pump endpoint's
 `PartsList`, which is never read:
@@ -582,7 +583,7 @@ Claude Code with `claude mcp add --transport http heating-monitor http://<board-
 | `get_series` | Series over a range as `{ interval_seconds, timestamps, series }`; at most 1000 points each unless an interval is named, never more than 5000 |
 | `summarise_cycles` | Each compressor run in a range, plus a period summary |
 | `compare_periods` | Two period summaries side by side, each with its mean outdoor temperature |
-| `list_rooms` | Each room with its radiators: id, name, target, ratings, series ids, first and last recorded day |
+| `list_rooms` | Each room with its radiators and UFH shares, and the UFH manifolds: id, name, target, ratings, series ids, first and last recorded day |
 
 The cycle tools and `list_series` only read `/sdcard/home-*`. `get_series` also reads a room's or
 a radiator's day files, and `list_rooms` reads the configuration. Nothing in `mcp/` writes to the
@@ -713,6 +714,43 @@ On the Settings page this is `EmoncmsSettings.tsx`. The last payload is listed a
 `inputs` the status response names, so a reading that was not sent shows as "missing" rather than
 just being absent from the table.
 
+**The MyHeatPump pusher (`myheatpump/myheatpump_pusher.{h,cpp}`):**
+
+Every `interval_s` (default 60, 10–3600) it POSTs the whole current status as JSON to
+`<base_url>/api/status`: a UTC `timestamp`, `system` readings, `rooms` (each with its `radiators` and
+`ufh_shares`) and `ufh_manifolds`. The body is documented at the top of the .cpp. A missing reading is
+`null`, never 0. `X-Api-Key` is sent only when a key is stored. The server answers 202; 400 and 401
+are logged as failures.
+
+Only the latest status matters, so **nothing is buffered or retried**. A failed post is recorded and
+logged, and the next attempt is the next timer tick, with fresh readings. The timer has
+`skip_unhandled_events`, so a slow post can't queue up a burst. The HTTP timeout is 5 s, and
+everything happens on the pusher's own task.
+
+It reads no sensors of its own:
+- Home readings come from `home_manager`, read unlocked one field at a time.
+- Room and radiator readings come from the history logger's snapshot, through
+  `history_logger_room_reading()` and `history_logger_radiator_reading()`.
+- Names, targets, ratings, radiator lists and UFH shares come from `mcp_directory`, the source
+  `list_rooms` uses. That has to run on the HTTP task, so the pusher queues it there with
+  `httpd_queue_work()` and waits up to 2 s. If the HTTP task is busy (an emoncms test post can hold
+  it for many seconds), it uses the copy from last time.
+
+**The body is streamed, not built.** Everything is copied into one snapshot first (in PSRAM). The
+JSON is then written from it twice: once only counting, for `Content-Length`, and once to the socket
+in 256-byte chunks. The snapshot doesn't change between the two passes, so the count is exact.
+
+Configuration is in the NVS namespace `myheatpump` (`enabled`, `base_url`, `api_key`, `interval_s`).
+It is disabled by default, and nothing is sent while the URL is empty.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/myheatpump/config` | `key_set` in place of the key |
+| `PUT` | `/api/myheatpump/config` | Absent fields are kept; an empty `api_key` keeps the stored one, and `clear_key: true` removes it |
+| `GET` | `/api/myheatpump/status` | Last success, last error, counters, size of the last payload |
+
+On the Settings page this is `MyHeatPumpSettings.tsx`.
+
 **MQTT / Home Assistant (`mqtt/ha_discovery.{h,cpp}`):**
 
 The home, every room and every radiator are announced to Home Assistant with retained
@@ -749,6 +787,64 @@ handlers announce or remove single rooms and radiators directly when they change
 entity is one row in the `*_SENSORS` tables, plus the matching key in `calculations_manager.cpp`.
 A row with `binary` set is a true/false in the payload and is announced as a `binary_sensor`,
 whose template maps it to `ON` / `OFF` and a null to `None` (unknown).
+
+**`heating_monitor/config` (`mqtt/config_topic.{h,cpp}`)** is a retained message for subscribers
+other than Home Assistant (the myheatpump site), which needs what the state topics leave out: each
+room's and emitter's numeric id (how the SD card names `room-<id>/` and `rad-<id>/`), its state
+topic, target, heat loss per degree, rated output, radiator membership and UFH shares. Its
+layout is in the header; `schema` goes up only if a field changes meaning or goes away.
+`config_topic_mark_pending()` asks for it and is safe from any task. It is called on connect (from
+`ha_discovery_announce_all()`) and by the room and radiator POST, PUT and DELETE handlers and
+`/api/reset`. `config_topic_publish_pending()` builds and queues it from `update_home()`, beside
+`ha_discovery_announce_pending()` and for the same reason, so it goes out on the next calculation,
+within a minute. It is about 150 bytes per room or emitter and has to fit the client's 6144-byte
+out buffer, which is about 40 of them.
+
+**Underfloor heating: manifolds as emitters (TASK-42):**
+
+The web UI's **Emitters** tab (formerly Radiators; `/radiators/*` redirects to `/emitters/*`) lists
+radiators and **UFH manifolds**. A manifold is a **radiator record with `type` 100**
+(`EMITTER_TYPE_UFH_MANIFOLD`, `is_ufh_manifold()` in `radiator_manager.h`), so it has the radiator
+mechanisms already: two probe endpoints, the `radiator_list` NVS blob (unchanged), the
+`/api/radiators/*` routes (`kind` is `"radiator"` or `"ufhManifold"`), `rad-<id>` history and the
+`radiator_<id>_flow/return_temp_c` MCP series. For a manifold `output_dt_50` is its **rated output**,
+used only as a weight.
+
+A manifold is never in a room's `radiators[]` (room POST/PUT refuse one, and a radiator that is in a
+room cannot be made one). Rooms take a **percentage** of it instead: `room_t::ufh_shares`
+(`{emitter_id, pct}`, up to `ROOM_MAX_UFH_SHARES` per room), set by `ufhShares: [{emitterId, pct}]`
+on room POST/PUT (absent on PUT leaves them as they are) and validated in full before anything
+changes — the manifold must exist, and every manifold's shares across all rooms total at most 100.
+They are persisted under their **own NVS key, `room_ufh`** in the `rooms` namespace (u8 version 1,
+u8 count, then `{room_id, emitter_id, pct}` triples), so the variable-length `room_list` blob is
+untouched and firmware without the key loads as before. Deleting a room drops its shares; deleting a
+manifold, or changing its type, drops the shares of it.
+
+**A manifold's output is the heat meter's residual**, since the loop has no flow meter.
+`update_ufh_outputs()` in `calculations_manager.cpp` works it out for every manifold at once:
+heat meter minus the summed output of every radiator that is in a room, floored at 0, and 0 unless
+the heat pump is space heating and not making hot water. It is split between the manifolds that are
+circulating (|flow − return| ≥ 0.5 K) in proportion to rated output (a rating of 0 weighs 1 W, so
+all-zero ratings split evenly). It is **absent** for every manifold while the meter or heating
+state is unknown, any radiator in a room has no output, or any manifold is short of a probe
+reading. The same pass sets each room's `ufh_input_w` (absent if any manifold it shares is) and the
+home's `total_ufh_output` and `ufh_unassigned_output`. A room's heat input, and so its measured heat
+loss, is its radiators plus its UFH input; a room with a share whose input is absent has no
+measured heat loss. Every model error in the radiators lands in the residual, which is why it is only
+given when it can be.
+
+`attribute_data_cb` matches a radiator's probes on **node and endpoint** and walks every radiator, so
+one multi-probe node can feed a manifold and radiators. The heat meter's power calls
+`update_ufh_rooms(false)`, which recalculates the rooms with a share at most every 30 s (their MQTT
+state is published each time) and only refreshes the figures in between; a manifold probe report,
+a heating or hot water change, and a manifold being added, edited or deleted force it.
+
+`GET /api/home` (and the `home` push) carry `ufhManifoldCount`, `totalUfhOutput` and
+`ufhUnassignedOutput`; `radiatorCount` and `totalRadiatorOutput` exclude manifolds. Rooms carry
+`ufhShares: [{emitterId, name, pct, input}]`, `ufhInput`, `radiatorInput`, and `heatInput`, which
+now includes UFH. A manifold's detail carries `shares: [{roomId, roomName, pct, input}]`. MCP
+`list_rooms` lists manifolds under `ufh_manifolds` and each room's `ufh_shares`. The output is not
+recorded, following the measurements-only rule.
 
 **Commodity Price and the running cost:**
 
@@ -814,7 +910,7 @@ Crash backtraces need no coredump: the panic is on the console, and `xtensa-esp3
 ### Web App (`html_app/`)
 
 React 19 + TypeScript, built with Vite. Uses:
-- **React Router v7** for client-side routing (Home, Layout, Rooms, Radiators, Devices, History)
+- **React Router v7** for client-side routing (Home, Layout, Rooms, Emitters, Devices, History)
 - **uPlot** for the charts — chosen over heavier chart libraries because the whole bundle is
   embedded in the firmware image and ships in every OTA
 
@@ -884,7 +980,7 @@ with it `vis-network`, `vis-data`, `POST /api/network` (`network_post_handler`, 
 node, stored on `matter_node_t::ext_address`, persisted in the node NVS blob and reported by
 `GET /api/nodes` as `extAddress`.
 
-Routes mirror the REST API structure: `/rooms`, `/rooms/:roomId`, `/radiators`, `/radiators/:radiatorId`, `/devices`, `/devices/:nodeId`, etc.
+Routes mirror the REST API structure: `/rooms`, `/rooms/:roomId`, `/emitters`, `/emitters/:radiatorId` (radiators and UFH manifolds, on `/api/radiators`), `/devices`, `/devices/:nodeId`, etc.
 
 `/layout` (`Layout.tsx`) is the exception — it is a view over the whole system rather than one
 resource. It draws the circuit as a schematic: a flow trunk across the top, a return trunk across

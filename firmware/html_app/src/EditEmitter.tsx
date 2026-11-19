@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { NavLink, useParams, useNavigate } from "react-router";
 import SensorSelect from "./SensorSelect";
+import { UFH_MANIFOLD_TYPE } from "./emitter";
 
-function EditRadiator() {
+// Edits a radiator or a UFH manifold. The kind is fixed once added: the type list here does not
+// offer the manifold type, and a manifold keeps its type.
+//
+function EditEmitter() {
 
   let { radiatorId } = useParams();
 
@@ -14,6 +18,9 @@ function EditRadiator() {
   const [output, setOutput] = useState<number>(0);
   const [flowSensor, setFlowSensor] = useState<string>('0|0');
   const [returnSensor, setReturnSensor] = useState<string>('0|0');
+  const [isManifold, setIsManifold] = useState<boolean>(false);
+
+  const noun = isManifold ? "UFH Manifold" : "Radiator";
 
   useEffect(() => {
     fetch('/api/sensors').then(response => response.json()).then(_ => {
@@ -22,6 +29,7 @@ function EditRadiator() {
         setMqttName(data.mqttName);
         setType(data.type);
         setOutput(data.output);
+        setIsManifold(data.type === UFH_MANIFOLD_TYPE);
         setFlowSensor(`${data.flowSensorNodeId}|${data.flowSensorEndpointId}`);
         setReturnSensor(`${data.returnSensorNodeId}|${data.returnSensorEndpointId}`);
       });
@@ -46,7 +54,7 @@ function EditRadiator() {
       name,
       mqttName,
       type,
-      output,
+      output: output || 0,
       flowSensorNodeId,
       flowSensorEndpointId,
       returnSensorNodeId,
@@ -56,16 +64,16 @@ function EditRadiator() {
 
     fetch(`/api/radiators/${radiatorId}`, { method: "PUT", headers: { 'Content-Type': 'application/json' }, body: json }).then(r => {
       if (r.ok) {
-        navigate(`/radiators/${radiatorId}`);
+        navigate(`/emitters/${radiatorId}`);
       } else {
-        alert("Failed to update radiator");
+        r.text().then(reason => alert(`Failed to update ${noun.toLowerCase()}${reason ? `: ${reason}` : ''}`));
       }
     });
   }
 
   return (
     <>
-      <h1>Update Radiator {radiatorId}</h1>
+      <h1>Update {noun} {radiatorId}</h1>
       <hr />
       <div className="mb-3">
         <label htmlFor="name" className="form-label">Name <span style={{ 'color': 'red' }}>*</span></label>
@@ -75,7 +83,7 @@ function EditRadiator() {
           <label htmlFor="mqttName" className="form-label">MQTT Name</label>
           <input type="text" name="mqttName" maxLength={20} className="form-control" id="mqttName" placeholder="office" required={false} value={mqttName || ''} onChange={(e) => setMqttName(e.target.value)} />
         </div>
-      <div className="mb-3">
+      {!isManifold && <div className="mb-3">
         <label htmlFor="type" className="form-label">Type <span style={{ 'color': 'red' }}>*</span></label>
         <select name="type" className="form-control" id="type" required={true} value={type} onChange={(e) => setType(parseInt(e.target.value))}>
           <option value="0">Designer</option>
@@ -88,11 +96,17 @@ function EditRadiator() {
           <option value="33">Type 33 (K3)</option>
           <option value="44">Type 44 (K4)</option>
         </select>
-      </div>
-      <div className="mb-3">
-        <label htmlFor="output" className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
-        <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
-      </div>
+      </div>}
+      {isManifold
+        ? <div className="mb-3">
+          <label htmlFor="output" className="form-label">Rated Output (W)</label>
+          <input type="number" name="output" min={0} className="form-control" id="output" placeholder="3000" value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
+          <div className="form-text">Used only to split the underfloor heat between manifolds. With one manifold, or every rating left blank, it makes no difference.</div>
+        </div>
+        : <div className="mb-3">
+          <label htmlFor="output" className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
+          <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
+        </div>}
       <div className="row g-2 mb-3">
         <div className="col-12 col-md">
           <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={true} id="flowTemperatureSensor" selectedSensor={flowSensor || ''} onSelectedSensorChange={(e) => setFlowSensor(e)} />
@@ -108,9 +122,9 @@ function EditRadiator() {
         </div>
       </div>
       <button type="submit" className="btn btn-primary" onClick={saveRadiator} style={{ 'marginRight': '5px' }}>Save</button>
-      <NavLink className="btn btn-danger" to={`/radiators/${radiatorId}`}>Cancel</NavLink>
+      <NavLink className="btn btn-danger" to={`/emitters/${radiatorId}`}>Cancel</NavLink>
     </>
   )
 }
 
-export default EditRadiator
+export default EditEmitter
