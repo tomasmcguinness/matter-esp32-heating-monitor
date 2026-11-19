@@ -9,11 +9,14 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
-# mbedTLS allocates with plain malloc rather than from internal RAM only. A TLS client connection
-# (the emoncms uploader) needs a 16 KB receive buffer in one piece, which internal RAM cannot be
-# relied on to have: mbedtls_ssl_setup fails with -0x7F00. With SPIRAM_MALLOC_ALWAYSINTERNAL at
-# 16384 that buffer comes from PSRAM, and the small allocations Matter's crypto makes stay internal.
-CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+# mbedTLS and CHIP allocate from PSRAM. Internal RAM ran out while a TLS handshake (emoncms) and
+# CASE sessions for several resubscriptions were in flight together, and the W5500 driver's
+# per-frame DMA bounce buffer then failed to allocate, which ESP-IDF's spi_master turns into a
+# NULL memcpy panic. Internal RAM was never a safe home for TLS anyway: mbedtls_ssl_setup needs a
+# 16 KB receive buffer in one piece and failed with -0x7F00 when limited to it. The cost is speed:
+# CASE's bignum arithmetic runs from PSRAM, so it holds the CHIP task a little longer.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_CHIP_MEM_ALLOC_MODE_EXTERNAL=y
 
 #enable BT
 CONFIG_BT_ENABLED=y

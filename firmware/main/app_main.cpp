@@ -1515,15 +1515,74 @@ static void on_commissioning_failure_callback(ScopedNodeId peer_id,
     signal_commissioning_complete(false, error);
 }
 
+// Removes the controller's ICD registration for a node, if it has one. CHIP task only.
+//
+// The lookup comes first because DefaultICDClientStorage::DeleteEntry does not check: asked for a
+// node it has no entry for, it rewrites the list unchanged and still decrements the fabric's entry
+// count.
+static void delete_icd_entry(NodeId node_id)
+{
+    auto &icd_client_storage = esp_matter::controller::matter_controller_client::get_instance().get_icd_client_storage();
+
+    bool found = false;
+    app::ICDClientInfo info;
+
+    {
+        auto iter = icd_client_storage.IterateICDClientInfo();
+
+        if (iter == nullptr)
+        {
+            ESP_LOGE(TAG, "Could not look up the ICD entry for node 0x%016llX", node_id);
+            return;
+        }
+
+        // Released at the end of this block, before DeleteEntry: the pool has a single iterator,
+        // and leaking it stops every later check-in from being processed.
+        app::DefaultICDClientStorage::ICDClientInfoIteratorWrapper wrapper(iter);
+
+        while (iter->Next(info))
+        {
+            if (info.peer_node.GetNodeId() == node_id)
+            {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if (!found)
+    {
+        return;
+    }
+
+    CHIP_ERROR err = icd_client_storage.DeleteEntry(info.peer_node);
+
+    if (err != CHIP_NO_ERROR)
+    {
+        ESP_LOGE(TAG, "Failed to delete the ICD entry for node 0x%016llX: %" CHIP_ERROR_FORMAT, node_id, err.Format());
+        return;
+    }
+
+    ESP_LOGI(TAG, "Deleted the ICD entry for node 0x%016llX", node_id);
+}
+
 static void on_unpair_complete_callback(NodeId removed_node, CHIP_ERROR error)
 {
     if (error == CHIP_NO_ERROR)
     {
+        // esp-matter's remove_fabric_handler deletes the ICD entry itself after this returns.
         ESP_LOGI(TAG, "Unpairing successful for NodeId: %llu", removed_node);
     }
     else
     {
         ESP_LOGE(TAG, "Unpairing failed for NodeId: %llu, error: %s", removed_node, ErrorStr(error));
+
+        // A sleeping ICD rarely answers RemoveFabric, and esp-matter deletes the ICD entry only
+        // when it does. The node is gone from the node manager regardless, so an entry left behind
+        // here outlives it. Its key then still decrypts check-ins -- including those of a node
+        // re-paired with the same key -- and every one is spent on a key refresh for a node that
+        // no longer exists, never reaching on_icd_checkin_callback.
+        delete_icd_entry(removed_node);
     }
 }
 
