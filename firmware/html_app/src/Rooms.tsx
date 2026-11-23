@@ -61,10 +61,16 @@ function Rooms() {
       return <span title="Measured heat loss matches the prediction">±0%</span>;
     }
 
-    // Up and red: the room loses more heat than predicted. Down and green: less.
+    // Up and red: the room loses more heat than predicted. Down and green: less. Inline SVG (Bootstrap
+    // Icons' caret-up-fill / caret-down-fill) because the icon font is not part of the embedded bundle.
     return (
       <span title={`Measured heat loss is ${Math.abs(pct)}% ${pct > 0 ? 'above' : 'below'} the prediction`}>
-        <i className={pct > 0 ? 'bi bi-caret-up-fill text-danger' : 'bi bi-caret-down-fill text-success'} aria-hidden="true"></i>
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"
+          className={pct > 0 ? 'text-danger' : 'text-success'} style={{ 'verticalAlign': 'baseline' }}>
+          {pct > 0
+            ? <path d="m7.247 4.86-4.796 5.481c-.566.647-.106 1.659.753 1.659h9.592a1 1 0 0 0 .753-1.659l-4.796-5.48a1 1 0 0 0-1.506 0z" />
+            : <path d="M7.247 11.14 2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z" />}
+        </svg>
         {' '}{Math.abs(pct)}%
         <span className="visually-hidden">{pct > 0 ? ' above prediction' : ' below prediction'}</span>
       </span>
@@ -79,6 +85,7 @@ function Rooms() {
   let rooms = [...roomList].sort((a: any, b: any) => a.name.localeCompare(b.name)).map((n: any) => {
     return (<tr key={n.roomId} onClick={() => navigate(`/rooms/${n.roomId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
+      <td><Temperature>{n.targetTemperature}</Temperature></td>
       <td><Temperature>{n.currentTemperature}</Temperature></td>
       <td><Power>{n.heatInput}</Power></td>
       <td><Power>{n.predictedHeatLoss}</Power></td>      
@@ -97,6 +104,7 @@ function Rooms() {
         <thead>
           <tr>
             <th>Name</th>
+            <th>Target Temp</th>
             <th>Current Temp</th>
             <th>Heat Input</th>
             <th>Predicted Heat Loss</th>
@@ -110,6 +118,7 @@ function Rooms() {
         <tfoot>
           <tr>
             <th>Totals</th>
+            <th></th>
             <th></th>
             <th></th>
             <th><Power>{totalPredictedHeatLoss}</Power></th>
