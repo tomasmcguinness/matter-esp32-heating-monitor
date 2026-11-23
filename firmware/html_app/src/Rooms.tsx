@@ -47,6 +47,30 @@ function Rooms() {
     fetchData();
   }, []);
 
+  // heatLossDifference is a ratio, measured / predicted x 100, so 112 is a measured loss 12% above
+  // the prediction and 85 one 15% below it. Shown as that signed difference, never as the ratio,
+  // which read as a difference with no direction.
+  const difference = (ratio: number | null | undefined) => {
+    if (ratio == null || ratio === 0) {
+      return '-';
+    }
+
+    const pct = Math.round(ratio - 100);
+
+    if (pct === 0) {
+      return <span title="Measured heat loss matches the prediction">±0%</span>;
+    }
+
+    // Up and red: the room loses more heat than predicted. Down and green: less.
+    return (
+      <span title={`Measured heat loss is ${Math.abs(pct)}% ${pct > 0 ? 'above' : 'below'} the prediction`}>
+        <i className={pct > 0 ? 'bi bi-caret-up-fill text-danger' : 'bi bi-caret-down-fill text-success'} aria-hidden="true"></i>
+        {' '}{Math.abs(pct)}%
+        <span className="visually-hidden">{pct > 0 ? ' above prediction' : ' below prediction'}</span>
+      </span>
+    );
+  };
+
   let totalPredictedHeatLoss = homeData.totalPredictedHeatLoss ?? 0;
   let totalMeasuredHeatLoss = homeData.totalMeasuredHeatLoss ?? 0;
 
@@ -59,7 +83,7 @@ function Rooms() {
       <td><Power>{n.heatInput}</Power></td>
       <td><Power>{n.predictedHeatLoss}</Power></td>      
       <td><Power>{n.measuredHeatLoss}</Power></td>
-      <td>{n.heatLossDifference == null || n.heatLossDifference === 0 ? '-' : `${Math.abs(n.heatLossDifference).toFixed(0)}%`}</td>
+      <td>{difference(n.heatLossDifference)}</td>
     </tr>);
   });
 
@@ -77,7 +101,7 @@ function Rooms() {
             <th>Heat Input</th>
             <th>Predicted Heat Loss</th>
             <th>Measured Heat Loss</th>
-            <th>Difference</th>
+            <th title="Measured heat loss against the prediction: + means the room loses more heat than predicted">Measured vs Predicted</th>
           </tr>
         </thead>
         <tbody>
