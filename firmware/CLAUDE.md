@@ -694,6 +694,15 @@ covers an hour — `3600 / interval_s` entries — so an outage shorter than tha
 the original timestamps. It is RAM only: a restart loses it. The HTTP connection is kept open
 between posts and closed on any failure or configuration change.
 
+**emoncms.org closes an idle connection after 5 s** (`Keep-Alive: timeout=5`), so at any interval
+over that, the kept connection is already closed when the next sample is posted. That fails at the
+transport level (`ESP_ERR_HTTP_FETCH_HEADER`, `_CONNECTION_CLOSED` or `_WRITE_DATA`) before the server
+has seen the request, so `post_payload()` sends it once more, straight away, on a new connection,
+and only the outcome of that counts. A failure on a new connection, or a timeout
+(`ESP_ERR_HTTP_EAGAIN`), is not retried there and takes the backoff above. Without this, one post in
+three failed at the 10 s interval and every post at 30 s, each landing 5 s late. Reuse still pays
+off for a backlog, whose posts go 250 ms apart.
+
 Configuration is in the NVS namespace `emoncms` (`enabled`, `base_url`, `api_key`, `node`,
 `interval_s`), separate from the manager blobs, and a change applies without a restart.
 
@@ -706,7 +715,8 @@ Configuration is in the NVS namespace `emoncms` (`enabled`, `base_url`, `api_key
 
 **The write key never leaves the device.** `emoncms_uploader_get_config()` returns it blanked, it is
 never logged, and a failed post logs its HTTP status only — the response body goes to the status
-endpoint, not the log. `POST /api/emoncms/test` works while uploading is disabled, so a key can be
+endpoint, not the log. A post that got no answer logs the transport error's name instead, since
+there is no body. `POST /api/emoncms/test` works while uploading is disabled, so a key can be
 checked before it is switched on; it parks the httpd task until emoncms answers or the 10 s timeout
 passes, like commissioning does.
 
@@ -807,8 +817,9 @@ radiators and **UFH manifolds**. A manifold is a **radiator record with `type` 1
 (`EMITTER_TYPE_UFH_MANIFOLD`, `is_ufh_manifold()` in `radiator_manager.h`), so it has the radiator
 mechanisms already: two probe endpoints, the `radiator_list` NVS blob (unchanged), the
 `/api/radiators/*` routes (`kind` is `"radiator"` or `"ufhManifold"`), `rad-<id>` history and the
-`radiator_<id>_flow/return_temp_c` MCP series. For a manifold `output_dt_50` is its **rated output**,
-used only as a weight.
+`radiator_<id>_flow/return_temp_c` MCP series. A manifold's `output_dt_50` is **not used**: the
+manifold UI no longer asks for it, and it is kept only so the blob and the MQTT config topic's `rated_w`
+keep their layout.
 
 A manifold is never in a room's `radiators[]` (room POST/PUT refuse one, and a radiator that is in a
 room cannot be made one). Rooms take a **percentage** of it instead: `room_t::ufh_shares`
@@ -820,21 +831,42 @@ u8 count, then `{room_id, emitter_id, pct}` triples), so the variable-length `ro
 untouched and firmware without the key loads as before. Deleting a room drops its shares; deleting a
 manifold, or changing its type, drops the shares of it.
 
-**A manifold's output is the heat meter's residual**, since the loop has no flow meter.
-`update_ufh_outputs()` in `calculations_manager.cpp` works it out for every manifold at once:
-heat meter minus the summed output of every radiator that is in a room, floored at 0, and 0 unless
-the heat pump is space heating and not making hot water. It is split between the manifolds that are
-circulating (|flow − return| ≥ 0.5 K) in proportion to rated output (a rating of 0 weighs 1 W, so
-all-zero ratings split evenly). It is **absent** for every manifold while the meter or heating
-state is unknown, any radiator in a room has no output, or any manifold is short of a probe
-reading. The same pass sets each room's `ufh_input_w` (absent if any manifold it shares is) and the
-home's `total_ufh_output` and `ufh_unassigned_output`. A room's heat input, and so its measured heat
-loss, is its radiators plus its UFH input; a room with a share whose input is absent has no
-measured heat loss. Every model error in the radiators lands in the residual, which is why it is only
-given when it can be.
+**A manifold's output is its calibrated flow times the drop across its probes** (TASK-42.1). The
+manifold has no flow meter, so the user reads each loop's flow gauge during a heating run and enters
+them on its Edit page (`UfhLoops.tsx`, 1 to `UFH_MAX_LOOPS` = 16 loops, 0.1 to 99.9 l/min each).
+`PUT /api/radiators/{id}/loops` `{"loops": [l/min, ...]}` stores them with **the heat meter's flow at
+that moment** (`ufh_ref_flow_lph`) and the time. It is routed inside the `/api/radiators/*` PUT
+handler, so it costs no URI handler, and it is refused with a **409** unless the heat pump is space
+heating, not making hot water, and the heat meter reports a flow above 0
+(`ufh_calibration_blocker()`), since that reference is what every later figure is scaled by.
+
+The calibration lives on `radiator_t` (`ufh_loop_count`, `ufh_loop_flow_dlpm[]` in 0.1 l/min,
+`ufh_ref_flow_lph`, `ufh_calibrated_at`) and is persisted by `save_radiators_to_nvs()` under its
+**own NVS key, `ufh_loops`**, in the `radiators` namespace (u8 version 1, u8 count, then per manifold
+u8 id, u8 loop count, u16 reference flow, u32 time and the loop flows). The `radiator_list` blob is
+untouched, as with `room_ufh`. Changing a manifold's type drops its calibration, and deleting it drops
+it on the next save.
+
+`update_ufh_outputs()` in `calculations_manager.cpp` then works out each manifold on its own:
+- flow now = sum(loops) × heat meter flow now / `ufh_ref_flow_lph` (`ufh_flow_lph`), so a 5% move at
+  the heat meter is a 5% move at the manifold;
+- output = flow × 4186 J/kg·K × |flow − return|, taking a litre as a kilo (a glycol mix would read high);
+- **0 W** while not space heating or while making hot water (the heat meter's flow is then the
+  cylinder's), or under 0.5 K across the probes;
+- **absent** if the manifold is not calibrated, the heat meter has no flow, the heating state is
+  unknown, or a probe has no reading.
+
+The same pass sets each room's `ufh_input_w` from its shares (absent if any manifold it shares is) and
+the home's `total_ufh_output` (absent unless every manifold's output is known) and
+`ufh_unassigned_output`. A room's heat input, and so its measured heat loss, is its radiators plus its
+UFH input; a room with a share whose input is absent has no measured heat loss. The radiators no
+longer play any part in the UFH figure: until TASK-42.1 it was the heat meter's residual after them.
+
+The calibration is today's for every figure worked out from it: history is measurements only, so the
+MCP `list_rooms` description tells a caller to apply the current loops to past days too.
 
 `attribute_data_cb` matches a radiator's probes on **node and endpoint** and walks every radiator, so
-one multi-probe node can feed a manifold and radiators. The heat meter's power calls
+one multi-probe node can feed a manifold and radiators. The heat meter's **flow** report calls
 `update_ufh_rooms(false)`, which recalculates the rooms with a share at most every 30 s (their MQTT
 state is published each time) and only refreshes the figures in between; a manifold probe report,
 a heating or hot water change, and a manifold being added, edited or deleted force it.
@@ -842,8 +874,12 @@ a heating or hot water change, and a manifold being added, edited or deleted for
 `GET /api/home` (and the `home` push) carry `ufhManifoldCount`, `totalUfhOutput` and
 `ufhUnassignedOutput`; `radiatorCount` and `totalRadiatorOutput` exclude manifolds. Rooms carry
 `ufhShares: [{emitterId, name, pct, input}]`, `ufhInput`, `radiatorInput`, and `heatInput`, which
-now includes UFH. A manifold's detail carries `shares: [{roomId, roomName, pct, input}]`. MCP
-`list_rooms` lists manifolds under `ufh_manifolds` and each room's `ufh_shares`. The output is not
+now includes UFH. A manifold's detail carries `shares: [{roomId, roomName, pct, input}]` and
+`ufh: {loops, refFlowLph, calibratedAt, currentFlowLph, heatMeterFlowLph, canCalibrate,
+calibrationBlocker}`; the list carries `ufhFlowLph` and `ufhCalibrated` for each manifold. MCP
+`list_rooms` lists manifolds under `ufh_manifolds`, with `loop_flows_l_per_min` and
+`calibration_heat_meter_flow_lph`, and each room's `ufh_shares`. The MQTT config topic gives a manifold
+`loop_flows_lpm` and `calibration_flow_lph`. The output is not
 recorded, following the measurements-only rule.
 
 **Commodity Price and the running cost:**

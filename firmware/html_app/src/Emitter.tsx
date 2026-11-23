@@ -3,13 +3,14 @@ import { NavLink, useNavigate, useParams } from "react-router"
 import Temperature from "./Temperature";
 import Power from "./Power";
 import RadiatorTodayChart from "./RadiatorTodayChart";
-import { isUfhManifold } from "./emitter";
+import { isUfhManifold, formatLpm } from "./emitter";
+import type { UfhCalibration } from "./emitter";
 
 // GET /api/radiators/:id. Temperatures are 0.01 degC. The room fields are null when the radiator
 // has not been put in a room.
 //
-// For a UFH manifold `shares` lists the rooms that take a percentage of it, and `currentOutput` is
-// its share of the heat meter's residual.
+// For a UFH manifold `shares` lists the rooms that take a percentage of it, `ufh` its loop
+// calibration and current flow, and `currentOutput` is that flow times the drop across its probes.
 type RadiatorDetail = {
   radiatorId: number;
   name: string;
@@ -23,6 +24,7 @@ type RadiatorDetail = {
   roomName: string | null;
   roomTemperature: number | null;
   shares?: { roomId: number; roomName: string; pct: number; input: number | null }[];
+  ufh?: UfhCalibration;
 };
 
 function Emitter() {
@@ -106,6 +108,22 @@ function Emitter() {
             <h3 className="card-title"><Power>{radiator.currentOutput}</Power></h3>
           </div>
         </div>
+        {manifold && <div className="card">
+          <div className="card-header">
+            Flow rate
+          </div>
+          <div className="card-body">
+            <h3 className="card-title">{formatLpm(radiator.ufh?.currentFlowLph)}</h3>
+          </div>
+        </div>}
+        {manifold && <div className="card">
+          <div className="card-header">
+            ΔT
+          </div>
+          <div className="card-body">
+            <h3 className="card-title"><Temperature>{radiator.flowTemp == null || radiator.returnTemp == null ? null : Math.abs(radiator.flowTemp - radiator.returnTemp)}</Temperature></h3>
+          </div>
+        </div>}
         {!manifold && <div className="card">
           <div className="card-header">
             {radiator.roomId === null ? 'Room' : <NavLink to={`/rooms/${radiator.roomId}`}>{radiator.roomName}</NavLink>}
@@ -119,6 +137,16 @@ function Emitter() {
       </div>
 
       {manifold && <>
+        {radiator.ufh && radiator.ufh.refFlowLph == null
+          ? <div className="alert alert-warning">
+            Not calibrated, so this manifold has no output. Enter its loops' flows on the <NavLink to={`/emitters/${radiatorId}/edit`}>Edit</NavLink> page during a heating run.
+          </div>
+          : radiator.ufh && <p className="text-muted">
+            {radiator.ufh.loops.length} loop{radiator.ufh.loops.length === 1 ? '' : 's'} totalling {radiator.ufh.loops.reduce((s, f) => s + f, 0).toFixed(1)} l/min
+            ({radiator.ufh.loops.map(f => f.toFixed(1)).join(', ')}) at a heat meter flow of {formatLpm(radiator.ufh.refFlowLph)}
+            {radiator.ufh.calibratedAt ? `, calibrated ${new Date(radiator.ufh.calibratedAt * 1000).toLocaleString()}` : ''}.
+            The heat meter is at {formatLpm(radiator.ufh.heatMeterFlowLph)} now.
+          </p>}
         <h2>Rooms</h2>
         {(radiator.shares ?? []).length === 0
           ? <div className="alert alert-info">No room has a share of this manifold yet. Give each room it heats a percentage on the room's Edit page.</div>

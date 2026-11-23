@@ -141,6 +141,7 @@ static room_t *find_room_listing_radiator(uint8_t radiator_id);
 static void broadcast_radiator_state(const radiator_t *radiator);
 static void forget_readings_if_unsubscribed(uint64_t node_id);
 static void add_number_or_null(cJSON *object, const char *name, bool has_value, double value);
+static void add_ufh_calibration(cJSON *root, const radiator_t *radiator);
 
 // Commissioning runs on the Matter task, but POST /api/nodes holds its connection open until
 // the outcome is known: the companion app's Matter extension has no other way to learn whether
@@ -933,6 +934,9 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGI(TAG, "Heat meter flow: %ld l/h", (long)value.Value());
             }
+
+            // The UFH manifolds' flow is scaled from this one.
+            update_ufh_rooms(false);
             break;
         }
 
@@ -1008,9 +1012,6 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             {
                 ESP_LOGI(TAG, "Heat meter power: %lld mW", g_home_manager.heat_meter_power_mw);
             }
-
-            // The UFH manifolds' output is what is left of this after the radiators.
-            update_ufh_rooms(false);
             break;
         }
 
@@ -2691,7 +2692,7 @@ static esp_err_t radiators_post_handler(httpd_req_t *req)
     new_radiator->has_flow_temperature = get_endpoint_measured_value(&g_node_manager, flowSensorNodeIdJSON->valueint, flowSensorEndpointIdJSON->valueint, &new_radiator->flow_temperature);
     new_radiator->has_return_temperature = get_endpoint_measured_value(&g_node_manager, returnSensorNodeIdJSON->valueint, returnSensorEndpointIdJSON->valueint, &new_radiator->return_temperature);
 
-    // A new UFH manifold changes how the residual is split, so every manifold is recalculated.
+    // A new UFH manifold counts in the home's UFH totals (absent until it is calibrated).
     if (is_ufh_manifold(new_radiator))
     {
         update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, new_radiator);
@@ -2743,6 +2744,13 @@ static esp_err_t radiators_get_handler(httpd_req_t *req)
         cJSON_AddStringToObject(jNode, "name", radiator->name);
         cJSON_AddNumberToObject(jNode, "type", radiator->type);
         cJSON_AddStringToObject(jNode, "kind", is_ufh_manifold(radiator) ? "ufhManifold" : "radiator");
+
+        // A manifold's flow now, scaled from its calibration; null until it is calibrated.
+        if (is_ufh_manifold(radiator))
+        {
+            add_number_or_null(jNode, "ufhFlowLph", radiator->has_ufh_flow, radiator->ufh_flow_lph);
+            cJSON_AddBoolToObject(jNode, "ufhCalibrated", ufh_is_calibrated(radiator));
+        }
         cJSON_AddNumberToObject(jNode, "output", radiator->output_dt_50);
 
         add_number_or_null(jNode, "flowTemp", radiator->has_flow_temperature, radiator->flow_temperature);
@@ -2842,6 +2850,8 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
             add_number_or_null(share, "input", radiator->has_heat_output, radiator->has_heat_output ? (uint32_t)radiator->heat_output * pct / 100 : 0);
             cJSON_AddItemToArray(shares, share);
         }
+
+        add_ufh_calibration(root, radiator);
     }
 
     httpd_resp_set_type(req, "application/json");
@@ -2856,9 +2866,170 @@ static esp_err_t radiator_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// Whether a UFH calibration can be taken now, and if not, why. The heat meter's flow is the
+// reference every loop is scaled by, so it must be the flow the manifold was fed while the loops'
+// gauges were read: space heating, not hot water, and actually flowing.
+static const char *ufh_calibration_blocker(void)
+{
+    if (!g_home_manager.has_heating_running || !g_home_manager.heating_running)
+    {
+        return "The heat pump is not space heating. Read the loops and save them during a heating run.";
+    }
+
+    if (g_home_manager.has_dhw_running && g_home_manager.dhw_running)
+    {
+        return "The heat pump is making hot water, so the heat meter's flow is the cylinder's. Save the loops during a heating run.";
+    }
+
+    if (!g_home_manager.has_heat_meter_flow || g_home_manager.heat_meter_flow == 0)
+    {
+        return "The heat meter is not reporting a flow.";
+    }
+
+    return NULL;
+}
+
+static void add_ufh_calibration(cJSON *root, const radiator_t *radiator)
+{
+    cJSON *ufh = cJSON_AddObjectToObject(root, "ufh");
+    cJSON *loops = cJSON_AddArrayToObject(ufh, "loops");
+
+    for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
+    {
+        cJSON_AddItemToArray(loops, cJSON_CreateNumber(radiator->ufh_loop_flow_dlpm[i] / 10.0));
+    }
+
+    add_number_or_null(ufh, "refFlowLph", ufh_is_calibrated(radiator), radiator->ufh_ref_flow_lph);
+    add_number_or_null(ufh, "calibratedAt", radiator->ufh_calibrated_at != 0, radiator->ufh_calibrated_at);
+    add_number_or_null(ufh, "currentFlowLph", radiator->has_ufh_flow, radiator->ufh_flow_lph);
+    add_number_or_null(ufh, "heatMeterFlowLph", g_home_manager.has_heat_meter_flow, g_home_manager.heat_meter_flow);
+
+    const char *blocker = ufh_calibration_blocker();
+    cJSON_AddBoolToObject(ufh, "canCalibrate", blocker == NULL);
+
+    if (blocker)
+    {
+        cJSON_AddStringToObject(ufh, "calibrationBlocker", blocker);
+    }
+    else
+    {
+        cJSON_AddNullToObject(ufh, "calibrationBlocker");
+    }
+}
+
+// PUT /api/radiators/:radiatorId/loops {"loops": [l/min, ...]} -- a UFH manifold's calibration.
+// The loops are what its flow gauges read; the heat meter's flow at this moment is recorded as the
+// reference they are scaled by, so it is refused (409) unless that flow means something.
+static esp_err_t radiator_loops_put_handler(httpd_req_t *req, uint8_t radiator_id)
+{
+    radiator_t *radiator = find_radiator(&g_radiator_manager, radiator_id);
+
+    if (radiator == NULL || !is_ufh_manifold(radiator))
+    {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "No such UFH manifold", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    cJSON *root = read_json_body(req);
+
+    if (root == NULL)
+    {
+        return ESP_OK;
+    }
+
+    const cJSON *loopsJSON = cJSON_GetObjectItemCaseSensitive(root, "loops");
+    int count = cJSON_IsArray(loopsJSON) ? cJSON_GetArraySize(loopsJSON) : 0;
+    uint16_t flows[UFH_MAX_LOOPS];
+    const char *problem = NULL;
+
+    if (count < 1 || count > UFH_MAX_LOOPS)
+    {
+        problem = "Give between 1 and 16 loops";
+    }
+
+    for (int i = 0; problem == NULL && i < count; i++)
+    {
+        const cJSON *flow = cJSON_GetArrayItem(loopsJSON, i);
+        double dlpm = cJSON_IsNumber(flow) ? flow->valuedouble * 10.0 + 0.5 : 0;
+
+        if (dlpm < 1 || dlpm > UFH_MAX_LOOP_FLOW_DLPM + 0.5)
+        {
+            problem = "Each loop's flow must be between 0.1 and 99.9 l/min";
+            break;
+        }
+
+        flows[i] = (uint16_t)dlpm;
+    }
+
+    cJSON_Delete(root);
+
+    if (problem)
+    {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, problem, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    const char *blocker = ufh_calibration_blocker();
+
+    if (blocker)
+    {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, blocker, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    uint32_t now = clock_is_valid() ? (uint32_t)time(NULL) : 0;
+    esp_err_t err = set_ufh_calibration(&g_radiator_manager, radiator, (uint8_t)count, flows, g_home_manager.heat_meter_flow, now);
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Could not save the UFH calibration: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Could not save the calibration", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "UFH manifold %u calibrated: %u loops, %lu l/h at a heat meter flow of %u l/h", radiator_id, (unsigned)count,
+             (unsigned long)ufh_calibrated_flow_lph(radiator), radiator->ufh_ref_flow_lph);
+
+    update_ufh_rooms(true);
+    broadcast_radiator_state(radiator);
+    broadcast_home_state();
+
+    // heating_monitor/config carries the calibration.
+    config_topic_mark_pending();
+
+    cJSON *response = cJSON_CreateObject();
+    add_ufh_calibration(response, radiator);
+
+    char *json = cJSON_PrintUnformatted(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+
+    cJSON_free(json);
+    cJSON_Delete(response);
+
+    return ESP_OK;
+}
+
 static esp_err_t radiators_put_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Updating a radiator...");
+
+    // /api/radiators/:radiatorId/loops shares this URI handler, as the handler cap is tight.
+    {
+        char loopsPath[] = "/api/radiators/:radiatorId/loops";
+        auto loopsItr = std::make_shared<TokenIterator>(loopsPath, strlen(loopsPath), '/');
+        UrlTokenBindings loopsBindings(loopsItr, req->uri);
+        size_t uri_len = strlen(req->uri);
+
+        if (uri_len > 6 && strcmp(req->uri + uri_len - 6, "/loops") == 0 && loopsBindings.hasBinding("radiatorId"))
+        {
+            return radiator_loops_put_handler(req, (uint8_t)strtoul(loopsBindings.get("radiatorId"), NULL, 10));
+        }
+    }
 
     char templatePath[] = "/api/radiators/:radiatorId";
     auto templateItr = std::make_shared<TokenIterator>(templatePath, strlen(templatePath), '/');
@@ -3013,8 +3184,8 @@ static esp_err_t radiators_delete_handler(httpd_req_t *req)
 
     if (err == ESP_OK)
     {
-        // The rooms' shares of a deleted manifold go with it, and the residual is split again
-        // between the manifolds that are left.
+        // The rooms' shares of a deleted manifold go with it, and the home's UFH totals are worked
+        // out again from the manifolds that are left.
         if (was_manifold)
         {
             if (room_manager_forget_ufh_emitter(&g_room_manager, id))
@@ -4285,8 +4456,8 @@ static void update_heat_pump_running(void)
     }
 }
 
-// Recalculates the rooms that take a share of a UFH manifold, whose input moves with the heat meter,
-// and pushes every manifold's output. The heat meter reports every few seconds, and each room
+// Recalculates the rooms that take a share of a UFH manifold, whose input moves with the heat meter's
+// flow, and pushes every manifold's output. The heat meter reports every few seconds, and each room
 // recalculation publishes the room's MQTT state, so unless `force` is set this runs at most once
 // every UFH_ROOM_UPDATE_US; in between only the figures are brought up to date.
 #define UFH_ROOM_UPDATE_US (30LL * 1000 * 1000)

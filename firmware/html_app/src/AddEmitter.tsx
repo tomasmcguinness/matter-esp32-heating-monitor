@@ -4,8 +4,8 @@ import SensorSelect from "./SensorSelect";
 import { UFH_MANIFOLD_TYPE } from "./emitter";
 
 // Adds a radiator, or a UFH manifold with ?kind=ufh. Both are radiator records on the device; a
-// manifold has the reserved type, and its "output" is its rated output, the weight used to split
-// the heat meter's residual between manifolds.
+// manifold has the reserved type and no rating. Its loops are calibrated on its Edit page once it
+// exists, during a heating run, so a new manifold goes straight there.
 //
 function AddEmitter() {
 
@@ -44,8 +44,11 @@ function AddEmitter() {
 
     var json = JSON.stringify(object);
 
-    fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json }).then(r => {
-      if (r.ok) {
+    fetch('/api/radiators', { method: "POST", headers: { 'Content-Type': 'application/json' }, body: json }).then(async r => {
+      if (r.ok && isManifold) {
+        const { radiatorId } = await r.json();
+        navigate(`/emitters/${radiatorId}/edit`);
+      } else if (r.ok) {
         navigate("/emitters");
       } else {
         alert(`Failed to add ${noun.toLowerCase()}`);
@@ -82,11 +85,7 @@ function AddEmitter() {
           </select>
         </div>}
         {isManifold
-          ? <div className="mb-3">
-            <label htmlFor="output" className="form-label">Rated Output (W)</label>
-            <input type="number" name="output" min={0} className="form-control" id="output" placeholder="3000" value={output ?? ''} onChange={(e) => setOutput(parseInt(e.target.value))} />
-            <div className="form-text">Used only to split the underfloor heat between manifolds. With one manifold, or every rating left blank, it makes no difference.</div>
-          </div>
+          ? <div className="alert alert-info">Once it is added, enter its loops' flows on its Edit page during a heating run. Until then it has no output.</div>
           : <div className="mb-3">
             <label htmlFor="output" className="form-label">Output @ Δ50 <span style={{ 'color': 'red' }}>*</span></label>
             <input type="number" name="output" className="form-control" id="output" placeholder="600" required={true} value={output || ''} onChange={(e) => setOutput(parseInt(e.target.value))} />

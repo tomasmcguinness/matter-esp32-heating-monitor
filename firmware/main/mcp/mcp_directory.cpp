@@ -51,6 +51,15 @@ size_t mcp_directory_radiators(mcp_radiator_info_t *out, size_t max)
         strlcpy(info->name, radiator->name ? radiator->name : "", sizeof(info->name));
         info->rated_output_w = radiator->output_dt_50;
         info->is_ufh_manifold = is_ufh_manifold(radiator);
+        info->ufh_loop_count = 0;
+        info->ufh_ref_flow_lph = 0;
+
+        if (info->is_ufh_manifold && ufh_is_calibrated(radiator))
+        {
+            info->ufh_loop_count = radiator->ufh_loop_count < MCP_UFH_LOOPS_MAX ? radiator->ufh_loop_count : MCP_UFH_LOOPS_MAX;
+            memcpy(info->ufh_loop_flow_dlpm, radiator->ufh_loop_flow_dlpm, info->ufh_loop_count * sizeof(uint16_t));
+            info->ufh_ref_flow_lph = radiator->ufh_ref_flow_lph;
+        }
     }
 
     return count;

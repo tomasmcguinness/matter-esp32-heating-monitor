@@ -22,8 +22,12 @@
 //                 "state_topic":"heating_monitor/radiators/living_room_radiator",
 //                 "type":"radiator","rated_w":3464}]}
 //
-// mqtt_name is null when the room or emitter has none. type is "radiator" or "ufh"; a manifold's
-// rated_w is its rated output, the weight its share of the heat meter's residual is split by.
+// mqtt_name is null when the room or emitter has none. type is "radiator" or "ufh". A manifold also
+// has loop_flows_lpm, each loop's flow read off its gauges, and calibration_flow_lph, the heat meter's
+// flow when they were read (null, with no loops, until calibrated). The device takes the manifold's
+// flow as sum(loops) x heat meter flow / calibration_flow_lph, and its output as that flow times the
+// drop across its probes. A manifold's rated_w is whatever was last entered and the device no longer
+// uses it; it is kept so the schema does not change.
 // Bump schema if a field changes meaning or goes away; adding a field does not need it.
 //
 // Like discovery, it is built on the task that runs update_home(), the one that may walk the room

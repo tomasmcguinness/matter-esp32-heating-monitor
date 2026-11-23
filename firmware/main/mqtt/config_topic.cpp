@@ -73,6 +73,26 @@ static cJSON *build_emitter(const radiator_t *radiator)
     cJSON_AddStringToObject(e, "type", is_ufh_manifold(radiator) ? "ufh" : "radiator");
     cJSON_AddNumberToObject(e, "rated_w", radiator->output_dt_50);
 
+    // A manifold's calibration: its loops' flows and the heat meter's flow when they were read.
+    if (is_ufh_manifold(radiator))
+    {
+        cJSON *loops = cJSON_AddArrayToObject(e, "loop_flows_lpm");
+
+        for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
+        {
+            cJSON_AddItemToArray(loops, cJSON_CreateNumber(radiator->ufh_loop_flow_dlpm[i] / 10.0));
+        }
+
+        if (ufh_is_calibrated(radiator))
+        {
+            cJSON_AddNumberToObject(e, "calibration_flow_lph", radiator->ufh_ref_flow_lph);
+        }
+        else
+        {
+            cJSON_AddNullToObject(e, "calibration_flow_lph");
+        }
+    }
+
     return e;
 }
 

@@ -378,12 +378,12 @@ static bool is_accepted(const char *body)
     return success;
 }
 
+static esp_err_t send_post(const emoncms_config_t *config, const char *body, int body_len, emoncms_result_t *result);
+
 // Sends one payload. Fills `result` whatever happens.
 static void post_payload(const emoncms_config_t *config, uint32_t ts, const char *payload, emoncms_result_t *result)
 {
     // Static because the task's stack is better spent on TLS, and only the task calls this.
-    static char url[EMONCMS_URL_MAX + 16];
-    static char auth[EMONCMS_KEY_MAX + 8];
     static char encoded_node[EMONCMS_NODE_MAX * 3];
     static char encoded_payload[EMONCMS_PAYLOAD_MAX * 3];
     static char body[sizeof(encoded_node) + sizeof(encoded_payload) + 48];
@@ -399,6 +399,32 @@ static void post_payload(const emoncms_config_t *config, uint32_t ts, const char
 
     int body_len = snprintf(body, sizeof(body), "node=%s&fulljson=%s&time=%lu", encoded_node, encoded_payload,
                             (unsigned long)ts);
+
+    // emoncms.org closes a keep-alive connection after 5 s idle, so a post sent on one that has sat
+    // longer than that finds it closed and fails before the server has seen the request. Such a
+    // post is sent once more on a new connection. A failure on a new connection is a real one and
+    // is left to the caller's backoff, as is a timeout: retrying that would only hold the task for
+    // another HTTP_TIMEOUT_MS.
+    bool reused = s_client != NULL;
+    esp_err_t err = send_post(config, body, body_len, result);
+
+    if (err != ESP_OK && reused && err != ESP_ERR_HTTP_EAGAIN)
+    {
+        ESP_LOGD(TAG, "Kept connection had closed (%s); posting on a new one", esp_err_to_name(err));
+        send_post(config, body, body_len, result);
+    }
+}
+
+// One attempt at a post, opening a connection if none is kept. Returns the transport error, and on
+// one leaves the connection closed and its name in `result->response`. ESP_OK means emoncms
+// answered, which is not the same as accepting the post: that is `result->ok`.
+static esp_err_t send_post(const emoncms_config_t *config, const char *body, int body_len, emoncms_result_t *result)
+{
+    // Static for the same reason as post_payload's buffers. The client keeps pointers to both.
+    static char url[EMONCMS_URL_MAX + 16];
+    static char auth[EMONCMS_KEY_MAX + 8];
+
+    memset(result, 0, sizeof(*result));
 
     if (!s_client)
     {
@@ -425,7 +451,7 @@ static void post_payload(const emoncms_config_t *config, uint32_t ts, const char
         if (!s_client)
         {
             strlcpy(result->response, "Could not create the HTTP client", sizeof(result->response));
-            return;
+            return ESP_FAIL;
         }
 
         esp_http_client_set_header(s_client, "Authorization", auth);
@@ -444,7 +470,7 @@ static void post_payload(const emoncms_config_t *config, uint32_t ts, const char
         // The connection is in an unknown state, so the next post starts a new one.
         close_client();
         strlcpy(result->response, esp_err_to_name(err), sizeof(result->response));
-        return;
+        return err;
     }
 
     result->http_status = esp_http_client_get_status_code(s_client);
@@ -459,6 +485,8 @@ static void post_payload(const emoncms_config_t *config, uint32_t ts, const char
     {
         close_client();
     }
+
+    return ESP_OK;
 }
 
 // Sends a payload and records the outcome in the status the UI reads.
@@ -490,7 +518,15 @@ static void post_and_record(const emoncms_config_t *config, uint32_t ts, const c
     if (!result->ok)
     {
         // The status and nothing else. The body is on the Settings page; it stays out of the log.
-        ESP_LOGW(TAG, "Post failed (HTTP %d)", result->http_status);
+        // With no status there was no body: `response` then holds the transport error's name.
+        if (result->http_status == 0)
+        {
+            ESP_LOGW(TAG, "Post failed (%s)", result->response);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Post failed (HTTP %d)", result->http_status);
+        }
     }
 }
 

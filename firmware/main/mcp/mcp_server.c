@@ -613,8 +613,17 @@ static void write_ufh_manifold(mcp_out_t *o, const mcp_radiator_info_t *rad)
 {
     out_printf(o, "{\"id\":%u,\"name\":", rad->id);
     out_json_string(o, rad->name);
-    out_printf(o, ",\"rated_output_w\":%u,\"series\":[\"radiator_%u_flow_temp_c\",\"radiator_%u_return_temp_c\"]",
-               rad->rated_output_w, rad->id, rad->id);
+    out_str(o, ",\"loop_flows_l_per_min\":[");
+    for (uint8_t i = 0; i < rad->ufh_loop_count; i++) {
+        out_printf(o, "%s%u.%u", i ? "," : "", rad->ufh_loop_flow_dlpm[i] / 10, rad->ufh_loop_flow_dlpm[i] % 10);
+    }
+    out_str(o, "],\"calibration_heat_meter_flow_lph\":");
+    if (rad->ufh_loop_count > 0 && rad->ufh_ref_flow_lph > 0) {
+        out_printf(o, "%u", rad->ufh_ref_flow_lph);
+    } else {
+        out_str(o, "null");
+    }
+    out_printf(o, ",\"series\":[\"radiator_%u_flow_temp_c\",\"radiator_%u_return_temp_c\"]", rad->id, rad->id);
     write_recorded_days(o, KIND_RADIATOR, rad->id);
     out_str(o, "}");
 }

@@ -5,11 +5,11 @@ import { WebSocketContext } from './WSContext.jsx';
 import Power from "./Power.tsx";
 import RadiatorType from "./RadiatorType.tsx";
 import PageHeader from "./PageHeader";
-import { isUfhManifold } from "./emitter.ts";
+import { isUfhManifold, formatLpm } from "./emitter.ts";
 
 // The Emitters tab: every radiator and UFH manifold. Both are radiator records on the device
-// (GET /api/radiators); a manifold is the one with the reserved type, and its output is its share
-// of the heat meter's residual rather than the dT50 formula.
+// (GET /api/radiators); a manifold is the one with the reserved type, and its output is its
+// calibrated flow times the drop across its probes rather than the dT50 formula.
 //
 function Emitters() {
 
@@ -66,11 +66,15 @@ function Emitters() {
     fetchEmitters();
   }, []);
 
+  // A manifold's third column is its flow now, scaled from its calibration, where a radiator's is
+  // its rating.
   const row = (n: any) => (
     <tr key={n.radiatorId} onClick={() => navigate(`/emitters/${n.radiatorId}`)} style={{ 'cursor': 'pointer' }}>
       <td>{n.name}</td>
       <td><RadiatorType>{n.type}</RadiatorType></td>
-      <td><Power>{n.output}</Power></td>
+      <td>{isUfhManifold(n)
+        ? (n.ufhCalibrated ? formatLpm(n.ufhFlowLph) : <span className="text-warning">Not calibrated</span>)
+        : <Power>{n.output}</Power>}</td>
       <td><Temperature>{n.flowTemp}</Temperature></td>
       <td><Temperature>{n.returnTemp}</Temperature></td>
       <td><Temperature>{n.flowTemp == null || n.returnTemp == null ? null : Math.abs(n.flowTemp - n.returnTemp)}</Temperature></td>
@@ -118,15 +122,15 @@ function Emitters() {
       {manifolds.length === 0 && <div className="alert alert-info">There are no UFH manifolds. Add one, then give each room it heats a share of it on the room's Edit page.</div>}
       {manifolds.length > 0 && <>
         <table className="table table-striped table-bordered">
-          {header("Rated")}
+          {header("Flow")}
           <tbody>
             {manifolds.map(row)}
           </tbody>
         </table>
         <p className="text-muted small">
-          A manifold has no flow meter, so its output is what the heat meter delivers beyond the radiators' modelled
-          output, split between the manifolds that are circulating (flow and return at least 0.5° apart) in proportion
-          to their rated output.
+          A manifold has no flow meter of its own. Its flow is the sum of its loops' gauges, read during a heating run on
+          its Edit page, moved in proportion to the heat meter's flow since; its output is that flow times the drop between
+          its flow and return. It is 0 while the heat pump is not space heating or is making hot water.
         </p>
       </>}
     </>

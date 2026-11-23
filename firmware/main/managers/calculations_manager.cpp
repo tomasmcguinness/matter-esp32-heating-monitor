@@ -73,9 +73,9 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
     radiator->has_mean_water_temperature = false;
     radiator->mean_water_temperature = 0;
 
-    // A UFH manifold's output is not the dT50 formula: it is its share of the heat meter's residual,
-    // which update_ufh_outputs() works out for every manifold at once. Its probes still give it a
-    // mean water temperature, and the rooms with a share of it take a new input from it.
+    // A UFH manifold's output is not the dT50 formula: it is its calibrated flow times the drop
+    // across its probes, which update_ufh_outputs() works out along with the rooms' shares and the
+    // home's totals. Its probes still give it a mean water temperature.
     if (is_ufh_manifold(radiator))
     {
         if (radiator->has_flow_temperature && radiator->has_return_temperature)
@@ -88,8 +88,7 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
 
         publish_radiator_state(mqtt_client, radiator);
 
-        // The rooms sharing it are recalculated by the caller (update_ufh_rooms() in app_main.cpp),
-        // since a change to one manifold moves every manifold's share of the residual.
+        // The rooms sharing it are recalculated by the caller (update_ufh_rooms() in app_main.cpp).
         update_home(home_manager, room_manager, radiator_manager, mqtt_client);
         return;
     }
@@ -178,138 +177,83 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
     update_home(home_manager, room_manager, radiator_manager, mqtt_client);
 }
 
-// True if radiator_id is listed in any room. A radiator in no room never gets an output, so it
-// cannot be counted against the heat meter either way and is left out of the UFH residual.
-static bool radiator_is_in_a_room(room_manager_t *room_manager, uint8_t radiator_id)
-{
-    for (room_t *room = room_manager->room_list; room != NULL; room = room->next)
-    {
-        for (uint8_t r = 0; r < room->radiator_count; r++)
-        {
-            if (room->radiators[r] == radiator_id)
-            {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-// The underfloor heating has no flow meter, so its output is the residual: the heat meter's output
-// less the radiators' modelled output, split across the manifolds that are circulating in
-// proportion to their rated output. Every radiator modelling error lands in it, which is why it is
-// only given when it can be honest. For every manifold at once, it is:
+// A UFH manifold has no flow meter of its own, so its flow comes from a calibration: each loop's
+// flow read off the manifold's gauges, and the heat meter's flow at that moment. The manifold is
+// taken to move in proportion to the heat meter -- a 5% rise at the heat meter is a 5% rise at
+// the manifold -- and its output is that flow times the drop across its own probes. For each
+// manifold:
 //
-//   absent  - no heat meter power, no heating state, a radiator that is in a room has no output
-//             (it would otherwise be booked as floor heat), or any manifold is short of a probe
-//             reading (whether it is circulating, and so how the residual splits, is not known).
-//   0 W     - not space heating, or making hot water (the heat meter is then measuring the
-//             cylinder); or, for one manifold, under UFH_MIN_DELTA_T_C100 across its probes, so
-//             not circulating.
-//   else    - max(0, heat meter - radiators) x rated / sum of rated over circulating manifolds.
+//   absent  - not calibrated, no heat meter flow, no heating state, or a probe without a reading.
+//   0 W     - not space heating, or making hot water (the heat meter's flow is then the
+//             cylinder's, and says nothing about the floor); or under UFH_MIN_DELTA_T_C100 across
+//             its probes, so not circulating.
+//   else    - flow = sum(loops) x heat meter flow / heat meter flow at calibration, and
+//             output = flow x 4186 J/kg.K x |flow - return|, taking a litre of water as a kilo.
+//             A glycol mix carries less heat per litre and would read high.
 //
-// |flow - return| rather than flow - return, so a probe pair fitted the wrong way round gates the
+// |flow - return| rather than flow - return, so a probe pair fitted the wrong way round reads the
 // same as one fitted correctly, as the radiators' fabs() does.
 //
 // It then sets each room's UFH input from its shares, and the home's totals. Cheap -- no pow() --
 // so it is run from every path that needs a current figure.
 #define UFH_MIN_DELTA_T_C100 50
+#define WATER_HEAT_CAPACITY_J_PER_KG_K 4186
 
 void update_ufh_outputs(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
 {
-    bool known = home_manager->has_heat_meter_power && home_manager->has_heating_running;
-    int32_t radiator_w = 0;
-    uint32_t active_weight = 0;
+    bool known = home_manager->has_heat_meter_flow && home_manager->has_heating_running;
+    bool heating = known && home_manager->heating_running && !(home_manager->has_dhw_running && home_manager->dhw_running);
     uint8_t manifold_count = 0;
+    bool all_known = true;
+    uint32_t total = 0;
 
     for (radiator_t *radiator = radiator_manager->radiator_list; radiator != NULL; radiator = radiator->next)
     {
-        if (is_ufh_manifold(radiator))
+        if (!is_ufh_manifold(radiator))
         {
-            manifold_count++;
-            radiator->has_heat_output = false;
-            radiator->heat_output = 0;
-
-            if (!radiator->has_flow_temperature || !radiator->has_return_temperature)
-            {
-                known = false;
-                continue;
-            }
-
-            int32_t delta = (int32_t)radiator->flow_temperature - radiator->return_temperature;
-
-            if (delta < 0)
-            {
-                delta = -delta;
-            }
-
-            if (delta >= UFH_MIN_DELTA_T_C100)
-            {
-                // A manifold with no rating still takes a share: weighted 1 W, so with every rating
-                // left at 0 the split is even.
-                active_weight += radiator->output_dt_50 > 0 ? radiator->output_dt_50 : 1;
-            }
-        }
-        else if (radiator_is_in_a_room(room_manager, radiator->radiator_id))
-        {
-            if (!radiator->has_heat_output)
-            {
-                known = false;
-            }
-            else
-            {
-                radiator_w += radiator->heat_output;
-            }
-        }
-    }
-
-    int64_t residual = 0;
-
-    if (known)
-    {
-        bool heating = home_manager->heating_running && !(home_manager->has_dhw_running && home_manager->dhw_running);
-
-        if (heating)
-        {
-            residual = home_manager->heat_meter_power_mw / 1000 - radiator_w;
+            continue;
         }
 
-        if (residual < 0)
+        manifold_count++;
+        radiator->has_heat_output = false;
+        radiator->heat_output = 0;
+        radiator->has_ufh_flow = false;
+        radiator->ufh_flow_lph = 0;
+
+        if (!known || !ufh_is_calibrated(radiator) || !radiator->has_flow_temperature || !radiator->has_return_temperature)
         {
-            residual = 0;
+            all_known = false;
+            continue;
         }
-        else if (residual > UINT16_MAX)
+
+        uint64_t flow_lph = (uint64_t)ufh_calibrated_flow_lph(radiator) * home_manager->heat_meter_flow / radiator->ufh_ref_flow_lph;
+
+        if (flow_lph > UINT16_MAX)
         {
-            residual = UINT16_MAX;
+            flow_lph = UINT16_MAX;
         }
-    }
 
-    uint32_t total = 0;
+        int32_t delta = (int32_t)radiator->flow_temperature - radiator->return_temperature;
 
-    if (known)
-    {
-        for (radiator_t *radiator = radiator_manager->radiator_list; radiator != NULL; radiator = radiator->next)
+        if (delta < 0)
         {
-            if (!is_ufh_manifold(radiator))
-            {
-                continue;
-            }
-
-            int32_t delta = (int32_t)radiator->flow_temperature - radiator->return_temperature;
-
-            if (delta < 0)
-            {
-                delta = -delta;
-            }
-
-            uint32_t weight = radiator->output_dt_50 > 0 ? radiator->output_dt_50 : 1;
-            bool active = delta >= UFH_MIN_DELTA_T_C100 && active_weight > 0;
-
-            radiator->heat_output = active ? (uint16_t)((uint64_t)residual * weight / active_weight) : 0;
-            radiator->has_heat_output = true;
-            total += radiator->heat_output;
+            delta = -delta;
         }
+
+        // The flow is reported whether or not heat is being counted, so the page can show it.
+        radiator->has_ufh_flow = true;
+        radiator->ufh_flow_lph = (uint16_t)flow_lph;
+        radiator->has_heat_output = true;
+
+        if (heating && delta >= UFH_MIN_DELTA_T_C100)
+        {
+            // l/h x 0.01 K: W = l/h / 3600 x 4186 x delta / 100.
+            uint64_t watts = flow_lph * (uint64_t)delta * WATER_HEAT_CAPACITY_J_PER_KG_K / 360000;
+
+            radiator->heat_output = (uint16_t)(watts > UINT16_MAX ? UINT16_MAX : watts);
+        }
+
+        total += radiator->heat_output;
     }
 
     // Each room's input from its shares. Absent if any manifold it shares has no output.
@@ -344,7 +288,8 @@ void update_ufh_outputs(home_manager_t *home_manager, room_manager_t *room_manag
     }
 
     home_manager->ufh_manifold_count = manifold_count;
-    home_manager->has_ufh_output = known && manifold_count > 0;
+    // The home's UFH total is only given when every manifold's output is known.
+    home_manager->has_ufh_output = all_known && manifold_count > 0;
     home_manager->total_ufh_output = home_manager->has_ufh_output ? (uint16_t)(total > UINT16_MAX ? UINT16_MAX : total) : 0;
     home_manager->ufh_unassigned_output = (home_manager->has_ufh_output && total > assigned) ? (uint16_t)(total - assigned) : 0;
 }

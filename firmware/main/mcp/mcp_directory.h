@@ -17,6 +17,7 @@
 #define MCP_NAME_MAX           48
 #define MCP_ROOM_RADIATORS_MAX 16
 #define MCP_ROOM_UFH_SHARES_MAX 8
+#define MCP_UFH_LOOPS_MAX       16
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,8 +38,13 @@ typedef struct {
 typedef struct {
     uint8_t  id;
     char     name[MCP_NAME_MAX];
-    uint16_t rated_output_w; // at a mean-water-to-air difference of 50 degC; for a UFH manifold, its rated output
+    uint16_t rated_output_w; // at a mean-water-to-air difference of 50 degC; not used for a UFH manifold
     bool     is_ufh_manifold;
+    // A UFH manifold's calibration: each loop's flow (0.1 l/min) and the heat meter's flow when
+    // they were read. ufh_loop_count 0 is not calibrated.
+    uint8_t  ufh_loop_count;
+    uint16_t ufh_loop_flow_dlpm[MCP_UFH_LOOPS_MAX];
+    uint16_t ufh_ref_flow_lph;
 } mcp_radiator_info_t;
 
 // Each fills up to `max` entries and returns how many it wrote.

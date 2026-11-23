@@ -52,3 +52,24 @@ export function ufhSharesToJson(shares: UfhShares): { emitterId: number; pct: nu
     .filter(([, pct]) => pct > 0)
     .map(([emitterId, pct]) => ({ emitterId: parseInt(emitterId), pct }));
 }
+
+// A UFH manifold's calibration and live flow, as GET /api/radiators/:id carries it under `ufh`.
+// `loops` are l/min as read off the manifold's gauges; `refFlowLph` is the heat meter's flow when
+// they were read. The manifold's flow now is sum(loops) scaled by heat meter flow now / refFlowLph.
+export type UfhCalibration = {
+  loops: number[];
+  refFlowLph: number | null;
+  calibratedAt: number | null;
+  currentFlowLph: number | null;
+  heatMeterFlowLph: number | null;
+  canCalibrate: boolean;
+  calibrationBlocker: string | null;
+};
+
+// The most loops a manifold can be given (UFH_MAX_LOOPS in radiator_manager.h).
+export const UFH_MAX_LOOPS = 16;
+
+// l/h as l/min, to one decimal place, or a dash.
+export function formatLpm(lph: number | null | undefined): string {
+  return lph == null ? '-' : `${(lph / 60).toFixed(1)} l/min`;
+}
