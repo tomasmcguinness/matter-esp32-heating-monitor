@@ -18,7 +18,8 @@ function PageHeader({ title, children }: { title: ReactNode, children?: ReactNod
             outdoorTemperature={home.outdoorTemperature}
             indoorTemperature={home.averageInternalTemperature}
             heatingRunning={home.heatingRunning}
-            dhwRunning={home.dhwRunning} />}
+            dhwRunning={home.dhwRunning}
+            defrosting={home.defrosting} />}
         </span>
         <span className="page-header-actions">{children}</span>
       </h1>

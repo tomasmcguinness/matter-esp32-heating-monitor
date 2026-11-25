@@ -73,23 +73,42 @@ static cJSON *build_emitter(const radiator_t *radiator)
     cJSON_AddStringToObject(e, "type", is_ufh_manifold(radiator) ? "ufh" : "radiator");
     cJSON_AddNumberToObject(e, "rated_w", radiator->output_dt_50);
 
-    // A manifold's calibration: its loops' flows and the heat meter's flow when they were read.
+    // A manifold's calibration points, sorted by heat meter flow. loop_flows_lpm and
+    // calibration_flow_lph predate the points and keep their meaning, one calibration point: they
+    // carry the highest-flow one.
     if (is_ufh_manifold(radiator))
     {
+        const ufh_point_t *top = ufh_is_calibrated(radiator) ? &radiator->ufh_points[radiator->ufh_point_count - 1] : NULL;
         cJSON *loops = cJSON_AddArrayToObject(e, "loop_flows_lpm");
 
-        for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
+        for (uint8_t i = 0; top && i < radiator->ufh_loop_count; i++)
         {
-            cJSON_AddItemToArray(loops, cJSON_CreateNumber(radiator->ufh_loop_flow_dlpm[i] / 10.0));
+            cJSON_AddItemToArray(loops, cJSON_CreateNumber(top->loop_flow_dlpm[i] / 10.0));
         }
 
-        if (ufh_is_calibrated(radiator))
+        if (top)
         {
-            cJSON_AddNumberToObject(e, "calibration_flow_lph", radiator->ufh_ref_flow_lph);
+            cJSON_AddNumberToObject(e, "calibration_flow_lph", top->ref_flow_lph);
         }
         else
         {
             cJSON_AddNullToObject(e, "calibration_flow_lph");
+        }
+
+        cJSON *points = cJSON_AddArrayToObject(e, "calibration_points");
+
+        for (uint8_t p = 0; p < radiator->ufh_point_count; p++)
+        {
+            cJSON *point = cJSON_CreateObject();
+            cJSON *point_loops = cJSON_AddArrayToObject(point, "loop_flows_lpm");
+
+            for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
+            {
+                cJSON_AddItemToArray(point_loops, cJSON_CreateNumber(radiator->ufh_points[p].loop_flow_dlpm[i] / 10.0));
+            }
+
+            cJSON_AddNumberToObject(point, "heat_meter_flow_lph", radiator->ufh_points[p].ref_flow_lph);
+            cJSON_AddItemToArray(points, point);
         }
     }
 

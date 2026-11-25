@@ -254,8 +254,15 @@ export function roomTempByTs(points: (number | null)[][]): RoomTempByTs {
 //
 // The spans come from averaged buckets and a bucket only counts as heating when the mode held
 // throughout, so this reads false for up to a bucket at each end of a run.
+//
+// A defrost reads as not heating, as it does in update_radiator_outputs(): it happens inside a
+// heating run, whose flag stays on, but the heat pump is drawing heat back out of the water. A
+// defrost shorter than a bucket has no span, so it does not zero anything.
 export function isHeatingAt(modes: ModeSpan[] | undefined, ts: number): boolean {
-  return (modes ?? []).some((span) => span.mode === "heating" && ts >= span.from && ts <= span.to);
+  const within = (span: ModeSpan) => ts >= span.from && ts <= span.to;
+
+  return (modes ?? []).some((span) => span.mode === "heating" && within(span)) &&
+    !(modes ?? []).some((span) => span.mode === "defrost" && within(span));
 }
 
 // Heat output in watts, derived the way update_radiator_outputs() in

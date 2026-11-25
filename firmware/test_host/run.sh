@@ -3,6 +3,8 @@
 #
 #   test_convert the offline history converter (../history_convert) and the format header checks
 #   test_totals  the history totals' defrost accounting (the History page's defrost electricity)
+#   test_ufh_curve  a UFH manifold's flow from its calibration points (ufh_curve.h)
+#   test_heat_balance  what the heat balance counts, and how a bucket ends (heat_balance_core.h)
 #   test_mcp     the plain-C modules: cycle detection, point caps, timestamps, the zone table
 #   test_server  the HTTP and JSON-RPC layer, against a day file in a temporary directory, written
 #                in the old record layout and converted with history_convert first
@@ -22,6 +24,12 @@ cc $FLAGS -I $CONVERT -I ../main/storage test_convert.c $CONVERT/history_convert
 
 cc $FLAGS -I stubs -I ../main/storage test_totals.c ../main/storage/history_totals.c -o test_totals
 ./test_totals
+
+cc $FLAGS -I ../main/managers test_ufh_curve.c -o test_ufh_curve
+./test_ufh_curve
+
+cc $FLAGS -I ../main/storage test_heat_balance.c -o test_heat_balance
+./test_heat_balance
 
 cc $FLAGS -I $MCP -I ../main/storage test_mcp.c $MCP/mcp_cycles.c $MCP/mcp_series.c $MCP/mcp_time.c \
    ../main/storage/timezones.c -lm -o test_mcp

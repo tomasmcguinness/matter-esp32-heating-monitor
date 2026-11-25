@@ -54,16 +54,33 @@ export function ufhSharesToJson(shares: UfhShares): { emitterId: number; pct: nu
 }
 
 // A UFH manifold's calibration and live flow, as GET /api/radiators/:id carries it under `ufh`.
-// `loops` are l/min as read off the manifold's gauges; `refFlowLph` is the heat meter's flow when
-// they were read. The manifold's flow now is sum(loops) scaled by heat meter flow now / refFlowLph.
-export type UfhCalibration = {
-  loops: number[];
-  refFlowLph: number | null;
+// Each point is the loops' gauge readings (l/min) and the heat meter's flow when they were read;
+// points are sorted by that flow and all have `loopCount` loops. The manifold's flow now is
+// interpolated between them by heat meter flow, and scaled proportionally outside them.
+// `predicted` is the device's own curve of manifold flow against heat meter flow, for the chart.
+export type UfhPoint = {
+  refFlowLph: number;
   calibratedAt: number | null;
+  loops: number[];
+  totalLph: number;
+};
+
+export type UfhPrediction = {
+  heatMeterFlowLph: number;
+  manifoldFlowLph: number;
+  extrapolated: boolean;
+  point: boolean;
+};
+
+export type UfhCalibration = {
+  loopCount: number;
+  maxPoints: number;
+  points: UfhPoint[];
   currentFlowLph: number | null;
   heatMeterFlowLph: number | null;
   canCalibrate: boolean;
   calibrationBlocker: string | null;
+  predicted: UfhPrediction[];
 };
 
 // The most loops a manifold can be given (UFH_MAX_LOOPS in radiator_manager.h).
@@ -72,4 +89,14 @@ export const UFH_MAX_LOOPS = 16;
 // l/h as l/min, to one decimal place, or a dash.
 export function formatLpm(lph: number | null | undefined): string {
   return lph == null ? '-' : `${(lph / 60).toFixed(1)} l/min`;
+}
+
+// A manifold flow as a share of the heat meter's, or a dash.
+export function formatShare(manifoldLph: number | null | undefined, heatMeterLph: number | null | undefined): string {
+  return manifoldLph == null || !heatMeterLph ? '-' : `${(manifoldLph / heatMeterLph * 100).toFixed(1)}%`;
+}
+
+// A Unix time as a local date and time, or a dash.
+export function formatWhen(unix: number | null | undefined): string {
+  return unix ? new Date(unix * 1000).toLocaleString() : '-';
 }

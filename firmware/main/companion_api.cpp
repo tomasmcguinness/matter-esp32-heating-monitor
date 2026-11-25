@@ -59,7 +59,7 @@ static void add_optional_string(cJSON *obj, const char *key, const char *value)
 //     it, and a missing value and a 0 decode identically on the app's side.
 //
 // Adding a field here means the app has a use for it. If the web UI needs something, it goes in
-// build_nodes_json() instead.
+// build_node_json() instead.
 static cJSON *build_companion_nodes_json(void)
 {
     cJSON *root = cJSON_CreateArray();

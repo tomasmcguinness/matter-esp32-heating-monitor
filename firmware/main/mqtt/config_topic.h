@@ -23,10 +23,12 @@
 //                 "type":"radiator","rated_w":3464}]}
 //
 // mqtt_name is null when the room or emitter has none. type is "radiator" or "ufh". A manifold also
-// has loop_flows_lpm, each loop's flow read off its gauges, and calibration_flow_lph, the heat meter's
-// flow when they were read (null, with no loops, until calibrated). The device takes the manifold's
-// flow as sum(loops) x heat meter flow / calibration_flow_lph, and its output as that flow times the
-// drop across its probes. A manifold's rated_w is whatever was last entered and the device no longer
+// has calibration_points, [{heat_meter_flow_lph, loop_flows_lpm}] sorted by heat meter flow: each
+// loop's flow read off its gauges and the heat meter's flow when they were read. The device takes the
+// manifold's flow as the straight line between the two points either side of the heat meter's flow,
+// or outside them sum(loops) x heat meter flow / heat meter flow of the end point, and its output as
+// that flow times the drop across its probes. loop_flows_lpm and calibration_flow_lph, from before
+// there were several points, carry the highest-flow point (null, with no loops, until calibrated). A manifold's rated_w is whatever was last entered and the device no longer
 // uses it; it is kept so the schema does not change.
 // Bump schema if a field changes meaning or goes away; adding a field does not need it.
 //

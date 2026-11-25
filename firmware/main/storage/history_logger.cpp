@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "heat_balance.h"
 #include "history_format.h"
 #include "history_paths.h"
 #include "history_totals.h"
@@ -409,6 +410,9 @@ static void on_sample_timer(void *arg)
     uint16_t interval = s_interval_s;
     uint32_t slot     = (now - base_ts) / interval;
 
+    // The hourly heat balance adds up the same instant's live figures. It does no file I/O here.
+    heat_balance_sample(s_home_manager, now, interval);
+
     // One slot number, computed once, used by every series. That is the whole point of running
     // them on a single interval: slot i means the same instant in the home file, in every
     // room's file and in every radiator's file, so the series join on index alone.
@@ -681,6 +685,9 @@ static void flush_task(void *arg)
         // one place file I/O happens off the CHIP event loop. See subscription_log.h.
         subscription_log_flush();
 
+        // Completed hours of the heat balance, likewise.
+        heat_balance_flush();
+
         // After the flush, so a day that ended since the last cycle has its final samples on
         // the card before it is summarised.
         history_totals_backfill_one();
@@ -739,6 +746,11 @@ esp_err_t history_logger_init(home_manager_t *home_manager)
     s_snap_mutex = xSemaphoreCreateMutex();
     if (!s_snap_mutex) {
         return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t balance_err = heat_balance_init();
+    if (balance_err != ESP_OK) {
+        return balance_err;
     }
 
     if (home_manager->logging_interval_s) {

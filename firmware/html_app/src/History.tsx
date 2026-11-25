@@ -9,6 +9,7 @@ import {
   type TotalsResponse,
 } from "./historyData";
 import PageHeader from "./PageHeader";
+import HeatBalance from "./HeatBalance";
 
 // GET /api/history returns one local day of the home's recorded values: fixed-cadence slots
 // with nulls where no reading was recorded, plus the day's integrated energy.
@@ -256,6 +257,10 @@ function History() {
           {/* Instantaneous COP, unlike the card above, which is the day's integrated figure.
               Gaps are the heat source being off rather than missing data. */}
           <Chart title="COP" data={copData} series={COP_SERIES} unit="" decimals={2} modes={modes} />
+
+          {/* Recorded by the device each hour (TASK-45), so it costs one small file, not a read of
+              every radiator's and room's day. */}
+          <HeatBalance key={date} date={date} />
         </>
       )}
     </>

@@ -6,6 +6,7 @@ type HomeStatusProps = {
   indoorTemperature: number | null | undefined;
   heatingRunning: boolean | null | undefined;
   dhwRunning: boolean | null | undefined;
+  defrosting: boolean | null | undefined;
 };
 
 function StatusItem({ title, className, icon, children }: { title: string, className?: string, icon: ReactNode, children: ReactNode }) {
@@ -44,6 +45,12 @@ const hotWaterIcon = (
   </svg>
 );
 
+const defrostIcon = (
+  <svg {...iconProps} className="bi bi-snow">
+    <path d="M8 16a.5.5 0 0 1-.5-.5v-1.293l-.646.647a.5.5 0 0 1-.707-.708L7.5 12.793V8.866l-3.4 1.963-.496 1.85a.5.5 0 1 1-.966-.26l.237-.882-1.12.646a.5.5 0 0 1-.5-.866l1.12-.646-.884-.237a.5.5 0 1 1 .26-.966l1.848.495L7 8 3.6 6.037l-1.85.495a.5.5 0 0 1-.258-.966l.883-.237-1.12-.646a.5.5 0 1 1 .5-.866l1.12.646-.237-.883a.5.5 0 1 1 .966-.258l.495 1.849L7.5 7.134V3.207L6.147 1.854a.5.5 0 1 1 .707-.708l.646.647V.5a.5.5 0 1 1 1 0v1.293l.647-.647a.5.5 0 1 1 .707.708L8.5 3.207v3.927l3.4-1.963.496-1.85a.5.5 0 1 1 .966.26l-.236.882 1.12-.646a.5.5 0 0 1 .5.866l-1.12.646.883.237a.5.5 0 1 1-.26.966l-1.848-.495L9 8l3.4 1.963 1.849-.495a.5.5 0 0 1 .259.966l-.883.237 1.12.646a.5.5 0 0 1-.5.866l-1.12-.646.236.883a.5.5 0 1 1-.966.258l-.495-1.849-3.4-1.963v3.927l1.353 1.353a.5.5 0 0 1-.707.708l-.647-.647V15.5a.5.5 0 0 1-.5.5z" />
+  </svg>
+);
+
 const idleIcon = (
   <svg {...iconProps} className="bi bi-pause-circle">
     <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14m0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16" />
@@ -58,11 +65,18 @@ const unknownIcon = (
   </svg>
 );
 
-// What the heat pump is doing right now. Hot water wins when both are on, as it does on the
-// history mode strip (modeSpans in historyData.ts). Both are null with no heat pump picked, or
-// before it has reported, which is "Unknown" rather than "Idle".
+// What the heat pump is doing right now. A defrost wins over everything: it happens in the middle
+// of a heating or hot water run, whose flag stays on, and while it lasts the heat pump is taking
+// heat back from the water rather than delivering it. Then hot water wins when both are on, as it
+// does on the history mode strip (modeSpans in historyData.ts). Both are null with no heat pump
+// picked, or before it has reported, which is "Unknown" rather than "Idle".
 //
-function HeatPumpMode({ heatingRunning, dhwRunning }: { heatingRunning: boolean | null | undefined, dhwRunning: boolean | null | undefined }) {
+function HeatPumpMode({ heatingRunning, dhwRunning, defrosting }: { heatingRunning: boolean | null | undefined, dhwRunning: boolean | null | undefined, defrosting: boolean | null | undefined }) {
+  if (defrosting) {
+    const during = dhwRunning ? " during a hot water run" : heatingRunning ? " during a heating run" : "";
+    return <StatusItem title={`The heat pump is defrosting${during}`} className="text-info" icon={defrostIcon}>Defrosting</StatusItem>;
+  }
+
   if (dhwRunning) {
     return <StatusItem title="The heat pump is making hot water" className="text-primary" icon={hotWaterIcon}>Hot water</StatusItem>;
   }
@@ -78,12 +92,12 @@ function HeatPumpMode({ heatingRunning, dhwRunning }: { heatingRunning: boolean 
   return <StatusItem title="The heat pump's mode is not known" className="text-body-secondary" icon={unknownIcon}>Unknown</StatusItem>;
 }
 
-function HomeStatus({ outdoorTemperature, indoorTemperature, heatingRunning, dhwRunning }: HomeStatusProps) {
+function HomeStatus({ outdoorTemperature, indoorTemperature, heatingRunning, dhwRunning, defrosting }: HomeStatusProps) {
   return (
     <span className="d-inline-flex flex-wrap align-items-center gap-3 fs-5 fw-normal">
       <StatusItem title="Outdoor temperature" icon={outdoorIcon}><Temperature>{outdoorTemperature}</Temperature></StatusItem>
       <StatusItem title="Average indoor temperature" icon={indoorIcon}><Temperature>{indoorTemperature}</Temperature></StatusItem>
-      <HeatPumpMode heatingRunning={heatingRunning} dhwRunning={dhwRunning} />
+      <HeatPumpMode heatingRunning={heatingRunning} dhwRunning={dhwRunning} defrosting={defrosting} />
     </span>
   );
 }

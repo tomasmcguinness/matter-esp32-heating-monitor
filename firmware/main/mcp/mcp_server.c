@@ -613,16 +613,17 @@ static void write_ufh_manifold(mcp_out_t *o, const mcp_radiator_info_t *rad)
 {
     out_printf(o, "{\"id\":%u,\"name\":", rad->id);
     out_json_string(o, rad->name);
-    out_str(o, ",\"loop_flows_l_per_min\":[");
-    for (uint8_t i = 0; i < rad->ufh_loop_count; i++) {
-        out_printf(o, "%s%u.%u", i ? "," : "", rad->ufh_loop_flow_dlpm[i] / 10, rad->ufh_loop_flow_dlpm[i] % 10);
+    out_str(o, ",\"calibration_points\":[");
+    for (uint8_t p = 0; p < rad->ufh_point_count; p++) {
+        out_printf(o, "%s{\"heat_meter_flow_lph\":%u,\"loop_flows_l_per_min\":[", p ? "," : "",
+                   rad->ufh_points[p].ref_flow_lph);
+        for (uint8_t i = 0; i < rad->ufh_loop_count; i++) {
+            uint16_t dlpm = rad->ufh_points[p].loop_flow_dlpm[i];
+            out_printf(o, "%s%u.%u", i ? "," : "", dlpm / 10, dlpm % 10);
+        }
+        out_str(o, "]}");
     }
-    out_str(o, "],\"calibration_heat_meter_flow_lph\":");
-    if (rad->ufh_loop_count > 0 && rad->ufh_ref_flow_lph > 0) {
-        out_printf(o, "%u", rad->ufh_ref_flow_lph);
-    } else {
-        out_str(o, "null");
-    }
+    out_str(o, "]");
     out_printf(o, ",\"series\":[\"radiator_%u_flow_temp_c\",\"radiator_%u_return_temp_c\"]", rad->id, rad->id);
     write_recorded_days(o, KIND_RADIATOR, rad->id);
     out_str(o, "}");

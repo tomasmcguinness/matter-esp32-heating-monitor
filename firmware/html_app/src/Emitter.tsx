@@ -5,6 +5,7 @@ import Power from "./Power";
 import RadiatorTodayChart from "./RadiatorTodayChart";
 import { isUfhManifold, formatLpm } from "./emitter";
 import type { UfhCalibration } from "./emitter";
+import UfhFlowCurve from "./UfhFlowCurve";
 
 // GET /api/radiators/:id. Temperatures are 0.01 degC. The room fields are null when the radiator
 // has not been put in a room.
@@ -137,16 +138,21 @@ function Emitter() {
       </div>
 
       {manifold && <>
-        {radiator.ufh && radiator.ufh.refFlowLph == null
+        {radiator.ufh && radiator.ufh.points.length === 0
           ? <div className="alert alert-warning">
-            Not calibrated, so this manifold has no output. Enter its loops' flows on the <NavLink to={`/emitters/${radiatorId}/edit`}>Edit</NavLink> page during a heating run.
+            Not calibrated, so this manifold has no output. Add a calibration point on the <NavLink to={`/emitters/${radiatorId}/edit`}>Edit</NavLink> page during a heating run.
           </div>
-          : radiator.ufh && <p className="text-muted">
-            {radiator.ufh.loops.length} loop{radiator.ufh.loops.length === 1 ? '' : 's'} totalling {radiator.ufh.loops.reduce((s, f) => s + f, 0).toFixed(1)} l/min
-            ({radiator.ufh.loops.map(f => f.toFixed(1)).join(', ')}) at a heat meter flow of {formatLpm(radiator.ufh.refFlowLph)}
-            {radiator.ufh.calibratedAt ? `, calibrated ${new Date(radiator.ufh.calibratedAt * 1000).toLocaleString()}` : ''}.
-            The heat meter is at {formatLpm(radiator.ufh.heatMeterFlowLph)} now.
-          </p>}
+          : radiator.ufh && <>
+            <p className="text-muted">
+              {radiator.ufh.loopCount} loop{radiator.ufh.loopCount === 1 ? '' : 's'}, calibrated
+              at {radiator.ufh.points.length === 1
+                ? <>a heat meter flow of {radiator.ufh.points[0].refFlowLph} l/h</>
+                : <>{radiator.ufh.points.length} heat meter flows from {radiator.ufh.points[0].refFlowLph} to {radiator.ufh.points[radiator.ufh.points.length - 1].refFlowLph} l/h</>}.
+              The heat meter is at {radiator.ufh.heatMeterFlowLph == null ? '-' : `${radiator.ufh.heatMeterFlowLph} l/h`} now. Points are added and deleted on
+              the <NavLink to={`/emitters/${radiatorId}/edit`}>Edit</NavLink> page.
+            </p>
+            <UfhFlowCurve ufh={radiator.ufh} />
+          </>}
         <h2>Rooms</h2>
         {(radiator.shares ?? []).length === 0
           ? <div className="alert alert-info">No room has a share of this manifold yet. Give each room it heats a percentage on the room's Edit page.</div>

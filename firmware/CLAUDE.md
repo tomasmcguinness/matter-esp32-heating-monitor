@@ -149,7 +149,9 @@ every heat pump report, when the readings are forgotten, and when the pick chang
 also in the MQTT home state (`heating_running`, `dhw_running`; true, false or null) and announced
 to Home Assistant as binary sensors. `GET /api/home` and the `home` channel carry them as
 `heatingRunning` and `dhwRunning` (same nulls), which `HomeStatus.tsx` shows as the mode icon in the
-Home page's heading, beside the outdoor and average indoor temperatures.
+Home page's heading, beside the outdoor and average indoor temperatures. While `defrosting` (below) is
+true the heading shows **Defrosting** instead, ahead of heating and hot water, since a defrost happens
+inside one of those runs and leaves its flag on; the tooltip names the run it interrupted.
 
 **Defrost** reaches history too, as a third flag (`home_manager`'s `has_defrosting` / `defrosting`,
 the record's `defrosting`), **never a third mode**: a heat pump defrosts in the middle of a heating
@@ -264,14 +266,20 @@ room's heat loss figures are zeroed and flagged absent (`has_predicted_heat_loss
 `has_measured_heat_loss`) without an outdoor temperature, and the measured ones without a room
 temperature and a radiator output above zero as well.
 
-**A radiator's output is zero unless the heat pump is space heating.** The figure is derived from
-temperatures, and a radiator stays warm after the pump stops or turns to hot water, so
-`update_radiator_outputs()` reports 0 W unless `has_heating_running && heating_running`. A heating
+**A radiator's output is zero unless the heat pump is space heating, and while it defrosts.** The
+figure is derived from temperatures, and a radiator stays warm after the pump stops or turns to hot
+water, so `update_radiator_outputs()` reports 0 W unless `has_heating_running && heating_running`
+and not `home_is_defrosting()` (`home_manager.h`: the defrost flag, or the heat meter reading
+negative power). A defrost leaves the heating run's flag on while the heat pump draws heat back out
+of the water, so without that the radiators would keep reporting output through every defrost. The
+UFH manifolds and the calibration check use the same test. A heating
 state that is not known — no heat pump picked, or none reported — counts as not heating, so a
 system with no heat pump shows 0 W throughout. This is a zero, not a missing value: a radiator
 short of a flow or return reading still has no output at all. `update_heat_pump_running()`
-recalculates every radiator and pushes it on the `radiator` WebSocket channel when heating starts
-or stops, since no temperature report need arrive at that moment. A room whose radiators total
+recalculates every radiator (`recalculate_all_radiator_outputs()`) and pushes it on the `radiator`
+WebSocket channel when heating starts or stops or a defrost starts or ends, since no temperature
+report need arrive at that moment; the heat meter's power report does the same when its sign
+changes, which is how a defrost shows from the meter. A room whose radiators total
 0 W has no measured heat loss, rather than one of 0 W/°C.
 
 **Freshness within a live subscription is still a gap in the history.** Sensors are subscribed
@@ -510,6 +518,53 @@ drops and failed attempts, and its longest outage, plus a list of outages with t
 reasons. Nodes are sorted worst first. Names come from `/api/nodes`, and a node that is no longer
 paired shows as "Removed device". Today refreshes every minute.
 
+**The heat balance (`storage/heat_balance.{h,cpp}`, `heat_balance_core.h`) — TASK-45:**
+
+Every 10 minutes of local clock time the device records the heat meter's energy against the live
+model's: the
+radiators by their dT50 rating and the UFH manifolds by calibrated loop flow × the drop across them.
+The History page charts it (`HeatBalance.tsx`) as average watts per bucket and a gap line, with a
+10 min / Hourly toggle (hourly adds the buckets up by clock hour), so whether the model matches the
+meter can be followed over days and across calibration changes. 10 minutes was chosen over hourly
+(the first version, 2026-11-24) to show warm-up at the start of a run and to give clean stretches
+between defrosts; finer would mostly show the sensors reporting at different moments and the heat
+meter's 100 W steps.
+
+**This is the one deliberate exception to the measurements-only rule.** Radiator and UFH outputs are
+derived, and everywhere else they are recalculated from stored temperatures. Here they are recorded
+as the live figures were, with the calibration points and ratings then in force, and never
+recalculated: the question this answers is "did the numbers on screen match the meter?", and that
+needs what they were, not what today's configuration would make of the past. Rebuilding it from
+history instead would read every radiator's and room's day file for each day viewed.
+
+- **What counts.** `heat_balance_sample()` runs from the history sampler's timer (`on_sample_timer()`),
+  at its interval, reading `home_manager` unlocked like `build_record()`. A sample counts only while
+  **space heating**: heating running, not hot water, not `home_is_defrosting()` — the only time all
+  three figures describe the same water. With the heat meter power, the radiator total
+  (`has_total_radiator_output`: every radiator in a room has an output) and the UFH total
+  (`has_ufh_output`, or a known 0 W with no manifolds) all known, power × seconds goes into joule
+  accumulators and `counted_s`; with any missing, the seconds go to `unknown_s`. The rules are
+  `hb_add()` in `heat_balance_core.h`, plain C, tested by `test_host/test_heat_balance.c`.
+- **The record.** `/sdcard/balance/YYYY-MM-DD` (its own directory, so the `home-*` scan never sees
+  it): an 8-byte header (`BALN`, version 2, record size, u16 bucket seconds = 600) then one 32-byte
+  `hb_record_t` per completed bucket — u32 start, u16 counted_s, u16 unknown_s, i32 heat meter /
+  radiators / UFH Wh, 12 reserved bytes for later fields. Buckets are on local :00, :10, … so a day
+  has 144 (138 or 150 across DST). A bucket with no heating is still written, so a missing one means
+  the device was off. The bucket in progress is in RAM only: a restart loses it. Completed buckets
+  queue (up to 8) and the **history flush task** appends them, beside `subscription_log_flush()`; one
+  already in the file is not written twice. Version 1 files (hourly, bucket field 0; a few hours of
+  2026-11-24) are still read, as hourly, and never appended to.
+- **`GET /api/history/balance?date=`** is routed inside the `/api/history/*` wildcard (no URI
+  handler): `{storage, date, bucketSeconds, buckets: [{start, countedSeconds, unknownSeconds,
+  heatMeterWh, radiatorsWh, ufhWh}], current}`, where `current` is the bucket in progress when the
+  date is today and `bucketSeconds` comes from the file's header.
+  Its prototype is in `heat_balance_api.h`, because `history_api.c` is C and `heat_balance.h` pulls in
+  the C++ `home_manager.h`.
+- **The page** draws average W while heating per bucket (Wh × 3600 / counted_s), heat meter against
+  radiators + UFH, and the gap in W (left) and % of the heat meter (right). A bucket with under
+  3 minutes counted (10 for an hour) is a gap. Recording began on 2026-11-24, so earlier days show
+  "not recorded".
+
 **The companion API (`companion_api.{h,cpp}`, `node_api.h`):**
 
 `/api/companion/*` is **not our API**. It is the contract of the generic
@@ -538,7 +593,7 @@ commissioning statics and the CHIP pairing callbacks stay in one translation uni
 `read_json_body()` — the NUL-terminating body read most of the older handlers do by hand and get
 subtly wrong. Both APIs drive the same Matter code through those.
 
-The node array is built **twice, on purpose**: `build_nodes_json()` in `app_main.cpp` for
+The node array is built **twice, on purpose**: `build_node_json()` in `app_main.cpp`, one node per call, for
 `/api/nodes`, and `build_companion_nodes_json()` in `companion_api.cpp` for
 `/api/companion/nodes`. That is what the separate namespace is for. `/api/nodes` feeds our web UI
 and carries whatever the UI needs — `lastSeen` today, more later — and none of that may leak onto
@@ -831,28 +886,42 @@ u8 count, then `{room_id, emitter_id, pct}` triples), so the variable-length `ro
 untouched and firmware without the key loads as before. Deleting a room drops its shares; deleting a
 manifold, or changing its type, drops the shares of it.
 
-**A manifold's output is its calibrated flow times the drop across its probes** (TASK-42.1). The
-manifold has no flow meter, so the user reads each loop's flow gauge during a heating run and enters
-them on its Edit page (`UfhLoops.tsx`, 1 to `UFH_MAX_LOOPS` = 16 loops, 0.1 to 99.9 l/min each).
-`PUT /api/radiators/{id}/loops` `{"loops": [l/min, ...]}` stores them with **the heat meter's flow at
-that moment** (`ufh_ref_flow_lph`) and the time. It is routed inside the `/api/radiators/*` PUT
-handler, so it costs no URI handler, and it is refused with a **409** unless the heat pump is space
-heating, not making hot water, and the heat meter reports a flow above 0
-(`ufh_calibration_blocker()`), since that reference is what every later figure is scaled by.
+**A manifold's output is its calibrated flow times the drop across its probes** (TASK-42.1, with
+several calibration points since TASK-42.2). The manifold has no flow meter, so during a heating run
+the user reads each loop's flow gauge and adds them on its Edit page as a **calibration point**
+(`UfhLoops.tsx`, 1 to `UFH_MAX_LOOPS` = 16 loops, 0.1 to 99.9 l/min each).
+`PUT /api/radiators/{id}/loops` `{"loops": [l/min, ...]}` saves them with **the heat meter's flow at
+that moment** and the time. It is refused with a **409** unless the heat pump is space heating, not
+making hot water, not defrosting (the defrost flag, or the heat meter reading negative power), and the
+heat meter reports a flow above 0 (`ufh_calibration_blocker()`), since that flow is what the point is
+placed by. A defrost pushes the heat meter's flow well up: on 2026-11-24 one jumped it from ~1,245 to
+1,637 l/h, and a point saved then paired the gauges with the wrong flow. A point within `UFH_POINT_REPLACE_PCT` (3%) of an existing
+point's heat meter flow **replaces** it. Up to `UFH_MAX_POINTS` (8), all with the **same loop count**:
+a point with a different count is a 409 until the points are deleted.
+`DELETE /api/radiators/{id}/loops/{index}` deletes one (index into the list GET returns, sorted by
+heat meter flow) and `DELETE /api/radiators/{id}/loops` all of them. Both routes sit inside the
+`/api/radiators/*` PUT and DELETE handlers, so they cost no URI handler. The DELETE routing has to run
+**before** that handler's own parsing, which takes the last path segment as the radiator id.
 
-The calibration lives on `radiator_t` (`ufh_loop_count`, `ufh_loop_flow_dlpm[]` in 0.1 l/min,
-`ufh_ref_flow_lph`, `ufh_calibrated_at`) and is persisted by `save_radiators_to_nvs()` under its
-**own NVS key, `ufh_loops`**, in the `radiators` namespace (u8 version 1, u8 count, then per manifold
-u8 id, u8 loop count, u16 reference flow, u32 time and the loop flows). The `radiator_list` blob is
-untouched, as with `room_ufh`. Changing a manifold's type drops its calibration, and deleting it drops
-it on the next save.
+The points live on `radiator_t` (`ufh_loop_count`, `ufh_point_count`, and `ufh_points`, a heap array
+of `ufh_point_t` allocated only while there are points, kept sorted by heat meter flow). They are
+persisted by `save_radiators_to_nvs()` under their **own NVS key, `ufh_loops`**, in the `radiators`
+namespace. Version 2: u8 version, u8 manifold count, then per manifold u8 id, u8 loop count, u8 point
+count, and per point u16 heat meter flow, u32 time and the loop flows. A version 1 blob (TASK-42.1,
+one calibration per manifold) loads as one point and is rewritten as version 2 on the next save. The
+`radiator_list` blob is untouched, as with `room_ufh`. Changing a manifold's type drops its points,
+and deleting it drops them on the next save.
 
 `update_ufh_outputs()` in `calculations_manager.cpp` then works out each manifold on its own:
-- flow now = sum(loops) × heat meter flow now / `ufh_ref_flow_lph` (`ufh_flow_lph`), so a 5% move at
-  the heat meter is a 5% move at the manifold;
+- flow now (`ufh_flow_lph`) = `ufh_flow_at()`: each point's manifold flow is its loops summed, and at
+  the heat meter's flow now it is the straight line between the two points either side; below the
+  lowest point or above the highest it is that point's flow scaled in proportion, so with one point a
+  5% move at the heat meter is a 5% move at the manifold. The arithmetic is `ufh_curve_flow()` in
+  `managers/ufh_curve.h`, plain C so `test_host/test_ufh_curve.c` tests it on a desktop;
 - output = flow × 4186 J/kg·K × |flow − return|, taking a litre as a kilo (a glycol mix would read high);
-- **0 W** while not space heating or while making hot water (the heat meter's flow is then the
-  cylinder's), or under 0.5 K across the probes;
+- **0 W** while not space heating, while making hot water (the heat meter's flow is then the
+  cylinder's), or while defrosting (the defrost flag, or negative heat meter power: the floor gives
+  heat back, and |flow − return| would otherwise count it as output), or under 0.5 K across the probes;
 - **absent** if the manifold is not calibrated, the heat meter has no flow, the heating state is
   unknown, or a probe has no reading.
 
@@ -863,7 +932,13 @@ UFH input; a room with a share whose input is absent has no measured heat loss. 
 longer play any part in the UFH figure: until TASK-42.1 it was the heat meter's residual after them.
 
 The calibration is today's for every figure worked out from it: history is measurements only, so the
-MCP `list_rooms` description tells a caller to apply the current loops to past days too.
+MCP `list_rooms` description tells a caller to apply the current points to past days too.
+
+The manifold's detail and Edit pages show **the predicted flow** (`UfhFlowCurve.tsx`): a uPlot chart
+of manifold flow against heat meter flow, solid between points, dashed where it is only scaled from
+an end point, with the points as dots and a line at the heat meter's flow now, plus a small table. The
+curve is the device's (`ufh.predicted`, from `add_ufh_prediction()` calling `ufh_flow_at()`), so it
+cannot disagree with the figures.
 
 `attribute_data_cb` matches a radiator's probes on **node and endpoint** and walks every radiator, so
 one multi-probe node can feed a manifold and radiators. The heat meter's **flow** report calls
@@ -875,11 +950,13 @@ a heating or hot water change, and a manifold being added, edited or deleted for
 `ufhUnassignedOutput`; `radiatorCount` and `totalRadiatorOutput` exclude manifolds. Rooms carry
 `ufhShares: [{emitterId, name, pct, input}]`, `ufhInput`, `radiatorInput`, and `heatInput`, which
 now includes UFH. A manifold's detail carries `shares: [{roomId, roomName, pct, input}]` and
-`ufh: {loops, refFlowLph, calibratedAt, currentFlowLph, heatMeterFlowLph, canCalibrate,
-calibrationBlocker}`; the list carries `ufhFlowLph` and `ufhCalibrated` for each manifold. MCP
-`list_rooms` lists manifolds under `ufh_manifolds`, with `loop_flows_l_per_min` and
-`calibration_heat_meter_flow_lph`, and each room's `ufh_shares`. The MQTT config topic gives a manifold
-`loop_flows_lpm` and `calibration_flow_lph`. The output is not
+`ufh: {loopCount, maxPoints, points: [{refFlowLph, calibratedAt, loops, totalLph}], currentFlowLph,
+heatMeterFlowLph, canCalibrate, calibrationBlocker, predicted: [{heatMeterFlowLph, manifoldFlowLph,
+extrapolated, point}]}`; the list carries `ufhFlowLph` and `ufhCalibrated` for each manifold. MCP
+`list_rooms` lists manifolds under `ufh_manifolds`, with `calibration_points: [{heat_meter_flow_lph,
+loop_flows_l_per_min}]`, and each room's `ufh_shares`. The MQTT config topic gives a manifold
+`calibration_points` and, from before there were several, `loop_flows_lpm` and `calibration_flow_lph`
+filled from the highest-flow point. The output is not
 recorded, following the measurements-only rule.
 
 **Commodity Price and the running cost:**
@@ -901,6 +978,24 @@ browser (`HourlyCost.tsx`): `electricalPower / 1e6 * price / 10^decimalPoints`, 
 Electricity Meter power at this moment's price. It falls to standby pence between runs, and a kVAh
 tariff is treated as kWh, which is why the card says "Approx". It is not recorded in history, and
 it is not on MQTT or the companion API.
+
+**Internal RAM is what Ethernet runs on — keep big HTTP responses out of it (TASK-46):**
+
+The W5500 is driven over SPI, and for every outgoing Ethernet frame the SPI driver allocates a small
+DMA bounce buffer from **internal RAM**, of which only ~36 KB is free in normal running. When that
+allocation fails, the driver logs `setup_dma_priv_buffer: Failed to allocate priv TX buffer` and
+`emac_w5500_transmit: write frame failed`, the frame is dropped, and TCP stalls: the client gets part
+of a response and then nothing. (In `00c3854`, on IDF 5.5.4, the same shortage ended in a NULL memcpy
+panic in `spi_master`; that is why mbedTLS and CHIP allocate from PSRAM.) `GET /api/nodes` did exactly
+this: a 27-node cJSON tree plus its 15.7 KB string, all under `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`
+(16384) and so all internal, held through the send. Two rules since:
+
+- **cJSON allocates from PSRAM.** `app_main()` sets `cJSON_InitHooks` first thing, to
+  `heap_caps_malloc_prefer(PSRAM, then internal)`, so every handler's JSON tree and printed string
+  stays out of internal RAM.
+- **A response that grows with the number of nodes, rooms or emitters is sent in chunks**, built
+  and freed one item at a time, as `/api/nodes` (`build_node_json()`), the history endpoints and the
+  MCP server do. Building a whole list and then sending it holds it all through the slowest part.
 
 **Keeping the CHIP task's event queue from filling:**
 
@@ -995,9 +1090,10 @@ the *same* axis is still not possible, so `History.tsx` keeps one chart per unit
 output is not on the card — `rec_radiator_t` stores flow and return only — so `RoomHistory.tsx`
 derives it per point with the same arithmetic as `update_radiator_outputs()`
 (`rated / (50 / ΔT)^1.3`, ΔT being mean water temperature against room air), including the rule
-that it is zero unless the heat pump was heating: `isHeatingAt()` tests each point's timestamp
-against the same heating spans the mode strip draws, so the line is zero for up to a bucket at each
-end of a run, and zero all day where no mode was recorded. That needs the rated
+that it is zero unless the heat pump was heating and not defrosting: `isHeatingAt()` tests each
+point's timestamp against the same heating and defrost spans the mode strip draws, so the line is
+zero for up to a bucket at each end of a run, through each defrost long enough to have a span, and
+zero all day where no mode was recorded. That needs the rated
 output at dT 50, which the room payload does not carry, so the page fetches `GET /api/radiators`
 once for the whole set, and the room's own series doubles as the room-temperature lookup. The join
 is **on the timestamp, not the array index**: all three kinds share one sampling interval, but

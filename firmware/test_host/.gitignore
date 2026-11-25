@@ -9,3 +9,5 @@ convert_out/
 convert_out2/
 fixture_v2/
 test_totals
+test_ufh_curve
+test_heat_balance

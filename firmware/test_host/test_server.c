@@ -182,8 +182,8 @@ size_t mcp_directory_radiators(mcp_radiator_info_t *out, size_t max)
     static const mcp_radiator_info_t RADS[] = {
         {.id = 3, .name = "Kitchen K2", .rated_output_w = 1200},
         {.id = 9, .name = "Spare", .rated_output_w = 500},
-        {.id = 12, .name = "Ground floor UFH", .is_ufh_manifold = true,
-         .ufh_loop_count = 2, .ufh_loop_flow_dlpm = {25, 32}, .ufh_ref_flow_lph = 1100},
+        {.id = 12, .name = "Ground floor UFH", .is_ufh_manifold = true, .ufh_loop_count = 2, .ufh_point_count = 2,
+         .ufh_points = {{.ref_flow_lph = 1100, .loop_flow_dlpm = {25, 32}}, {.ref_flow_lph = 1300, .loop_flow_dlpm = {30, 35}}}},
     };
     size_t n = sizeof(RADS) / sizeof(RADS[0]) < max ? sizeof(RADS) / sizeof(RADS[0]) : max;
     memcpy(out, RADS, n * sizeof(RADS[0]));
@@ -576,13 +576,18 @@ static void test_list_rooms(void)
     // The manifold is listed on its own, with its probes' series, and not as an unassigned radiator.
     const cJSON *manifolds = cJSON_GetObjectItem(r.result, "ufh_manifolds");
     CHECK(cJSON_GetArraySize(manifolds) == 1);
-    CHECK(num(cJSON_GetArrayItem(manifolds, 0), "id") == 12 &&
-          num(cJSON_GetArrayItem(manifolds, 0), "calibration_heat_meter_flow_lph") == 1100);
+    CHECK(num(cJSON_GetArrayItem(manifolds, 0), "id") == 12);
     {
-        const cJSON *loops = cJSON_GetObjectItem(cJSON_GetArrayItem(manifolds, 0), "loop_flows_l_per_min");
+        const cJSON *points = cJSON_GetObjectItem(cJSON_GetArrayItem(manifolds, 0), "calibration_points");
+        CHECK(cJSON_GetArraySize(points) == 2);
+        CHECK(num(cJSON_GetArrayItem(points, 0), "heat_meter_flow_lph") == 1100 &&
+              num(cJSON_GetArrayItem(points, 1), "heat_meter_flow_lph") == 1300);
+        const cJSON *loops = cJSON_GetObjectItem(cJSON_GetArrayItem(points, 0), "loop_flows_l_per_min");
         CHECK(cJSON_GetArraySize(loops) == 2 && cJSON_GetArrayItem(loops, 0)->valuedouble == 2.5 &&
               cJSON_GetArrayItem(loops, 1)->valuedouble == 3.2);
+        CHECK(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(points, 1), "loop_flows_l_per_min"), 1)->valuedouble == 3.5);
         CHECK(cJSON_GetObjectItem(cJSON_GetArrayItem(manifolds, 0), "rated_output_w") == NULL);
+        CHECK(cJSON_GetObjectItem(cJSON_GetArrayItem(manifolds, 0), "loop_flows_l_per_min") == NULL);
     }
     CHECK(strcmp(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetArrayItem(manifolds, 0), "series"), 0)->valuestring,
                  "radiator_12_flow_temp_c") == 0);

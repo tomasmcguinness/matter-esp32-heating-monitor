@@ -11,6 +11,7 @@
 #include "history_format.h"
 #include "history_paths.h"
 #include "history_totals.h"
+#include "heat_balance_api.h"
 #include "subscription_log.h"
 #include "sd_card.h"
 #include "time_sync.h"
@@ -624,6 +625,10 @@ static esp_err_t history_sub_handler(httpd_req_t *req)
 
     if (strncmp(req->uri, "/api/history/subscriptions", 26) == 0) {
         return subscription_log_get_handler(req);
+    }
+
+    if (strncmp(req->uri, "/api/history/balance", 20) == 0) {
+        return heat_balance_get_handler(req);
     }
 
     uint8_t     kind = 0;

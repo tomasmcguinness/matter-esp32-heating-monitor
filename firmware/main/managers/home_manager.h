@@ -90,6 +90,9 @@ typedef struct {
 
     uint8_t radiator_count = 0;
     uint16_t total_radiator_output = 0;
+    // Whether that total is complete: every radiator that is in a room has an output. One short of a
+    // probe reading has none, and the total is then too low to compare with the heat meter.
+    bool has_total_radiator_output = false;
 
     // Underfloor heating, derived by update_ufh_outputs(). Transient. The total is the sum of every
     // manifold's output; the unassigned part is what no room has a share of. Absent while any
@@ -100,6 +103,16 @@ typedef struct {
     uint16_t ufh_unassigned_output = 0;
 
 } home_manager_t;
+
+// Whether the heat pump is defrosting: its defrost flag, or the heat meter reading negative power,
+// which is the same thing seen from the meter (and the only sign of it from a heat pump with no
+// defrost endpoint). A defrost happens inside a heating or hot water run and leaves that run's flag
+// on, but while it lasts the heat pump is taking heat back from the water: radiators and UFH give no
+// output, and the heat meter's flow is pushed up for the defrost rather than set by the emitters.
+static inline bool home_is_defrosting(const home_manager_t *h)
+{
+    return (h->has_defrosting && h->defrosting) || (h->has_heat_meter_power && h->heat_meter_power_mw < 0);
+}
 
 void home_manager_init(home_manager_t *manager);
 

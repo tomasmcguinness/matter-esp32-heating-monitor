@@ -6,16 +6,16 @@
 #include <nvs.h>
 
 #include "radiator_manager.h"
+#include "ufh_curve.h"
 
 #define NVS_NAMESPACE "radiators"
 #define NVS_KEY "radiator_list"
 
-// UFH manifold calibrations, kept apart from radiator_list so that blob's layout never changes:
-// u8 version, u8 count, then per manifold u8 radiator_id, u8 loop_count, u16 ref_flow_lph,
-// u32 calibrated_at and loop_count x u16 flow (0.1 l/min), all little-endian.
+// UFH manifold calibration points, kept apart from radiator_list so that blob's layout never
+// changes: u8 version, u8 manifold count, then each manifold's points (see load_ufh_loops_from_nvs),
+// all little-endian.
 #define NVS_KEY_UFH_LOOPS "ufh_loops"
-#define UFH_LOOPS_BLOB_VERSION 1
-#define UFH_LOOPS_ENTRY_HEADER 8
+#define UFH_LOOPS_BLOB_VERSION 2
 
 static const char *TAG = "radiator_manager";
 
@@ -89,26 +89,141 @@ uint8_t get_next_radiator_id(radiator_manager_t *manager)
     return next_id;
 }
 
-// Reads ufh_loops into manifolds already loaded. A missing key is no calibrations; an entry for a
+// Reads ufh_loops into manifolds already loaded. A missing key is no calibration; an entry for a
 // record that no longer exists or is no longer a manifold, or that is out of range, is dropped.
 static void load_ufh_loops_from_nvs(radiator_manager_t *manager);
 static esp_err_t save_ufh_loops_to_nvs(nvs_handle_t nvs_handle, radiator_manager_t *manager);
 
-uint32_t ufh_calibrated_flow_lph(const radiator_t *radiator)
+static void free_ufh_points(radiator_t *radiator)
+{
+    free(radiator->ufh_points);
+    radiator->ufh_points = NULL;
+    radiator->ufh_point_count = 0;
+    radiator->ufh_loop_count = 0;
+}
+
+uint32_t ufh_point_flow_lph(const radiator_t *radiator, const ufh_point_t *point)
 {
     uint32_t dlpm = 0;
 
     for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
     {
-        dlpm += radiator->ufh_loop_flow_dlpm[i];
+        dlpm += point->loop_flow_dlpm[i];
     }
 
     // 0.1 l/min is 6 l/h.
     return dlpm * 6;
 }
 
-esp_err_t set_ufh_calibration(radiator_manager_t *manager, radiator_t *radiator, uint8_t loop_count, const uint16_t *loop_flow_dlpm, uint16_t ref_flow_lph, uint32_t calibrated_at)
+// The points as the two arrays ufh_curve_flow() takes.
+static uint8_t ufh_curve_arrays(const radiator_t *radiator, uint16_t *h, uint32_t *m)
 {
+    for (uint8_t i = 0; i < radiator->ufh_point_count; i++)
+    {
+        h[i] = radiator->ufh_points[i].ref_flow_lph;
+        m[i] = ufh_point_flow_lph(radiator, &radiator->ufh_points[i]);
+    }
+
+    return radiator->ufh_point_count;
+}
+
+bool ufh_flow_at(const radiator_t *radiator, uint32_t hm_flow_lph, uint32_t *flow_lph)
+{
+    if (!ufh_is_calibrated(radiator))
+    {
+        return false;
+    }
+
+    uint16_t h[UFH_MAX_POINTS];
+    uint32_t m[UFH_MAX_POINTS];
+    uint8_t n = ufh_curve_arrays(radiator, h, m);
+
+    *flow_lph = ufh_curve_flow(h, m, n, hm_flow_lph);
+    return true;
+}
+
+bool ufh_flow_is_extrapolated(const radiator_t *radiator, uint32_t hm_flow_lph)
+{
+    uint16_t h[UFH_MAX_POINTS];
+    uint32_t m[UFH_MAX_POINTS];
+    uint8_t n = ufh_is_calibrated(radiator) ? ufh_curve_arrays(radiator, h, m) : 0;
+
+    return ufh_curve_is_extrapolated(h, n, hm_flow_lph);
+}
+
+// Puts a point into the sorted list: over one within UFH_POINT_REPLACE_PCT, else in order. No save.
+static esp_err_t insert_ufh_point(radiator_t *radiator, const ufh_point_t *point, bool *replaced)
+{
+    *replaced = false;
+
+    for (uint8_t i = 0; i < radiator->ufh_point_count; i++)
+    {
+        uint32_t existing = radiator->ufh_points[i].ref_flow_lph;
+        uint32_t diff = existing > point->ref_flow_lph ? existing - point->ref_flow_lph : point->ref_flow_lph - existing;
+
+        if (diff * 100 <= existing * UFH_POINT_REPLACE_PCT)
+        {
+            radiator->ufh_points[i] = *point;
+            *replaced = true;
+
+            // The replacement can move past a neighbour; one pass of insertion sort puts it back.
+            while (i > 0 && radiator->ufh_points[i - 1].ref_flow_lph > radiator->ufh_points[i].ref_flow_lph)
+            {
+                ufh_point_t t = radiator->ufh_points[i - 1];
+                radiator->ufh_points[i - 1] = radiator->ufh_points[i];
+                radiator->ufh_points[i] = t;
+                i--;
+            }
+
+            while (i + 1 < radiator->ufh_point_count && radiator->ufh_points[i + 1].ref_flow_lph < radiator->ufh_points[i].ref_flow_lph)
+            {
+                ufh_point_t t = radiator->ufh_points[i + 1];
+                radiator->ufh_points[i + 1] = radiator->ufh_points[i];
+                radiator->ufh_points[i] = t;
+                i++;
+            }
+
+            return ESP_OK;
+        }
+    }
+
+    if (radiator->ufh_point_count >= UFH_MAX_POINTS)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+
+    ufh_point_t *grown = (ufh_point_t *)realloc(radiator->ufh_points, (radiator->ufh_point_count + 1) * sizeof(ufh_point_t));
+
+    if (!grown)
+    {
+        return ESP_ERR_NO_MEM;
+    }
+
+    radiator->ufh_points = grown;
+
+    uint8_t at = radiator->ufh_point_count;
+
+    while (at > 0 && grown[at - 1].ref_flow_lph > point->ref_flow_lph)
+    {
+        grown[at] = grown[at - 1];
+        at--;
+    }
+
+    grown[at] = *point;
+    radiator->ufh_point_count++;
+
+    return ESP_OK;
+}
+
+esp_err_t ufh_add_point(radiator_manager_t *manager, radiator_t *radiator, uint8_t loop_count, const uint16_t *loop_flow_dlpm, uint16_t ref_flow_lph, uint32_t calibrated_at, bool *replaced)
+{
+    bool ignored;
+
+    if (!replaced)
+    {
+        replaced = &ignored;
+    }
+
     if (!manager || !radiator || !is_ufh_manifold(radiator) || loop_count == 0 || loop_count > UFH_MAX_LOOPS || ref_flow_lph == 0)
     {
         return ESP_ERR_INVALID_ARG;
@@ -122,15 +237,68 @@ esp_err_t set_ufh_calibration(radiator_manager_t *manager, radiator_t *radiator,
         }
     }
 
-    memset(radiator->ufh_loop_flow_dlpm, 0, sizeof(radiator->ufh_loop_flow_dlpm));
-    memcpy(radiator->ufh_loop_flow_dlpm, loop_flow_dlpm, loop_count * sizeof(uint16_t));
+    if (ufh_is_calibrated(radiator) && radiator->ufh_loop_count != loop_count)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ufh_point_t point = {};
+    point.ref_flow_lph = ref_flow_lph;
+    point.calibrated_at = calibrated_at;
+    memcpy(point.loop_flow_dlpm, loop_flow_dlpm, loop_count * sizeof(uint16_t));
+
+    esp_err_t err = insert_ufh_point(radiator, &point, replaced);
+
+    if (err != ESP_OK)
+    {
+        return err;
+    }
+
     radiator->ufh_loop_count = loop_count;
-    radiator->ufh_ref_flow_lph = ref_flow_lph;
-    radiator->ufh_calibrated_at = calibrated_at;
 
     return save_radiators_to_nvs(manager);
 }
 
+esp_err_t ufh_delete_point(radiator_manager_t *manager, radiator_t *radiator, uint8_t index)
+{
+    if (!manager || !radiator || index >= radiator->ufh_point_count)
+    {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    for (uint8_t i = index; i + 1 < radiator->ufh_point_count; i++)
+    {
+        radiator->ufh_points[i] = radiator->ufh_points[i + 1];
+    }
+
+    radiator->ufh_point_count--;
+
+    if (radiator->ufh_point_count == 0)
+    {
+        free_ufh_points(radiator);
+    }
+
+    return save_radiators_to_nvs(manager);
+}
+
+esp_err_t ufh_delete_all_points(radiator_manager_t *manager, radiator_t *radiator)
+{
+    if (!manager || !radiator)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    free_ufh_points(radiator);
+
+    return save_radiators_to_nvs(manager);
+}
+
+// Version 1 (TASK-42.1 firmware): one calibration per manifold --
+//   u8 id, u8 loop_count, u16 ref_flow_lph, u32 calibrated_at, loop_count x u16.
+// Version 2: any number of points --
+//   u8 id, u8 loop_count, u8 point_count, then per point u16 ref_flow_lph, u32 calibrated_at,
+//   loop_count x u16.
+// A version 1 blob loads as one point each, and the next save writes version 2.
 static void load_ufh_loops_from_nvs(radiator_manager_t *manager)
 {
     nvs_handle_t nvs_handle;
@@ -160,7 +328,9 @@ static void load_ufh_loops_from_nvs(radiator_manager_t *manager)
     err = nvs_get_blob(nvs_handle, NVS_KEY_UFH_LOOPS, buffer, &size);
     nvs_close(nvs_handle);
 
-    if (err != ESP_OK || buffer[0] != UFH_LOOPS_BLOB_VERSION)
+    uint8_t version = buffer[0];
+
+    if (err != ESP_OK || (version != 1 && version != UFH_LOOPS_BLOB_VERSION))
     {
         ESP_LOGW(TAG, "Ignoring unreadable UFH loop blob");
         free(buffer);
@@ -172,44 +342,48 @@ static void load_ufh_loops_from_nvs(radiator_manager_t *manager)
 
     for (uint16_t i = 0; i < count; i++)
     {
-        if (offset + UFH_LOOPS_ENTRY_HEADER > size)
+        size_t header = version == 1 ? 2 : 3;
+
+        if (offset + header > size)
         {
             break;
         }
 
-        const uint8_t *entry = buffer + offset;
-        uint8_t loop_count = entry[1];
-        size_t entry_size = UFH_LOOPS_ENTRY_HEADER + (size_t)loop_count * sizeof(uint16_t);
+        uint8_t radiator_id = buffer[offset];
+        uint8_t loop_count = buffer[offset + 1];
+        uint8_t point_count = version == 1 ? 1 : buffer[offset + 2];
+        size_t point_size = 2 + 4 + (size_t)loop_count * sizeof(uint16_t);
 
-        if (offset + entry_size > size)
+        offset += header;
+
+        if (offset + point_size * point_count > size)
         {
             ESP_LOGW(TAG, "UFH loop blob is truncated");
             break;
         }
 
-        offset += entry_size;
+        radiator_t *radiator = find_radiator(manager, radiator_id);
+        bool usable = radiator && is_ufh_manifold(radiator) && loop_count > 0 && loop_count <= UFH_MAX_LOOPS;
 
-        radiator_t *radiator = find_radiator(manager, entry[0]);
-        uint16_t ref_flow_lph;
-        uint32_t calibrated_at;
-        uint16_t flows[UFH_MAX_LOOPS];
-
-        if (!radiator || loop_count == 0 || loop_count > UFH_MAX_LOOPS)
+        for (uint8_t p = 0; p < point_count; p++, offset += point_size)
         {
-            continue;
-        }
+            if (!usable)
+            {
+                continue;
+            }
 
-        memcpy(&ref_flow_lph, entry + 2, sizeof(ref_flow_lph));
-        memcpy(&calibrated_at, entry + 4, sizeof(calibrated_at));
-        memcpy(flows, entry + UFH_LOOPS_ENTRY_HEADER, loop_count * sizeof(uint16_t));
+            ufh_point_t point = {};
+            bool replaced;
 
-        // Straight into the record rather than through set_ufh_calibration(), which would save.
-        if (is_ufh_manifold(radiator) && ref_flow_lph > 0)
-        {
-            memcpy(radiator->ufh_loop_flow_dlpm, flows, loop_count * sizeof(uint16_t));
-            radiator->ufh_loop_count = loop_count;
-            radiator->ufh_ref_flow_lph = ref_flow_lph;
-            radiator->ufh_calibrated_at = calibrated_at;
+            memcpy(&point.ref_flow_lph, buffer + offset, sizeof(uint16_t));
+            memcpy(&point.calibrated_at, buffer + offset + 2, sizeof(uint32_t));
+            memcpy(point.loop_flow_dlpm, buffer + offset + 6, loop_count * sizeof(uint16_t));
+
+            // Straight into the record rather than through ufh_add_point(), which would save.
+            if (point.ref_flow_lph > 0 && insert_ufh_point(radiator, &point, &replaced) == ESP_OK)
+            {
+                radiator->ufh_loop_count = loop_count;
+            }
         }
     }
 
@@ -226,7 +400,7 @@ static esp_err_t save_ufh_loops_to_nvs(nvs_handle_t nvs_handle, radiator_manager
         if (is_ufh_manifold(radiator) && ufh_is_calibrated(radiator))
         {
             count++;
-            size += UFH_LOOPS_ENTRY_HEADER + (size_t)radiator->ufh_loop_count * sizeof(uint16_t);
+            size += 3 + (size_t)radiator->ufh_point_count * (2 + 4 + radiator->ufh_loop_count * sizeof(uint16_t));
         }
     }
 
@@ -253,12 +427,19 @@ static esp_err_t save_ufh_loops_to_nvs(nvs_handle_t nvs_handle, radiator_manager
             continue;
         }
 
-        entry[0] = radiator->radiator_id;
-        entry[1] = radiator->ufh_loop_count;
-        memcpy(entry + 2, &radiator->ufh_ref_flow_lph, sizeof(uint16_t));
-        memcpy(entry + 4, &radiator->ufh_calibrated_at, sizeof(uint32_t));
-        memcpy(entry + UFH_LOOPS_ENTRY_HEADER, radiator->ufh_loop_flow_dlpm, radiator->ufh_loop_count * sizeof(uint16_t));
-        entry += UFH_LOOPS_ENTRY_HEADER + radiator->ufh_loop_count * sizeof(uint16_t);
+        *entry++ = radiator->radiator_id;
+        *entry++ = radiator->ufh_loop_count;
+        *entry++ = radiator->ufh_point_count;
+
+        for (uint8_t p = 0; p < radiator->ufh_point_count; p++)
+        {
+            const ufh_point_t *point = &radiator->ufh_points[p];
+
+            memcpy(entry, &point->ref_flow_lph, sizeof(uint16_t));
+            memcpy(entry + 2, &point->calibrated_at, sizeof(uint32_t));
+            memcpy(entry + 6, point->loop_flow_dlpm, radiator->ufh_loop_count * sizeof(uint16_t));
+            entry += 6 + radiator->ufh_loop_count * sizeof(uint16_t);
+        }
     }
 
     esp_err_t err = nvs_set_blob(nvs_handle, NVS_KEY_UFH_LOOPS, buffer, size);
@@ -344,9 +525,7 @@ radiator_t *update_radiator(radiator_manager_t *manager, uint8_t radiator_id, ch
         // A calibration belongs to a manifold: it goes if the record stops being one.
         if (type != EMITTER_TYPE_UFH_MANIFOLD)
         {
-            radiator->ufh_loop_count = 0;
-            radiator->ufh_ref_flow_lph = 0;
-            radiator->ufh_calibrated_at = 0;
+            free_ufh_points(radiator);
         }
 
         radiator->type = type;
@@ -406,6 +585,7 @@ esp_err_t remove_radiator(radiator_manager_t *controller, uint8_t radiator_id, c
 
     free(current->name);
     free(current->mqtt_name);
+    free(current->ufh_points);
     free(current);
 
     controller->radiator_count--;
@@ -432,6 +612,7 @@ void radiator_manager_free(radiator_manager_t *manager)
 
         free(current->name);
         free(current->mqtt_name);
+        free(current->ufh_points);
         free(current);
 
         current = next;

@@ -17,7 +17,7 @@ extern "C" {
 // whenever the UI needs it to, while /api/companion/* is a published contract owned by someone
 // else (see companion_api.h). Each builds its own JSON, which is the whole point of the separate
 // namespace -- a field added for the UI must not appear on the contract, and the contract must not
-// constrain the UI. The web UI's node array is built by app_main.cpp's build_nodes_json(); the
+// constrain the UI. The web UI's node array is built by app_main.cpp's build_node_json(); the
 // companion app's by companion_api.cpp's build_companion_nodes_json().
 
 // Everything the caller needs to answer a commissioning request. `message` is sent as the body of

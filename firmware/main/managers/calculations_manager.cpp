@@ -154,8 +154,10 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
             // A radiator only gives out heat while water is being pumped through it. Once the heat
             // pump stops, or turns to hot water, it stays warm for a while and the temperatures
             // alone would go on reporting an output. A heating state that is not known -- no heat
-            // pump picked, or none reported yet -- counts as not heating.
-            bool heating = home_manager->has_heating_running && home_manager->heating_running;
+            // pump picked, or none reported yet -- counts as not heating. Nor does a defrost: the
+            // heat pump is then drawing heat back out of the water, so the radiators are not being
+            // fed, even though the heating run's flag stays on.
+            bool heating = home_manager->has_heating_running && home_manager->heating_running && !home_is_defrosting(home_manager);
 
             radiator->heat_output = heating ? (uint16_t)adjusted_output : 0;
             radiator->has_heat_output = true;
@@ -177,17 +179,19 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
     update_home(home_manager, room_manager, radiator_manager, mqtt_client);
 }
 
-// A UFH manifold has no flow meter of its own, so its flow comes from a calibration: each loop's
-// flow read off the manifold's gauges, and the heat meter's flow at that moment. The manifold is
-// taken to move in proportion to the heat meter -- a 5% rise at the heat meter is a 5% rise at
-// the manifold -- and its output is that flow times the drop across its own probes. For each
-// manifold:
+// A UFH manifold has no flow meter of its own, so its flow comes from calibration points: each
+// loop's flow read off the manifold's gauges, and the heat meter's flow at that moment. Between
+// points the manifold's flow is interpolated by heat meter flow; outside them it moves in proportion
+// to the heat meter from the nearest point -- with one point, a 5% rise at the heat meter is a 5%
+// rise at the manifold (ufh_flow_at(), ufh_curve.h). Its output is that flow times the drop across
+// its own probes. For each manifold:
 //
 //   absent  - not calibrated, no heat meter flow, no heating state, or a probe without a reading.
 //   0 W     - not space heating, or making hot water (the heat meter's flow is then the
-//             cylinder's, and says nothing about the floor); or under UFH_MIN_DELTA_T_C100 across
-//             its probes, so not circulating.
-//   else    - flow = sum(loops) x heat meter flow / heat meter flow at calibration, and
+//             cylinder's, and says nothing about the floor), or defrosting (the heat meter reads
+//             negative or the heat pump says so: the floor is giving heat back); or under
+//             UFH_MIN_DELTA_T_C100 across its probes, so not circulating.
+//   else    - flow = ufh_flow_at(heat meter flow), and
 //             output = flow x 4186 J/kg.K x |flow - return|, taking a litre of water as a kilo.
 //             A glycol mix carries less heat per litre and would read high.
 //
@@ -202,7 +206,10 @@ void update_radiator_outputs(node_manager_t *node_manager, home_manager_t *home_
 void update_ufh_outputs(home_manager_t *home_manager, room_manager_t *room_manager, radiator_manager_t *radiator_manager)
 {
     bool known = home_manager->has_heat_meter_flow && home_manager->has_heating_running;
-    bool heating = known && home_manager->heating_running && !(home_manager->has_dhw_running && home_manager->dhw_running);
+    // During a defrost the floor gives heat up rather than taking it, and the heat meter's flow is
+    // pushed up for the defrost, not the floor (home_is_defrosting()).
+    bool defrosting = home_is_defrosting(home_manager);
+    bool heating = known && home_manager->heating_running && !(home_manager->has_dhw_running && home_manager->dhw_running) && !defrosting;
     uint8_t manifold_count = 0;
     bool all_known = true;
     uint32_t total = 0;
@@ -226,7 +233,9 @@ void update_ufh_outputs(home_manager_t *home_manager, room_manager_t *room_manag
             continue;
         }
 
-        uint64_t flow_lph = (uint64_t)ufh_calibrated_flow_lph(radiator) * home_manager->heat_meter_flow / radiator->ufh_ref_flow_lph;
+        uint32_t interpolated = 0;
+        ufh_flow_at(radiator, home_manager->heat_meter_flow, &interpolated);
+        uint64_t flow_lph = interpolated;
 
         if (flow_lph > UINT16_MAX)
         {
@@ -508,6 +517,23 @@ void update_home(home_manager_t *home_manager, room_manager_t *room_manager, rad
             home_manager->radiator_count++;
         }
         radiator = radiator->next;
+    }
+
+    // Only radiators in a room can have an output, so those are the ones the total needs.
+    home_manager->has_total_radiator_output = true;
+
+    for (room_t *room = room_manager->room_list; room != NULL && home_manager->has_total_radiator_output; room = room->next)
+    {
+        for (uint8_t r = 0; r < room->radiator_count; r++)
+        {
+            radiator_t *listed = find_radiator(radiator_manager, room->radiators[r]);
+
+            if (listed != NULL && !is_ufh_manifold(listed) && !listed->has_heat_output)
+            {
+                home_manager->has_total_radiator_output = false;
+                break;
+            }
+        }
     }
 
     // Hand the history logger a flat copy of what both lists currently hold. This is the one

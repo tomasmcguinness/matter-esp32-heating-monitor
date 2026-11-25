@@ -50,6 +50,7 @@
 #include <inet/UDPEndPointImpl.h>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 
 #include "app_main.h"
 #include "managers/node_manager.h"
@@ -137,6 +138,7 @@ static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
 static void forget_commodity_price_if_unsubscribed(uint64_t node_id);
 static void update_heat_pump_running(void);
 static void update_ufh_rooms(bool force);
+static void recalculate_all_radiator_outputs(void);
 static room_t *find_room_listing_radiator(uint8_t radiator_id);
 static void broadcast_radiator_state(const radiator_t *radiator);
 static void forget_readings_if_unsubscribed(uint64_t node_id);
@@ -1001,8 +1003,20 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
                 break;
             }
 
+            bool was_defrosting = home_is_defrosting(&g_home_manager);
+
             g_home_manager.has_heat_meter_power = !value.IsNull();
             g_home_manager.heat_meter_power_mw = value.IsNull() ? 0 : value.Value();
+
+            // The heat meter going negative is how a defrost shows from the meter. The heat pump's
+            // own defrost flag recalculates in update_heat_pump_running(); this catches it when the
+            // meter sees it first, or when the heat pump has no defrost endpoint. Only on the change,
+            // as the meter reports every few seconds.
+            if (home_is_defrosting(&g_home_manager) != was_defrosting)
+            {
+                recalculate_all_radiator_outputs();
+                update_ufh_rooms(true);
+            }
 
             if (value.IsNull())
             {
@@ -2017,18 +2031,11 @@ static esp_err_t nodes_post_handler(httpd_req_t *req)
     return send_commission_outcome(req, &outcome);
 }
 
-// The node list GET /api/nodes serves. This one feeds our own web UI and is free to carry
-// whatever the UI needs; the companion app's array is built separately in companion_api.cpp
+// One entry of the node list GET /api/nodes serves. This one feeds our own web UI and is free to
+// carry whatever the UI needs; the companion app's array is built separately in companion_api.cpp
 // against its published contract. Do not merge the two.
-static cJSON *build_nodes_json(void)
+static cJSON *build_node_json(matter_node_t *node)
 {
-    ESP_LOGI(TAG, "There are %u node(s)", g_node_manager.node_count);
-
-    cJSON *root = cJSON_CreateArray();
-
-    matter_node_t *node = g_node_manager.node_list;
-
-    while (node)
     {
         cJSON *jNode = cJSON_CreateObject();
 
@@ -2154,31 +2161,63 @@ static cJSON *build_nodes_json(void)
         }
 
         cJSON_AddItemToObject(jNode, "endpoints", endpoint_array);
-        cJSON_AddItemToArray(root, jNode);
 
-        node = node->next;
+        return jNode;
     }
-
-    return root;
 }
 
+// GET /api/nodes, sent one node at a time. Building the whole list as one cJSON tree and one string
+// held ~16 KB plus thousands of small allocations through the send, and with internal RAM that
+// short the W5500's per-frame SPI DMA buffer could not be allocated: frames were dropped and every
+// request stalled part-way (TASK-46). One node is about 1 KB, freed before the next is built.
 static esp_err_t nodes_get_handler(httpd_req_t *req)
 {
-    ESP_LOGI(TAG, "Getting all nodes ...");
+    ESP_LOGI(TAG, "Getting all %u node(s) ...", g_node_manager.node_count);
 
-    cJSON *root = build_nodes_json();
-
-    // TODO Add caching!!
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_status(req, "200 OK");
 
-    char *json = cJSON_PrintUnformatted(root);
-    httpd_resp_sendstr(req, json);
+    esp_err_t err = httpd_resp_send_chunk(req, "[", 1);
 
-    cJSON_free(json);
-    cJSON_Delete(root);
+    for (matter_node_t *node = g_node_manager.node_list; node != NULL && err == ESP_OK; node = node->next)
+    {
+        cJSON *jNode = build_node_json(node);
+        char *json = cJSON_PrintUnformatted(jNode);
+        cJSON_Delete(jNode);
 
+        if (!json)
+        {
+            err = ESP_ERR_NO_MEM;
+            break;
+        }
+
+        if (node != g_node_manager.node_list)
+        {
+            err = httpd_resp_send_chunk(req, ",", 1);
+        }
+
+        if (err == ESP_OK)
+        {
+            err = httpd_resp_send_chunk(req, json, HTTPD_RESP_USE_STRLEN);
+        }
+
+        cJSON_free(json);
+    }
+
+    if (err == ESP_OK)
+    {
+        err = httpd_resp_send_chunk(req, "]", 1);
+    }
+
+    if (err != ESP_OK)
+    {
+        // The response has started, so a status can no longer be sent; the client sees a cut-off
+        // body. Ending the chunked response cleanly is all that is left.
+        ESP_LOGW(TAG, "GET /api/nodes cut short: %s", esp_err_to_name(err));
+    }
+
+    httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -2876,6 +2915,11 @@ static const char *ufh_calibration_blocker(void)
         return "The heat pump is not space heating. Read the loops and save them during a heating run.";
     }
 
+    if (home_is_defrosting(&g_home_manager))
+    {
+        return "The heat pump is defrosting, so the heat meter's flow is not the heating flow. Save the loops once it is heating again.";
+    }
+
     if (g_home_manager.has_dhw_running && g_home_manager.dhw_running)
     {
         return "The heat pump is making hot water, so the heat meter's flow is the cylinder's. Save the loops during a heating run.";
@@ -2889,18 +2933,102 @@ static const char *ufh_calibration_blocker(void)
     return NULL;
 }
 
+// The manifold's predicted flow over a range of heat meter flows, from ufh_flow_at() -- the function
+// update_ufh_outputs() uses -- so the page's chart cannot disagree with the figures. Every 50 l/h (or
+// a wider step, to keep it near 60 entries) from 0 to 1.25 x the highest point or the current heat
+// meter flow, whichever is higher, plus each point's own flow so the line bends exactly there.
+static void add_ufh_prediction(cJSON *ufh, const radiator_t *radiator)
+{
+    cJSON *predicted = cJSON_AddArrayToObject(ufh, "predicted");
+
+    if (!ufh_is_calibrated(radiator))
+    {
+        return;
+    }
+
+    uint32_t top = (uint32_t)radiator->ufh_points[radiator->ufh_point_count - 1].ref_flow_lph * 5 / 4;
+
+    if (g_home_manager.has_heat_meter_flow && g_home_manager.heat_meter_flow > top)
+    {
+        top = g_home_manager.heat_meter_flow;
+    }
+
+    uint32_t step = 50;
+
+    while (top / step > 60)
+    {
+        step += 50;
+    }
+
+    top = (top + step - 1) / step * step;
+
+    uint8_t next_point = 0;
+
+    for (uint32_t h = 0;; )
+    {
+        // Each point's own flow goes in where it falls between the regular steps.
+        uint32_t at = h;
+        bool is_point = false;
+
+        if (next_point < radiator->ufh_point_count && radiator->ufh_points[next_point].ref_flow_lph <= h)
+        {
+            at = radiator->ufh_points[next_point].ref_flow_lph;
+            is_point = true;
+            next_point++;
+        }
+        else if (h > top)
+        {
+            break;
+        }
+
+        uint32_t flow = 0;
+        ufh_flow_at(radiator, at, &flow);
+
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddNumberToObject(entry, "heatMeterFlowLph", at);
+        cJSON_AddNumberToObject(entry, "manifoldFlowLph", flow);
+        cJSON_AddBoolToObject(entry, "extrapolated", ufh_flow_is_extrapolated(radiator, at));
+        cJSON_AddBoolToObject(entry, "point", is_point);
+        cJSON_AddItemToArray(predicted, entry);
+
+        // A point exactly on a step stands for that step.
+        if (is_point && at == h)
+        {
+            h += step;
+        }
+        else if (!is_point)
+        {
+            h += step;
+        }
+    }
+}
+
 static void add_ufh_calibration(cJSON *root, const radiator_t *radiator)
 {
     cJSON *ufh = cJSON_AddObjectToObject(root, "ufh");
-    cJSON *loops = cJSON_AddArrayToObject(ufh, "loops");
 
-    for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
+    cJSON_AddNumberToObject(ufh, "loopCount", radiator->ufh_loop_count);
+    cJSON_AddNumberToObject(ufh, "maxPoints", UFH_MAX_POINTS);
+
+    cJSON *points = cJSON_AddArrayToObject(ufh, "points");
+
+    for (uint8_t p = 0; p < radiator->ufh_point_count; p++)
     {
-        cJSON_AddItemToArray(loops, cJSON_CreateNumber(radiator->ufh_loop_flow_dlpm[i] / 10.0));
+        const ufh_point_t *point = &radiator->ufh_points[p];
+        cJSON *entry = cJSON_CreateObject();
+        cJSON *loops = cJSON_AddArrayToObject(entry, "loops");
+
+        for (uint8_t i = 0; i < radiator->ufh_loop_count; i++)
+        {
+            cJSON_AddItemToArray(loops, cJSON_CreateNumber(point->loop_flow_dlpm[i] / 10.0));
+        }
+
+        cJSON_AddNumberToObject(entry, "refFlowLph", point->ref_flow_lph);
+        add_number_or_null(entry, "calibratedAt", point->calibrated_at != 0, point->calibrated_at);
+        cJSON_AddNumberToObject(entry, "totalLph", ufh_point_flow_lph(radiator, point));
+        cJSON_AddItemToArray(points, entry);
     }
 
-    add_number_or_null(ufh, "refFlowLph", ufh_is_calibrated(radiator), radiator->ufh_ref_flow_lph);
-    add_number_or_null(ufh, "calibratedAt", radiator->ufh_calibrated_at != 0, radiator->ufh_calibrated_at);
     add_number_or_null(ufh, "currentFlowLph", radiator->has_ufh_flow, radiator->ufh_flow_lph);
     add_number_or_null(ufh, "heatMeterFlowLph", g_home_manager.has_heat_meter_flow, g_home_manager.heat_meter_flow);
 
@@ -2915,11 +3043,37 @@ static void add_ufh_calibration(cJSON *root, const radiator_t *radiator)
     {
         cJSON_AddNullToObject(ufh, "calibrationBlocker");
     }
+
+    add_ufh_prediction(ufh, radiator);
 }
 
-// PUT /api/radiators/:radiatorId/loops {"loops": [l/min, ...]} -- a UFH manifold's calibration.
-// The loops are what its flow gauges read; the heat meter's flow at this moment is recorded as the
-// reference they are scaled by, so it is refused (409) unless that flow means something.
+// After a calibration point is added or deleted: recalculate, push, mark the MQTT config topic
+// (which carries the points), and answer with the manifold's `ufh` object.
+static esp_err_t respond_ufh_calibration_changed(httpd_req_t *req, radiator_t *radiator)
+{
+    update_ufh_rooms(true);
+    broadcast_radiator_state(radiator);
+    broadcast_home_state();
+    config_topic_mark_pending();
+
+    cJSON *response = cJSON_CreateObject();
+    add_ufh_calibration(response, radiator);
+
+    char *json = cJSON_PrintUnformatted(response);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, json);
+
+    cJSON_free(json);
+    cJSON_Delete(response);
+
+    return ESP_OK;
+}
+
+// PUT /api/radiators/:radiatorId/loops {"loops": [l/min, ...]} -- adds a calibration point to a UFH
+// manifold, or replaces the one taken at nearly the same heat meter flow. The loops are what its flow
+// gauges read; the heat meter's flow at this moment is recorded with them, so it is refused (409)
+// unless that flow means something. Also 409 if the loop count differs from the saved points', or
+// there are already UFH_MAX_POINTS.
 static esp_err_t radiator_loops_put_handler(httpd_req_t *req, uint8_t radiator_id)
 {
     radiator_t *radiator = find_radiator(&g_radiator_manager, radiator_id);
@@ -2981,37 +3135,75 @@ static esp_err_t radiator_loops_put_handler(httpd_req_t *req, uint8_t radiator_i
     }
 
     uint32_t now = clock_is_valid() ? (uint32_t)time(NULL) : 0;
-    esp_err_t err = set_ufh_calibration(&g_radiator_manager, radiator, (uint8_t)count, flows, g_home_manager.heat_meter_flow, now);
+    bool replaced = false;
+    esp_err_t err = ufh_add_point(&g_radiator_manager, radiator, (uint8_t)count, flows, g_home_manager.heat_meter_flow, now, &replaced);
 
-    if (err != ESP_OK)
+    if (err == ESP_ERR_INVALID_STATE)
     {
-        ESP_LOGE(TAG, "Could not save the UFH calibration: %s", esp_err_to_name(err));
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_send(req, "Could not save the calibration", HTTPD_RESP_USE_STRLEN);
+        char message[128];
+        snprintf(message, sizeof(message), "This manifold's calibration points have %u loops. Delete them before saving a point with %d.",
+                 radiator->ufh_loop_count, count);
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "UFH manifold %u calibrated: %u loops, %lu l/h at a heat meter flow of %u l/h", radiator_id, (unsigned)count,
-             (unsigned long)ufh_calibrated_flow_lph(radiator), radiator->ufh_ref_flow_lph);
+    if (err == ESP_ERR_NO_MEM && radiator->ufh_point_count >= UFH_MAX_POINTS)
+    {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_send(req, "This manifold already has 8 calibration points. Delete one first.", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
 
-    update_ufh_rooms(true);
-    broadcast_radiator_state(radiator);
-    broadcast_home_state();
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Could not save the UFH calibration point: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Could not save the calibration point", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
 
-    // heating_monitor/config carries the calibration.
-    config_topic_mark_pending();
+    ESP_LOGI(TAG, "UFH manifold %u: %s a calibration point at a heat meter flow of %u l/h; %u points", radiator_id,
+             replaced ? "replaced" : "added", g_home_manager.heat_meter_flow, radiator->ufh_point_count);
 
-    cJSON *response = cJSON_CreateObject();
-    add_ufh_calibration(response, radiator);
+    return respond_ufh_calibration_changed(req, radiator);
+}
 
-    char *json = cJSON_PrintUnformatted(response);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
+// DELETE /api/radiators/:radiatorId/loops/:index deletes one calibration point (its index in the
+// list GET returns, sorted by heat meter flow); DELETE /api/radiators/:radiatorId/loops deletes all.
+static esp_err_t radiator_loops_delete_handler(httpd_req_t *req, uint8_t radiator_id, int index)
+{
+    radiator_t *radiator = find_radiator(&g_radiator_manager, radiator_id);
 
-    cJSON_free(json);
-    cJSON_Delete(response);
+    if (radiator == NULL || !is_ufh_manifold(radiator))
+    {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "No such UFH manifold", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
 
-    return ESP_OK;
+    esp_err_t err = index < 0 ? ufh_delete_all_points(&g_radiator_manager, radiator)
+                              : ufh_delete_point(&g_radiator_manager, radiator, (uint8_t)index);
+
+    if (err == ESP_ERR_NOT_FOUND)
+    {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "No such calibration point", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Could not delete the UFH calibration point: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Could not delete the calibration point", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "UFH manifold %u: deleted %s; %u points left", radiator_id, index < 0 ? "every calibration point" : "a calibration point",
+             radiator->ufh_point_count);
+
+    return respond_ufh_calibration_changed(req, radiator);
 }
 
 static esp_err_t radiators_put_handler(httpd_req_t *req)
@@ -3158,6 +3350,34 @@ static esp_err_t radiators_put_handler(httpd_req_t *req)
 
 static esp_err_t radiators_delete_handler(httpd_req_t *req)
 {
+    // /api/radiators/:radiatorId/loops[/:index] shares this URI handler, as the handler cap is
+    // tight. It must be matched first: the code below takes the last path segment as the radiator
+    // id, so .../14/loops/2 would otherwise delete radiator 2.
+    {
+        unsigned int radiator_id = 0;
+        int index = -1;
+        int consumed = 0;
+
+        if (sscanf(req->uri, "/api/radiators/%u/loops%n", &radiator_id, &consumed) == 1 && consumed > 0)
+        {
+            const char *rest = req->uri + consumed;
+
+            if (*rest == '\0' || *rest == '?')
+            {
+                return radiator_loops_delete_handler(req, (uint8_t)radiator_id, -1);
+            }
+
+            if (sscanf(rest, "/%d", &index) == 1 && index >= 0)
+            {
+                return radiator_loops_delete_handler(req, (uint8_t)radiator_id, index);
+            }
+
+            httpd_resp_set_status(req, "404 Not Found");
+            httpd_resp_send(req, "No such calibration point", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+    }
+
     ESP_LOGI(TAG, "Deleting radiator...");
 
     size_t size = strlen(req->uri);
@@ -4429,6 +4649,7 @@ static void update_heat_pump_running(void)
 
     bool was_heating = g_home_manager.has_heating_running && g_home_manager.heating_running;
     bool was_dhw = g_home_manager.has_dhw_running && g_home_manager.dhw_running;
+    bool was_defrosting = home_is_defrosting(&g_home_manager);
 
     g_home_manager.dhw_running = dhw;
     g_home_manager.has_dhw_running = has_dhw;
@@ -4437,22 +4658,31 @@ static void update_heat_pump_running(void)
     g_home_manager.defrosting = defrosting;
     g_home_manager.has_defrosting = has_defrosting;
 
-    // A radiator's output is zero unless the heat pump is heating, so every one of them has a new
-    // figure the moment that starts or stops, without any temperature having moved.
-    if ((has_heating && heating) != was_heating)
+    bool now_defrosting = home_is_defrosting(&g_home_manager);
+
+    // A radiator's output is zero unless the heat pump is heating, and during a defrost, so every
+    // one of them has a new figure the moment either changes, without any temperature having moved.
+    if ((has_heating && heating) != was_heating || now_defrosting != was_defrosting)
     {
-        for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
-        {
-            update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
-            broadcast_radiator_state(radiator);
-        }
+        recalculate_all_radiator_outputs();
     }
 
-    // The UFH manifolds' output is zero outside space heating and during hot water, so the rooms
-    // sharing it change with either.
-    if ((has_heating && heating) != was_heating || (has_dhw && dhw) != was_dhw)
+    // The UFH manifolds' output is zero outside space heating, during hot water and during a
+    // defrost, so the rooms sharing it change with any of them.
+    if ((has_heating && heating) != was_heating || (has_dhw && dhw) != was_dhw || now_defrosting != was_defrosting)
     {
         update_ufh_rooms(true);
+    }
+}
+
+// Every radiator's output, and pushes it: for a change that zeroes or restores them all at once -- the
+// heat pump starting or stopping heating, or a defrost starting or ending.
+static void recalculate_all_radiator_outputs(void)
+{
+    for (radiator_t *radiator = g_radiator_manager.radiator_list; radiator != NULL; radiator = radiator->next)
+    {
+        update_radiator_outputs(&g_node_manager, &g_home_manager, &g_radiator_manager, &g_room_manager, _mqtt_client, radiator);
+        broadcast_radiator_state(radiator);
     }
 }
 
@@ -5916,9 +6146,29 @@ static void install_mdns_queue_filter()
 #endif
 }
 
+// cJSON's allocations go to PSRAM (TASK-46). A JSON response is thousands of small allocations,
+// every one under CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL, so by default they all came from internal
+// RAM -- which has ~36 KB free in normal running and is also where the W5500's SPI driver takes a
+// DMA bounce buffer for every Ethernet frame. A big response built in internal RAM starved those,
+// frames were dropped, and responses stalled part-way. Internal RAM is the fallback only if PSRAM
+// is ever full. heap_caps_free() frees from either heap.
+static void *cjson_malloc(size_t size)
+{
+    return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_DEFAULT);
+}
+
+static void cjson_free(void *ptr)
+{
+    heap_caps_free(ptr);
+}
+
 extern "C" void app_main()
 {
     ESP_LOGI(TAG, "app_main()");
+
+    // Before anything builds JSON.
+    cJSON_Hooks cjson_hooks = {cjson_malloc, cjson_free};
+    cJSON_InitHooks(&cjson_hooks);
 
     esp_err_t err = ESP_OK;
 
