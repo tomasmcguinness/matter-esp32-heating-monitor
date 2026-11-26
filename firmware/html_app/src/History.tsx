@@ -34,7 +34,7 @@ const FIELDS = [
   "elecVoltageDv",
   "elecCurrentCa",
   "heatingRunning",
-  "reserved1",
+  "outdoorHumidityC100",
   "reserved2",
   "defrosting",
   "reserved3",
@@ -54,6 +54,7 @@ const COL = {
   outdoorTemp: 6,
   averageInternalTemp: 7,
   cop: 8,
+  outdoorHumidity: 13,
 } as const;
 
 const POWER_SERIES = [
@@ -69,6 +70,8 @@ const TEMP_SERIES = [
 ];
 
 const COP_SERIES = [{ label: "COP", stroke: "#9354d9" }];
+
+const HUMIDITY_SERIES = [{ label: "Outdoor", stroke: "#5cb85c" }];
 
 // A COP is energy out over energy in for the slots it covers. A dash means there was no
 // electricity to divide by -- a day with no hot water run, or one recorded before the heat pump's
@@ -183,6 +186,11 @@ function History() {
     : null;
   const copData = hasPoints ? toPlotData(points, [COL.cop], [0.01]) : null;
 
+  // Only on a day that recorded some: every day before the sensor was added reads null throughout,
+  // and an empty chart there would just be noise.
+  const hasHumidity = hasPoints && points.some((p) => p[COL.outdoorHumidity] !== null && p[COL.outdoorHumidity] !== undefined);
+  const humidityData = hasHumidity ? toPlotData(points, [COL.outdoorHumidity], [0.01]) : null;
+
   // Memoised because Chart rebuilds the plot whenever this array changes identity.
   const modes = useMemo(() => modeSpans(data), [data]);
 
@@ -254,6 +262,7 @@ function History() {
 
           <Chart title="Power" data={powerData} series={POWER_SERIES} unit="W" modes={modes} />
           <Chart title="Temperatures" data={tempData} series={TEMP_SERIES} unit="&deg;C" modes={modes} />
+          {hasHumidity && <Chart title="Outdoor humidity" data={humidityData} series={HUMIDITY_SERIES} unit="%" modes={modes} />}
           {/* Instantaneous COP, unlike the card above, which is the day's integrated figure.
               Gaps are the heat source being off rather than missing data. */}
           <Chart title="COP" data={copData} series={COP_SERIES} unit="" decimals={2} modes={modes} />

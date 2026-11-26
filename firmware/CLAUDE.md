@@ -59,7 +59,7 @@ The local build depends on trees outside this repo, so **CI rebuilds them from p
 
 | What | Pinned in | Local equivalent |
 |---|---|---|
-| ESP-IDF | `versions.env` `IDF_VERSION`, and the workflow's container tag | `~/esp/esp-idf-v5.5.4` |
+| ESP-IDF | `versions.env` `IDF_VERSION`, and the workflow's container tag | `~/esp/esp-idf-v5.5.5` |
 | lwIP ND6 stale-router fix (espressif/esp-lwip PR 98) | `patches/lwip/` | Uncommitted edit in that tree's `components/lwip/lwip` |
 | esp-matter | `versions.env` `ESP_MATTER_COMMIT`, on tomasmcguinness/esp-matter | `~/esp/esp-matter-tom` |
 | esp-matter local edits | `patches/esp-matter/` | Uncommitted edits in that tree |
@@ -354,7 +354,8 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   `history_api.c` names the columns in its response so the UI picks the new one up from the
   device. Field order is load-bearing in two places — `history_api.c` integrates fields 0
   and 1 for `energyWh`/COP, and `History.tsx` charts by position. **Append to the reserved
-  tail; never reorder.** Spend the seven spares before widening again: another widening means
+  tail; never reorder.** Spend the six spares (`reserved2` to `reserved7`; `reserved1` became
+  `outdoor_humidity_c100`) before widening again: another widening means
   another version, another offline conversion and every reader revisited. `history_unsigned_mask()`
   is a `uint32_t`, one bit per field, which caps any record at 32 fields.
 - `history_logger.cpp` — an `esp_timer` samples every series into a RAM buffer; a separate
@@ -959,6 +960,34 @@ loop_flows_l_per_min}]`, and each room's `ufh_shares`. The MQTT config topic giv
 filled from the highest-flow point. The output is not
 recorded, following the measurements-only rule.
 
+**Outdoor humidity:**
+
+Edit Home has an Outdoor Humidity Sensor picker (device type 775, Humidity Sensor). It is stored as
+`outdoor_humidity_node_id` / `outdoor_humidity_endpoint_id` at the **end** of the `home_manager`
+NVS blob, after the commodity price, with the same size check on load. The reading is
+`home_manager`'s `has_outdoor_humidity` / `outdoor_humidity` (0.01 %, transient).
+
+**Only the picked node is subscribed to humidity.** Every other path is chosen by device type, but
+all the battery-powered room sensors have a Humidity Sensor endpoint and nothing uses theirs.
+`subscription_manager_set_outdoor_humidity()` tells the worker which node and endpoint to add
+`RelativeHumidityMeasurement::MeasuredValue` for. It is called at boot, before any subscription,
+and by `PUT /api/home` when the pick changes. A changed pick then calls `resubscribe_node()` on the
+old and new nodes. That shuts a live subscription down (`ShutdownSubscriptions`), which ends in
+`node_subscription_terminated_cb()` and queues a new one, so **Diagnostics shows a drop** for each.
+
+`attribute_data_cb` keeps the value on `home_manager` only, not on the endpoint. A bridge can put
+humidity on the same endpoint as a temperature, and an endpoint holds one measured value.
+`forget_outdoor_humidity_if_unsubscribed()` drops it with the subscription, as for the temperature.
+`GET /api/home` carries `outdoorHumidity` (null until it reports) and the sensor's node, endpoint
+and subscription state. Home shows it under the outdoor temperature.
+
+History records it in `rec_home_t` field 12, `outdoor_humidity_c100`. That field was `reserved1`,
+so the record size and version are unchanged. It stays **signed**, because every older day holds
+the signed sentinel there and so reads back as no reading. History charts it in its own chart, shown
+only on a day that recorded some. MyHeatPump sends it as `system.outdoor_humidity_pct`, and MCP `get_series` has it as the
+`outdoor_humidity_pct` series (field 12; `test_server.c` checks it survives `history_convert`). It
+is not on MQTT or emoncms.
+
 **Commodity Price and the running cost:**
 
 Edit Home has a Commodity Price picker (device type 1299, Electrical Energy Tariff), stored as
@@ -1041,7 +1070,7 @@ Crash backtraces need no coredump: the panic is on the console, and `xtensa-esp3
 ### Web App (`html_app/`)
 
 React 19 + TypeScript, built with Vite. Uses:
-- **React Router v7** for client-side routing (Home, Layout, Rooms, Emitters, Devices, History)
+- **React Router v7** for client-side routing (Home, Layout, Heat, Rooms, Emitters, Devices, History)
 - **uPlot** for the charts — chosen over heavier chart libraries because the whole bundle is
   embedded in the firmware image and ships in every OTA
 
@@ -1131,6 +1160,31 @@ meter, `radiator` and `room` for the columns. That is why the `radiator` push ca
 `currentOutput` alongside the temperature that changed: the schematic shows watts per radiator and
 only ever sees that channel, so without it the figure would sit stale until a reload. It is added
 **after** `update_radiator_outputs()` runs, or it would carry the previous reading.
+
+`/heat` (`Heat.tsx`) is the other whole-system view: a live **Sankey** of the heat meter's
+reading (left) into Radiators and UFH (middle) and from those into each room (right). It is drawn
+from `GET /api/rooms` (radiators' `currentOutput`, rooms' `ufhInput`) and the `home` payload
+(`heatMeterPower`, `totalRadiatorOutput`, `totalUfhOutput`, `ufhUnassignedOutput`). Radiator
+outputs follow the `radiator` push. UFH inputs are not pushed, so the rooms are re-fetched every
+30 s, which is how often the firmware recalculates them. The meter is measured and the rest is the
+live model, so the diagram balances them openly:
+- the meter's surplus is an **Unaccounted** node;
+- a model above the meter gets a hatched **Model over meter** source;
+- radiator or UFH output not claimed by any room goes to **Not in a room**;
+- unknown UFH is a dashed node with no ribbons.
+
+Outside space heating (not heating, hot water, defrosting) every modelled output is 0 W, so the page
+shows an alert with the meter figure instead of a diagram. Above it, in every state, `HeatLoss.tsx`
+shows three cards:
+- the house's predicted heat loss, `predictedHeatLossAtCurrentTemperature`, at the current outdoor
+  temperature;
+- its measured heat loss, `measuredHeatLossAtCurrentTemperature`, likewise;
+- the heat meter.
+
+Both heat loss totals come from `update_home()`, as Σ room W/°C × (room temperature − outdoor). A
+room adds nothing without a temperature, or, to the measured total, without a measured figure, so
+each card says how many rooms it covers. The layout is a hand-written three-column
+`sankey.ts`, not d3-sankey, which would pull d3-array and d3-shape into the OTA image.
 
 `Layout.css` scopes every rule under `.layout-schematic`. The mock-up styles bare `.legend`,
 `.canvas`, `.name`, `.meter` and `.alert` — unscoped, that last one would restyle every Bootstrap

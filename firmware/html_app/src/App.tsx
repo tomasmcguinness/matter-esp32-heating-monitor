@@ -3,6 +3,7 @@ import './App.css'
 import Home from './Home.tsx'
 import EditHome from './EditHome.tsx'
 import Layout from './Layout.tsx'
+import Heat from './Heat.tsx'
 
 import Device from './Device.tsx'
 import Devices from './Devices.tsx'
@@ -58,6 +59,9 @@ function App() {
                 <NavLink className="nav-link" to="/layout">Layout</NavLink>
               </li>
               <li className="nav-item">
+                <NavLink className="nav-link" to="/heat">Heat</NavLink>
+              </li>
+              <li className="nav-item">
                 <NavLink className="nav-link" to="/rooms">Rooms</NavLink>
               </li>
               <li className="nav-item">
@@ -90,6 +94,7 @@ function App() {
             <Route path="/edit" element={<EditHome />} />
 
             <Route path="/layout" element={<Layout />} />
+            <Route path="/heat" element={<Heat />} />
 
             <Route path="/rooms" element={<Rooms />} />
             <Route path="/rooms/add" element={<AddRoom />} />

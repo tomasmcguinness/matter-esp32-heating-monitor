@@ -1,3 +1,4 @@
+#include <atomic>
 #include <stdint.h>
 #include <esp_log.h>
 
@@ -201,6 +202,18 @@ static void release_due_retries(void)
     }
 }
 
+// The outdoor humidity pick. Written by the HTTP task and at boot, read on the CHIP event loop. The
+// two halves are not updated together, so a subscription that races a change could pair the new
+// node with the old endpoint; the caller re-subscribes after a change, which corrects it.
+static std::atomic<uint64_t> s_humidity_node_id{0};
+static std::atomic<uint16_t> s_humidity_endpoint_id{0};
+
+void subscription_manager_set_outdoor_humidity(uint64_t node_id, uint16_t endpoint_id)
+{
+    s_humidity_endpoint_id = endpoint_id;
+    s_humidity_node_id = node_id;
+}
+
 /**
  * Runs on the CHIP event loop, so it is safe to touch the controller from here.
  */
@@ -226,7 +239,11 @@ static void send_subscription(intptr_t arg)
     bool wants_commodity_price = node_has_device_type(node, DEVICE_TYPE_ELECTRICAL_ENERGY_TARIFF);
     bool wants_battery = node_is_battery_powered(node);
 
-    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_heat_pump && !wants_commodity_price && !wants_battery)
+    // Humidity on the picked node only -- see subscription_manager_set_outdoor_humidity().
+    uint64_t humidity_node_id = s_humidity_node_id;
+    bool wants_humidity = humidity_node_id != 0 && humidity_node_id == node_id;
+
+    if (!wants_temperature && !wants_flow && !wants_electrical && !wants_heat_meter && !wants_heat_pump && !wants_commodity_price && !wants_battery && !wants_humidity)
     {
         ESP_LOGW(TAG, "Node 0x%016llX has no temperature, flow, electrical, heat meter or heat pump device types and is not on battery; nothing to subscribe to", node_id);
 
@@ -237,7 +254,7 @@ static void send_subscription(intptr_t arg)
     }
 
     ScopedMemoryBufferWithSize<AttributePathParams> attr_paths;
-    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 9 : 0) + (wants_commodity_price ? 3 : 0) + (wants_battery ? 2 : 0));
+    attr_paths.Alloc((wants_temperature ? 1 : 0) + (wants_flow ? 1 : 0) + (wants_electrical ? 3 : 0) + (wants_heat_meter ? 4 : 0) + (wants_heat_pump ? 9 : 0) + (wants_commodity_price ? 3 : 0) + (wants_battery ? 2 : 0) + (wants_humidity ? 1 : 0));
 
     if (!attr_paths.Get())
     {
@@ -251,6 +268,13 @@ static void send_subscription(intptr_t arg)
     if (wants_temperature)
     {
         attr_paths[path_index++] = AttributePathParams(TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id);
+    }
+
+    if (wants_humidity)
+    {
+        // On the picked endpoint, not wildcard: a node with humidity on several endpoints (a bridge,
+        // or a room sensor) would otherwise report every one of them.
+        attr_paths[path_index++] = AttributePathParams((chip::EndpointId)s_humidity_endpoint_id.load(), RelativeHumidityMeasurement::Id, RelativeHumidityMeasurement::Attributes::MeasuredValue::Id);
     }
 
     if (wants_flow)
@@ -334,11 +358,11 @@ static void send_subscription(intptr_t arg)
     ScopedMemoryBufferWithSize<EventPathParams> event_paths;
     event_paths.Alloc(0);
 
-    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s%s%s)", node_id, (unsigned)path_index,
+    ESP_LOGI(TAG, "Subscribing to node 0x%016llX (%u path(s): %s%s%s%s%s%s%s%s)", node_id, (unsigned)path_index,
              wants_temperature ? "temperature " : "", wants_flow ? "flow " : "",
              wants_electrical ? "electrical " : "", wants_heat_meter ? "heat_meter " : "",
              wants_heat_pump ? "heat_pump " : "", wants_commodity_price ? "commodity_price " : "",
-             wants_battery ? "battery" : "");
+             wants_battery ? "battery " : "", wants_humidity ? "humidity" : "");
 
     auto *cmd = chip::Platform::New<esp_matter::controller::subscribe_command>(node_id,
                                                                               std::move(attr_paths),

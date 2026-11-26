@@ -13,6 +13,8 @@ const mcp_series_t MCP_SERIES[] = {
     {"flow_temp_c", "Flow temperature", "degC", 2, 100, 2, "Measured at the heat meter."},
     {"return_temp_c", "Return temperature", "degC", 3, 100, 2, NULL},
     {"outdoor_temp_c", "Outdoor temperature", "degC", 5, 100, 2, NULL},
+    {"outdoor_humidity_pct", "Outdoor relative humidity", "%", 12, 100, 1,
+     "From the sensor picked as outdoor humidity. Null on days recorded before it was logged."},
     {"indoor_temp_c", "Average indoor temperature", "degC", 6, 100, 2,
      "Mean of the rooms that have a sensor."},
     {"flow_rate_lph", "Flow rate", "l/h", 4, 1, 1, NULL},

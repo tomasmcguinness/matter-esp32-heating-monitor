@@ -41,3 +41,12 @@ esp_err_t enqueue_subscription(uint64_t node_id);
  * node -- an ICD check-in, say -- supersedes the delayed retry.
  */
 esp_err_t enqueue_subscription_after_failure(uint64_t node_id);
+
+/**
+ * The endpoint picked as the outdoor humidity sensor, or node 0 for none. Unlike everything else,
+ * humidity is subscribed on that one node only, not on every node with a Humidity Sensor endpoint:
+ * the battery-powered room sensors all have one, and nothing uses their humidity. A changed pick
+ * only reaches a node the next time it subscribes, so the caller re-subscribes the nodes involved.
+ * Safe to call from any task.
+ */
+void subscription_manager_set_outdoor_humidity(uint64_t node_id, uint16_t endpoint_id);

@@ -7,6 +7,7 @@ function EditHome() {
   const navigate = useNavigate();
 
   const [outdoorTemperatureSensor, setOutdoorTemperatureSensor] = useState<string | undefined>(undefined);
+  const [outdoorHumiditySensor, setOutdoorHumiditySensor] = useState<string | undefined>(undefined);
   const [flowTemperatureSensor, setFlowTemperatureSensor] = useState<string | undefined>(undefined);
   const [returnTemperatureSensor, setReturnTemperatureSensor] = useState<string | undefined>(undefined);
   const [flowRateSensor, setFlowRateSensor] = useState<string | undefined>(undefined);
@@ -20,6 +21,7 @@ function EditHome() {
   useEffect(() => {
     fetch('/api/home').then(response => response.json()).then(data => {
       setOutdoorTemperatureSensor(`${data.outdoorTemperatureSensorNodeId}|${data.outdoorTemperatureSensorEndpointId}`);
+      setOutdoorHumiditySensor(`${data.outdoorHumiditySensorNodeId}|${data.outdoorHumiditySensorEndpointId}`);
       setFlowTemperatureSensor(`${data.heatSourceFlowTempSensorNodeId}|${data.heatSourceFlowTempSensorEndpointId}`);
       setReturnTemperatureSensor(`${data.heatSourceReturnTempSensorNodeId}|${data.heatSourceReturnTempSensorEndpointId}`);
       setFlowRateSensor(`${data.heatSourceFlowRateSensorNodeId}|${data.heatSourceFlowRateSensorEndpointId}`);
@@ -45,6 +47,9 @@ function EditHome() {
     var outdoorTemperatureSensorNodeId = nodeId(outdoorTemperatureSensor);
     var outdoorTemperatureSensorEndpointId = endpointId(outdoorTemperatureSensor);
 
+    const outdoorHumiditySensorNodeId = nodeId(outdoorHumiditySensor);
+    const outdoorHumiditySensorEndpointId = endpointId(outdoorHumiditySensor);
+
     var flowTemperatureSensorNodeId = nodeId(flowTemperatureSensor);
     var flowTemperatureSensorEndpointId = endpointId(flowTemperatureSensor);
 
@@ -69,6 +74,8 @@ function EditHome() {
     var object: any = {
       outdoorTemperatureSensorNodeId,
       outdoorTemperatureSensorEndpointId,
+      outdoorHumiditySensorNodeId,
+      outdoorHumiditySensorEndpointId,
       flowTemperatureSensorNodeId,
       flowTemperatureSensorEndpointId,
       returnTemperatureSensorNodeId,
@@ -102,6 +109,11 @@ function EditHome() {
       <hr />
       <div className="mb-3">
         <SensorSelect deviceType={770} title="Outdoor Temperature Sensor" required={false} id="outdoorTemperatureSensor" selectedSensor={outdoorTemperatureSensor} onSelectedSensorChange={(e: string) => setOutdoorTemperatureSensor(e)} />
+      </div>
+      <div className="mb-3">
+        {/* Recorded in the history alongside the outdoor temperature. Only this sensor is subscribed
+            to humidity, so changing it re-subscribes the old and new devices. */}
+        <SensorSelect deviceType={775} title="Outdoor Humidity Sensor" required={false} id="outdoorHumiditySensor" selectedSensor={outdoorHumiditySensor} onSelectedSensorChange={(e: string) => setOutdoorHumiditySensor(e)} />
       </div>
       {/* <div className="mb-3">
         <SensorSelect deviceType={770} title="Flow Temperature Sensor" required={false} id="flowTemperatureSensor" selectedSensor={flowTemperatureSensor} onSelectedSensorChange={(e: string) => setFlowTemperatureSensor(e)} />

@@ -24,12 +24,22 @@ typedef struct {
     uint64_t commodity_price_node_id;
     uint16_t commodity_price_endpoint_id;
 
+    // The Humidity Sensor endpoint whose RelativeHumidityMeasurement is the outdoor humidity.
+    // Appended to the end of the NVS blob, after the commodity price.
+    uint64_t outdoor_humidity_node_id;
+    uint16_t outdoor_humidity_endpoint_id;
+
     // How often the SD card history logger samples, in seconds. 0 means "never saved",
     // which history_logger_init() reads as "use the default".
     uint16_t logging_interval_s;
 
     bool has_outdoor_temperature;
     int16_t outdoor_temperature;
+
+    // Relative humidity outdoors, 0.01 %, as RelativeHumidityMeasurement reports it (0-10000).
+    // Transient like every reading, and absent once the sensor's subscription is lost.
+    bool has_outdoor_humidity;
+    uint16_t outdoor_humidity;
 
     // ElectricalPowerMeasurement readings, in the units the cluster reports them: mV, mA and mW.
     // All three are nullable, so the has_* flags separate "not reported yet" from "reported as zero".

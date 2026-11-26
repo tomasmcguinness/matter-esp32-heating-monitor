@@ -158,6 +158,10 @@ static size_t build_record(uint8_t *out)
         r.outdoor_temp_c100 = clamp_i16(h->outdoor_temperature);
     }
 
+    if (h->has_outdoor_humidity) {
+        r.outdoor_humidity_c100 = clamp_i16(h->outdoor_humidity);
+    }
+
     if (h->has_average_internal_temperature) {
         r.average_internal_temp_c100 = clamp_i16(h->average_internal_temperature);
     }

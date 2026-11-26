@@ -129,6 +129,16 @@ esp_err_t load_home_from_nvs(home_manager_t *manager)
         ptr += sizeof(uint16_t);
     }
 
+    // And again, so one saved before this ends at the commodity price.
+    if ((size_t)(ptr - buffer) + sizeof(uint64_t) + sizeof(uint16_t) <= required_size)
+    {
+        manager->outdoor_humidity_node_id = *((uint64_t *)ptr);
+        ptr += sizeof(uint64_t);
+
+        manager->outdoor_humidity_endpoint_id = *((uint16_t *)ptr);
+        ptr += sizeof(uint16_t);
+    }
+
     free(buffer);
 
     return ESP_OK;
@@ -159,6 +169,8 @@ esp_err_t save_home_to_nvs(home_manager_t *manager)
     required_size += sizeof(uint16_t); // heat_pump_endpoint_id
     required_size += sizeof(uint64_t); // commodity_price_node_id
     required_size += sizeof(uint16_t); // commodity_price_endpoint_id
+    required_size += sizeof(uint64_t); // outdoor_humidity_node_id
+    required_size += sizeof(uint16_t); // outdoor_humidity_endpoint_id
 
     uint8_t *buffer = (uint8_t *)malloc(required_size);
     if (!buffer)
@@ -199,6 +211,12 @@ esp_err_t save_home_to_nvs(home_manager_t *manager)
     ptr += sizeof(uint64_t);
 
     *((uint16_t *)ptr) = manager->commodity_price_endpoint_id;
+    ptr += sizeof(uint16_t);
+
+    *((uint64_t *)ptr) = manager->outdoor_humidity_node_id;
+    ptr += sizeof(uint64_t);
+
+    *((uint16_t *)ptr) = manager->outdoor_humidity_endpoint_id;
     ptr += sizeof(uint16_t);
 
     err = nvs_set_blob(nvs_handle, NVS_KEY, buffer, required_size);

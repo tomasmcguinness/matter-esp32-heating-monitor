@@ -18,6 +18,8 @@ function Home() {
   let [averageInternalTemperature, setAverageInternalTemperature] = useState<number | null | undefined>(undefined);
   let [cop, setCop] = useState<number | null | undefined>(undefined);
   let [outdoorTemperature, setOutdoorTemperature] = useState<number | null | undefined>(undefined);
+  const [outdoorHumidity, setOutdoorHumidity] = useState<number | null | undefined>(undefined);
+  const [outdoorHumiditySensorNodeId, setOutdoorHumiditySensorNodeId] = useState<number | undefined>(undefined);
   let [outdoorTemperatureSensorNodeId, setOutdoorTemperatureSensorNodeId] = useState<number | undefined>(undefined);
   let [outdoorTemperatureSensorSubscription, setOutdoorTemperatureSensorSubscription] = useState<string | undefined>(undefined);
   let [heatMeterNodeId, setHeatMeterNodeId] = useState<number | undefined>(undefined);
@@ -55,6 +57,8 @@ function Home() {
 
     setOutdoorTemperature(data.outdoorTemperature);
     setOutdoorTemperatureSensorNodeId(data.outdoorTemperatureSensorNodeId);
+    setOutdoorHumidity(data.outdoorHumidity);
+    setOutdoorHumiditySensorNodeId(data.outdoorHumiditySensorNodeId);
     setOutdoorTemperatureSensorSubscription(data.outdoorTemperatureSensorSubscription);
 
     setHeatMeterNodeId(data.heatMeterNodeId);
@@ -119,6 +123,11 @@ function Home() {
             {outdoorTemperatureSensorNodeId === 0 ?
               <span>No outdoor temperature sensor is configured. <NavLink to={`/edit`}>Configure one</NavLink>.</span> :
               <p className="card-title"><h3><Temperature>{outdoorTemperature}</Temperature></h3></p>}
+            {/* Only once a humidity sensor is picked; it is optional, so no "configure one" prompt. */}
+            {!!outdoorHumiditySensorNodeId &&
+              <p className="card-text text-body-secondary mb-0">
+                {outdoorHumidity === null || outdoorHumidity === undefined ? "-" : `${(outdoorHumidity / 100).toFixed(0)}%`} humidity
+              </p>}
           </div>
         </div>
         <div className="card">

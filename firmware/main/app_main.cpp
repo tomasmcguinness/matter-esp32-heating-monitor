@@ -134,6 +134,8 @@ static void schedule_home_broadcast(void);
 static void broadcast_home_if_home_sensor(uint64_t node_id);
 static bool node_is_subscribed(uint64_t node_id);
 static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id);
+static void forget_outdoor_humidity_if_unsubscribed(uint64_t node_id);
+static void resubscribe_node(uint64_t node_id);
 static void forget_heat_pump_if_unsubscribed(uint64_t node_id);
 static void forget_commodity_price_if_unsubscribed(uint64_t node_id);
 static void update_heat_pump_running(void);
@@ -314,6 +316,7 @@ void node_subscription_terminated_cb(uint64_t remote_node_id, uint32_t subscript
     subscription_attempt_finished(remote_node_id);
 
     forget_outdoor_temperature_if_unsubscribed(remote_node_id);
+    forget_outdoor_humidity_if_unsubscribed(remote_node_id);
     forget_heat_pump_if_unsubscribed(remote_node_id);
     forget_commodity_price_if_unsubscribed(remote_node_id);
     forget_readings_if_unsubscribed(remote_node_id);
@@ -348,6 +351,7 @@ void node_subscribe_failed_cb(void *ctx, const chip::ScopedNodeId &peer_id, CHIP
     subscription_attempt_finished(node_id);
 
     forget_outdoor_temperature_if_unsubscribed(node_id);
+    forget_outdoor_humidity_if_unsubscribed(node_id);
     forget_heat_pump_if_unsubscribed(node_id);
     forget_commodity_price_if_unsubscribed(node_id);
     forget_readings_if_unsubscribed(node_id);
@@ -1256,6 +1260,36 @@ void attribute_data_cb(uint64_t remote_node_id, const chip::app::ConcreteDataAtt
             update_heat_pump_running();
             schedule_home_broadcast();
         }
+    }
+    else if (path.mClusterId == RelativeHumidityMeasurement::Id && path.mAttributeId == RelativeHumidityMeasurement::Attributes::MeasuredValue::Id)
+    {
+        // Only the outdoor humidity pick is subscribed to this (see send_subscription()), so it is
+        // not stored on the endpoint: a bridge can put humidity on the same endpoint as a
+        // temperature, and the endpoint has room for one measured value.
+        //
+        if (g_home_manager.outdoor_humidity_node_id != remote_node_id || g_home_manager.outdoor_humidity_endpoint_id != path.mEndpointId)
+        {
+            return;
+        }
+
+        chip::app::DataModel::Nullable<uint16_t> measured_value;
+
+        if (chip::app::DataModel::Decode(*data, measured_value) != CHIP_NO_ERROR)
+        {
+            ESP_LOGE(TAG, "Failed to decode RelativeHumidityMeasurement MeasuredValue");
+            return;
+        }
+
+        // 0.01 %, so 0 to 10000 by the spec. Anything else, or null, is no reading.
+        bool has_value = !measured_value.IsNull() && measured_value.Value() <= 10000;
+
+        ESP_LOGI(TAG, "Outdoor humidity: %s%u", has_value ? "" : "unknown ", has_value ? measured_value.Value() : 0);
+
+        g_home_manager.has_outdoor_humidity = has_value;
+        g_home_manager.outdoor_humidity = has_value ? measured_value.Value() : 0;
+
+        schedule_home_broadcast();
+        return;
     }
     else if (path.mClusterId == TemperatureMeasurement::Id && path.mAttributeId == TemperatureMeasurement::Attributes::MeasuredValue::Id)
     {
@@ -4278,6 +4312,12 @@ static cJSON *build_home_json(void)
     cJSON_AddNumberToObject(root, "outdoorTemperatureSensorEndpointId", g_home_manager.outdoor_temp_endpoint_id);
     cJSON_AddStringToObject(root, "outdoorTemperatureSensorSubscription", home_sensor_subscription_state(g_home_manager.outdoor_temp_node_id));
 
+    // 0.01 %, null like the temperature above until the picked sensor reports.
+    add_number_or_null(root, "outdoorHumidity", g_home_manager.has_outdoor_humidity, g_home_manager.outdoor_humidity);
+    cJSON_AddNumberToObject(root, "outdoorHumiditySensorNodeId", g_home_manager.outdoor_humidity_node_id);
+    cJSON_AddNumberToObject(root, "outdoorHumiditySensorEndpointId", g_home_manager.outdoor_humidity_endpoint_id);
+    cJSON_AddStringToObject(root, "outdoorHumiditySensorSubscription", home_sensor_subscription_state(g_home_manager.outdoor_humidity_node_id));
+
     cJSON_AddNumberToObject(root, "electricalMeterNodeId", g_home_manager.electrical_meter_node_id);
     cJSON_AddNumberToObject(root, "electricalMeterEndpointId", g_home_manager.electrical_meter_endpoint_id);
     cJSON_AddStringToObject(root, "electricalMeterSubscription", home_sensor_subscription_state(g_home_manager.electrical_meter_node_id));
@@ -4541,6 +4581,52 @@ static void forget_outdoor_temperature_if_unsubscribed(uint64_t node_id)
 
         // Republishes the home state to MQTT without the stale reading.
         update_home(&g_home_manager, &g_room_manager, &g_radiator_manager, _mqtt_client);
+    }
+}
+
+// The same for the outdoor humidity sensor. Nothing is derived from humidity, so there is nothing to
+// recalculate; the history and the UI simply stop showing the last value.
+//
+static void forget_outdoor_humidity_if_unsubscribed(uint64_t node_id)
+{
+    if (node_id == 0 || node_id != g_home_manager.outdoor_humidity_node_id || node_is_subscribed(node_id))
+    {
+        return;
+    }
+
+    if (g_home_manager.has_outdoor_humidity)
+    {
+        ESP_LOGI(TAG, "Outdoor humidity sensor lost its subscription; reading is no longer current");
+
+        g_home_manager.has_outdoor_humidity = false;
+    }
+}
+
+// Makes a node subscribe again, so that a change in what it should be subscribed to takes effect
+// now rather than whenever its subscription next drops. A live subscription is shut down, which
+// ends in node_subscription_terminated_cb() and so queues a new one through the usual path; the
+// Diagnostics page records that as a drop. A node with no subscription is just queued. Not on the
+// CHIP task: it takes the stack lock.
+//
+static void resubscribe_node(uint64_t node_id)
+{
+    if (node_id == 0)
+    {
+        return;
+    }
+
+    if (node_is_subscribed(node_id))
+    {
+        ESP_LOGI(TAG, "Re-subscribing node 0x%016llX", node_id);
+
+        chip::DeviceLayer::PlatformMgr().LockChipStack();
+        chip::app::InteractionModelEngine::GetInstance()->ShutdownSubscriptions(
+            esp_matter::controller::matter_controller_client::get_instance().get_fabric_index(), node_id);
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+    }
+    else
+    {
+        enqueue_subscription(node_id);
     }
 }
 
@@ -4852,6 +4938,7 @@ static void broadcast_home_if_home_sensor(uint64_t node_id)
     }
 
     if (node_id == g_home_manager.outdoor_temp_node_id ||
+        node_id == g_home_manager.outdoor_humidity_node_id ||
         node_id == g_home_manager.heat_meter_node_id ||
         node_id == g_home_manager.heat_pump_node_id ||
         node_id == g_home_manager.electrical_meter_node_id ||
@@ -4975,6 +5062,34 @@ static esp_err_t home_put_handler(httpd_req_t *req)
         g_home_manager.commodity_price_endpoint_id = (uint16_t)commodityPriceEndpointIdJSON->valueint;
     }
 
+    // Optional, for the same reason. The humidity path is subscribed on the picked node alone, so a
+    // change re-subscribes both the node that lost it and the node that gained it, once the pick
+    // has been saved below.
+    //
+    const cJSON *outdoorHumidityNodeIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorHumiditySensorNodeId");
+    const cJSON *outdoorHumidityEndpointIdJSON = cJSON_GetObjectItemCaseSensitive(root, "outdoorHumiditySensorEndpointId");
+
+    uint64_t previous_humidity_node_id = g_home_manager.outdoor_humidity_node_id;
+    bool humidity_changed = false;
+
+    if (cJSON_IsNumber(outdoorHumidityNodeIdJSON) && cJSON_IsNumber(outdoorHumidityEndpointIdJSON))
+    {
+        uint64_t node_id = (uint64_t)outdoorHumidityNodeIdJSON->valueint;
+        uint16_t endpoint_id = (uint16_t)outdoorHumidityEndpointIdJSON->valueint;
+
+        if (node_id != g_home_manager.outdoor_humidity_node_id || endpoint_id != g_home_manager.outdoor_humidity_endpoint_id)
+        {
+            g_home_manager.outdoor_humidity_node_id = node_id;
+            g_home_manager.outdoor_humidity_endpoint_id = endpoint_id;
+
+            // The old sensor's value is not this one's. The new one's arrives with its priming report.
+            g_home_manager.has_outdoor_humidity = false;
+
+            subscription_manager_set_outdoor_humidity(node_id, endpoint_id);
+            humidity_changed = true;
+        }
+    }
+
     // Optional: a client that omits it leaves the logger alone rather than resetting it.
     //
     const cJSON *loggingIntervalJSON = cJSON_GetObjectItemCaseSensitive(root, "loggingIntervalSeconds");
@@ -4993,6 +5108,16 @@ static esp_err_t home_put_handler(httpd_req_t *req)
     // has been lost has no reading to copy, and leaves it absent.
     //
     g_home_manager.has_outdoor_temperature = get_endpoint_measured_value(&g_node_manager, g_home_manager.outdoor_temp_node_id, g_home_manager.outdoor_temp_endpoint_id, &g_home_manager.outdoor_temperature);
+
+    if (humidity_changed)
+    {
+        resubscribe_node(previous_humidity_node_id);
+
+        if (g_home_manager.outdoor_humidity_node_id != previous_humidity_node_id)
+        {
+            resubscribe_node(g_home_manager.outdoor_humidity_node_id);
+        }
+    }
 
     broadcast_home_state();
 
@@ -6184,6 +6309,9 @@ extern "C" void app_main()
     radiator_manager_init(&g_radiator_manager);
     room_manager_init(&g_room_manager);
     home_manager_init(&g_home_manager);
+
+    // Before any subscription is sent, so the picked node's first one carries the humidity path.
+    subscription_manager_set_outdoor_humidity(g_home_manager.outdoor_humidity_node_id, g_home_manager.outdoor_humidity_endpoint_id);
     heat_pump_manager_init(&g_heat_pump_manager);
     commodity_price_manager_init(&g_commodity_price_manager);
 

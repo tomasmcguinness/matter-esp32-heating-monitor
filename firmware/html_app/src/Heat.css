@@ -1,0 +1,26 @@
+/* Scoped under .heat-sankey, like Layout.css, so nothing here reaches another page. */
+
+.heat-sankey svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.heat-sankey .heat-label {
+  font-size: 13px;
+  dominant-baseline: middle;
+  fill: #1c1c1c;
+  /* A halo in the page background keeps a middle-column label legible over the ribbons. */
+  paint-order: stroke;
+  stroke: #ffffff;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.heat-sankey .heat-name {
+  font-weight: 600;
+}
+
+.heat-sankey .heat-value {
+  fill: #555555;
+}

@@ -1280,8 +1280,8 @@ static esp_err_t handle_initialize(httpd_req_t *req, const char *id, const cJSON
              "{\"protocolVersion\":\"%s\",\"capabilities\":{\"tools\":{}},"
              "\"serverInfo\":{\"name\":\"" MCP_SERVER_NAME "\",\"version\":\"%s\"},"
              "\"instructions\":\"Read-only access to a home heat pump monitor's recorded history: "
-             "heat and electrical power, flow, return, outdoor and indoor temperatures, flow rate "
-             "and operating mode, sampled every few seconds, plus each room's temperature and each "
+             "heat and electrical power, flow, return, outdoor and indoor temperatures, outdoor "
+             "humidity, flow rate and operating mode, sampled every few seconds, plus each room's temperature and each "
              "radiator's flow and return. Use summarise_cycles for cycling and COP questions and "
              "compare_periods for before/after comparisons; get_series is for plotting or "
              "inspecting a stretch directly; list_rooms names the rooms and radiators.\"}",

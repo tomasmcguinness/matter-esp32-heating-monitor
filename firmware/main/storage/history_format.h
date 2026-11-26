@@ -108,7 +108,8 @@ typedef enum {
 // reorder.
 //
 // Version 3 widened the record from 28 to 40 bytes, for the defrost flag (TASK-40). The 14 fields
-// of version 2 are unchanged and in the same places, reserved1 and reserved2 included; defrosting
+// of version 2 are unchanged and in the same places, reserved1 (now outdoor_humidity_c100) and
+// reserved2 included; defrosting
 // and five new spares were appended after them. Days recorded before the widening are converted
 // off the device by history_convert/, which copies each record's 28 bytes and fills the new fields
 // with the sentinel, so a converted day reads defrosting as unknown, not as "not defrosting".
@@ -127,7 +128,9 @@ typedef struct __attribute__((packed)) {
     uint16_t elec_voltage_dv;     // Voltage,       mV -> 0.1 V
     uint16_t elec_current_ca;     // ActiveCurrent, mA -> 0.01 A
     int16_t  heating_running;     // 0 or 1, heat pump space heating
-    int16_t  reserved1;
+    // 0.01 % relative humidity, 0-10000. Spent from reserved1, so it stays signed: every day
+    // recorded before it holds the signed sentinel here and reads back as no reading.
+    int16_t  outdoor_humidity_c100;
     int16_t  reserved2;
     // ---- version 3 from here ----
     // 0 or 1, heat pump defrosting its outdoor coil. Independent of the two above: a defrost

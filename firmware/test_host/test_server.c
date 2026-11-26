@@ -220,6 +220,7 @@ static void write_night(void)
         r.flow_temp_c100    = dhw ? 5200 : heating ? 3500 : 2800;
         r.return_temp_c100  = dhw ? 4600 : heating ? 3000 : 2700;
         r.outdoor_temp_c100 = 400;
+        r.outdoor_humidity_c100 = 8750;
         r.heating_running   = heating ? 1 : 0;
         r.dhw_running       = dhw ? 1 : 0;
         fwrite(&r, HISTORY_HOME_V2_RECORD_SIZE, 1, f); // the old record: the first 28 bytes
@@ -476,7 +477,7 @@ static void test_list_series(void)
     CHECK(strcmp(str(r.result, "latest"), "2026-01-15T06:00:00+00:00") == 0);
 
     const cJSON *series = cJSON_GetObjectItem(r.result, "series");
-    CHECK(cJSON_GetArraySize(series) == 12);
+    CHECK(cJSON_GetArraySize(series) == 13);
     CHECK(strcmp(str(cJSON_GetArrayItem(series, 0), "id"), "heat_output_w") == 0);
     CHECK(strcmp(str(cJSON_GetArrayItem(series, 0), "unit"), "W") == 0);
     done(&r);
@@ -537,6 +538,14 @@ static void test_get_series(void)
 
     r = call("get_series", "{\"series\":[\"heat_output_w\"],\"start\":\"2026-01-01T00:00\",\"end\":\"2026-03-01T00:00\"}");
     CHECK(r.is_error && strstr(r.text, "longer than 31 days"));
+    done(&r);
+
+    // Outdoor humidity is field 12, which the old 28-byte record already had as reserved1, so the
+    // fixture's value survives the conversion and comes back in percent.
+    r = call("get_series", "{\"series\":[\"outdoor_humidity_pct\"],"
+                           "\"start\":\"2026-01-15T00:00\",\"end\":\"2026-01-15T06:00\"}");
+    CHECK(r.result != NULL && !r.is_error);
+    CHECK(cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(r.result, "series"), "outdoor_humidity_pct"), 0)->valuedouble == 87.5);
     done(&r);
 }
 

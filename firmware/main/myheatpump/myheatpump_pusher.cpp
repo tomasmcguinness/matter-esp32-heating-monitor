@@ -46,7 +46,7 @@ static const char *TAG = "myheatpump";
 //
 // {"timestamp":"2026-11-18T09:00:00Z",
 //  "system":{"heat_output_w":3600,"electrical_input_w":960,"flow_temp_c":38.4,"return_temp_c":33.6,
-//            "outdoor_temp_c":4.2,"indoor_temp_c":19.6,"flow_rate_lph":640,"voltage_v":241,
+//            "outdoor_temp_c":4.2,"outdoor_humidity_pct":87.5,"indoor_temp_c":19.6,"flow_rate_lph":640,"voltage_v":241,
 //            "heating_running":true,"dhw_running":false},
 //  "rooms":[{"id":101,"name":"Hall","temp_c":19.2,"target_temp_c":19,
 //            "predicted_heat_loss_w_per_c":30,
@@ -94,6 +94,8 @@ struct snapshot_t
     int32_t return_temp_c100;
     bool has_outdoor;
     int16_t outdoor_c100;
+    bool has_outdoor_humidity;
+    uint16_t outdoor_humidity_c100; // 0.01 %
     bool has_indoor;
     int16_t indoor_c100;
     bool has_flow_rate;
@@ -248,6 +250,8 @@ static void take_snapshot(snapshot_t *s)
     s->return_temp_c100 = h->heat_meter_return_temperature;
     s->has_outdoor = h->has_outdoor_temperature;
     s->outdoor_c100 = h->outdoor_temperature;
+    s->has_outdoor_humidity = h->has_outdoor_humidity;
+    s->outdoor_humidity_c100 = h->outdoor_humidity;
     s->has_indoor = h->has_average_internal_temperature;
     s->indoor_c100 = h->average_internal_temperature;
     s->has_flow_rate = h->has_heat_meter_flow;
@@ -462,6 +466,8 @@ static void write_payload(writer_t *w, const snapshot_t *s)
     w_temp(w, ",", "flow_temp_c", s->has_flow_temp, s->flow_temp_c100);
     w_temp(w, ",", "return_temp_c", s->has_return_temp, s->return_temp_c100);
     w_temp(w, ",", "outdoor_temp_c", s->has_outdoor, s->outdoor_c100);
+    // Hundredths, like a temperature, so w_temp writes it.
+    w_temp(w, ",", "outdoor_humidity_pct", s->has_outdoor_humidity, s->outdoor_humidity_c100);
     w_temp(w, ",", "indoor_temp_c", s->has_indoor, s->indoor_c100);
     w_int(w, ",", "flow_rate_lph", s->has_flow_rate, s->flow_rate_lph);
     w_int(w, ",", "voltage_v", s->has_voltage, milli_to_unit(s->voltage_mv));
