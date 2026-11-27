@@ -12,6 +12,7 @@ import Temperature from "./Temperature";
 
 type HeatLossRoom = {
   currentTemperature?: number | null;
+  predictedHeatLoss?: number | null;
   measuredHeatLoss?: number | null;
 };
 
@@ -20,6 +21,12 @@ type HeatLossProps = {
   home: any;
   rooms: HeatLossRoom[];
 };
+
+// The rooms' W/°C, summed over the same rooms as the kW figure beside it, so the two always cover
+// the same part of the house.
+function perDegree(rooms: HeatLossRoom[], key: "predictedHeatLoss" | "measuredHeatLoss") {
+  return rooms.reduce((sum, r) => sum + (r[key] ?? 0), 0);
+}
 
 function kilowatts(watts: number) {
   return `${(watts / 1000).toFixed(1)} kW`;
@@ -43,7 +50,9 @@ function HeatLoss({ home, rooms }: HeatLossProps) {
       <div className="card">
         <div className="card-header">Predicted heat loss</div>
         <div className="card-body">
-          <h3 className="card-title">{predicted === null ? "-" : kilowatts(predicted)}</h3>
+          <h3 className="card-title">
+            {predicted === null ? "-" : <>{kilowatts(predicted)} <span className="text-body-secondary fs-5">({Math.round(perDegree(withTemperature, "predictedHeatLoss"))} W/°C)</span></>}
+          </h3>
           <p className="card-text text-body-secondary small">
             @ <Temperature>{outdoor}</Temperature> outside{predicted !== null && <>, {coverage(withTemperature.length)}</>}
           </p>
@@ -52,7 +61,9 @@ function HeatLoss({ home, rooms }: HeatLossProps) {
       <div className="card">
         <div className="card-header">Measured heat loss</div>
         <div className="card-body">
-          <h3 className="card-title">{measured === null ? "-" : kilowatts(measured)}</h3>
+          <h3 className="card-title">
+            {measured === null ? "-" : <>{kilowatts(measured)} <span className="text-body-secondary fs-5">({Math.round(perDegree(withMeasured, "measuredHeatLoss"))} W/°C)</span></>}
+          </h3>
           <p className="card-text text-body-secondary small">
             @ <Temperature>{outdoor}</Temperature> outside{measured !== null && <>, {coverage(withMeasured.length)}</>}
           </p>

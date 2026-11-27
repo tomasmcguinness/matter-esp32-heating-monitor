@@ -48,9 +48,20 @@ const MODE_BAR_MARGIN_PX = 3;
 const DEFROST_BAR_PX = 4;
 const DEFROST_GAP_PX = 1;
 
-// The extra axis height a defrost row takes, when the day has one.
-const defrostRowPx = (modes: ModeSpan[] | undefined) =>
-  modes?.some((span) => span.mode === "defrost") ? DEFROST_GAP_PX + DEFROST_BAR_PX : 0;
+// Whether the spans include a heating or hot water run, rather than only defrosts. A chart given
+// defrosts alone (the heat balance charts) draws just the defrost row, with no empty strip above it.
+const hasRunModes = (modes: ModeSpan[] | undefined) => !!modes?.some((span) => span.mode !== "defrost");
+
+// The axis height the strip takes: the mode strip, plus a defrost row under it when the day has one.
+function stripHeightPx(modes: ModeSpan[] | undefined) {
+  const hasDefrost = !!modes?.some((span) => span.mode === "defrost");
+
+  if (!hasRunModes(modes)) {
+    return hasDefrost ? DEFROST_BAR_PX + 2 * MODE_BAR_MARGIN_PX : 0;
+  }
+
+  return MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX + (hasDefrost ? DEFROST_GAP_PX + DEFROST_BAR_PX : 0);
+}
 
 // Fills each span just under the plot area, in the x axis's tick zone, so the strip never covers a
 // line running along the bottom of the plot. Positions come from the x scale, so the strip stays
@@ -59,7 +70,7 @@ function drawModes(u: uPlot, modes: ModeSpan[]) {
   const { ctx, bbox } = u;
   const barHeight = MODE_BAR_PX * devicePixelRatio;
   const top = bbox.top + bbox.height + MODE_BAR_MARGIN_PX * devicePixelRatio;
-  const defrostTop = top + barHeight + DEFROST_GAP_PX * devicePixelRatio;
+  const defrostTop = hasRunModes(modes) ? top + barHeight + DEFROST_GAP_PX * devicePixelRatio : top;
   const defrostHeight = DEFROST_BAR_PX * devicePixelRatio;
   const right = bbox.left + bbox.width;
 
@@ -151,7 +162,7 @@ export function Chart({
 
     const drawn = smooth ? smoothData(data) : data;
     const hasModes = !!modes && modes.length > 0;
-    const stripPx = MODE_BAR_PX + 2 * MODE_BAR_MARGIN_PX + defrostRowPx(modes);
+    const stripPx = stripHeightPx(modes);
 
     // uPlot sizes itself once, so it is rebuilt on data change and on resize rather than
     // being asked to reflow.
@@ -231,7 +242,7 @@ export function Chart({
       {modes && modes.length > 0 && (
         <div className="text-muted small" style={{ textAlign: "center" }}>
           {(["heating", "hotWater", "noData", "defrost"] as const)
-            .filter((mode) => (mode !== "noData" && mode !== "defrost") || modes.some((span) => span.mode === mode))
+            .filter((mode) => (mode !== "noData" && mode !== "defrost" && hasRunModes(modes)) || modes.some((span) => span.mode === mode))
             .map((mode) => (
             <span key={mode} style={{ margin: "0 8px" }}>
               <span

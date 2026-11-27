@@ -96,6 +96,15 @@ function Home() {
     }
   }, [home, applyHome]);
 
+
+  // Everything the emitters are giving out: radiators plus UFH. With manifolds whose output is
+  // unknown (uncalibrated, or a probe with no reading) the total is unknown too, rather than a
+  // radiators-only figure that looks complete.
+  const totalOutput = totalRadiatorOutput === undefined
+    ? undefined
+    : ufhManifoldCount
+      ? (totalUfhOutput === null || totalUfhOutput === undefined ? null : totalRadiatorOutput + totalUfhOutput)
+      : totalRadiatorOutput;
   return (
     <>
       <PageHeader title="Home">
@@ -216,6 +225,14 @@ function Home() {
             {ufhManifoldCount === 0 ?
               <span>No UFH manifolds. <NavLink to={`/emitters`}>Add one</NavLink>.</span> :
               <p className="card-title"><h3><Power>{totalUfhOutput}</Power></h3></p>}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header">
+            Total
+          </div>
+          <div className="card-body">
+            <p className="card-title"><h3><Power>{totalOutput}</Power></h3></p>
           </div>
         </div>
       </div>

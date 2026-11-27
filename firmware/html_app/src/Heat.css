@@ -24,3 +24,7 @@
 .heat-sankey .heat-value {
   fill: #555555;
 }
+
+.heat-sankey .heat-target {
+  font-weight: 600;
+}

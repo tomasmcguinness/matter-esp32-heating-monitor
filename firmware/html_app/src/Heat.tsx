@@ -29,6 +29,7 @@ type Room = {
   radiators: Radiator[];
   ufhInput: number | null;
   currentTemperature: number | null;
+  targetTemperature: number;
   measuredHeatLoss: number | null;
   ufhShares: { emitterId: number; pct: number }[];
 };
@@ -38,8 +39,15 @@ type RadiatorPush = {
   currentOutput?: number | null;
 };
 
+type RoomPush = {
+  roomId: number;
+  temperature: number | null;
+};
+
 type HeatNode = SankeyNode & {
   label: string;
+  // Rooms only: how far the room is from its target, in hundredths of a °C.
+  offTarget?: number | null;
   color: string;
   style?: "hatched" | "dashed";
 };
@@ -55,6 +63,13 @@ const COLOR_RADIATORS = "#e0a030";
 const COLOR_UFH = "#8a5cc2";
 const COLOR_ROOM = "#2a8f86";
 const COLOR_GREY = "#9a9a9a";
+const COLOR_UNDER = "#2b6cb0";
+const COLOR_OVER = "#c0392b";
+const COLOR_ON_TARGET = "#2f855a";
+
+// Within this many hundredths of a °C of the target a room counts as on target, so a sensor's
+// last-digit wobble does not flip the indicator.
+const ON_TARGET_BAND = 20;
 
 const WIDTH = 900;
 const NODE_WIDTH = 14;
@@ -66,6 +81,27 @@ const LABEL_PAD = 20;
 function watts(value: number) {
   const w = Math.round(value);
   return Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(1)} kW` : `${w} W`;
+}
+
+// The room's distance from its target as a coloured mark: ▲ over, ▼ under, ✓ within the band.
+function targetIndicator(offTarget: number | null | undefined) {
+  if (offTarget === null || offTarget === undefined) {
+    return null;
+  }
+
+  if (Math.abs(offTarget) <= ON_TARGET_BAND) {
+    return { text: "✓", color: COLOR_ON_TARGET, title: "on target" };
+  }
+
+  const degrees = `${(Math.abs(offTarget) / 100).toFixed(1)}°`;
+
+  return offTarget > 0
+    ? { text: `▲${degrees}`, color: COLOR_OVER, title: `${degrees}C over target` }
+    : { text: `▼${degrees}`, color: COLOR_UNDER, title: `${degrees}C under target` };
+}
+
+function celsius(value: number) {
+  return `${(value / 100).toFixed(1)}°C`;
 }
 
 function radiatorSum(room: Room) {
@@ -133,13 +169,21 @@ function Heat() {
         : room));
   }, []);
 
+  const applyRoom = useCallback((message: RoomPush) => {
+    setRooms((previous) => previous === null ? previous : previous.map((room) => room.roomId === message.roomId
+      ? { ...room, currentTemperature: message.temperature }
+      : room));
+  }, []);
+
   useEffect(() => {
     subscribe("radiator", applyRadiator);
+    subscribe("room", applyRoom);
 
     return () => {
       unsubscribe("radiator");
+      unsubscribe("room");
     };
-  }, [subscribe, unsubscribe, applyRadiator]);
+  }, [subscribe, unsubscribe, applyRadiator, applyRoom]);
 
   if (rooms === null || home === undefined) {
     return <span>Loading...</span>;
@@ -236,7 +280,11 @@ function Heat() {
   }
 
   rooms.forEach((room) => {
-    nodes.push({ id: `room-${room.roomId}`, column: 2, label: room.name, color: COLOR_ROOM });
+    const offTarget = room.currentTemperature === null || room.currentTemperature === undefined
+      ? null
+      : room.currentTemperature - room.targetTemperature;
+
+    nodes.push({ id: `room-${room.roomId}`, column: 2, label: room.name, color: COLOR_ROOM, offTarget });
   });
 
   if (radiatorsUnassigned > 0 || ufhUnassigned > 0) {
@@ -284,6 +332,8 @@ function Heat() {
     return watts(n.id === "meter" ? meter : n.id === "over" ? overMeter : n.value);
   };
 
+  const roomOf = (id: string) => rooms.find((r) => `room-${r.roomId}` === id);
+
   const titleOf = (id: string) => nodes.find((n) => n.id === id)?.label ?? id;
 
   return (
@@ -310,6 +360,8 @@ function Heat() {
             const labelLeft = n.column === 0;
             const tx = labelLeft ? n.x - 6 : n.x + NODE_WIDTH + 6;
             const ty = n.y + n.height / 2;
+            const room = roomOf(n.id);
+            const indicator = targetIndicator(n.offTarget);
 
             return (
               <g key={n.id}>
@@ -324,7 +376,16 @@ function Heat() {
                 />
                 <text x={tx} y={ty} textAnchor={labelLeft ? "end" : "start"} className="heat-label">
                   <tspan x={tx} dy="-0.2em" className="heat-name">{n.label}</tspan>
-                  <tspan x={tx} dy="1.2em" className="heat-value">{nodeLabel(n)}</tspan>
+                  <tspan x={tx} dy="1.2em" className="heat-value">
+                    {nodeLabel(n)}
+                    {room && room.currentTemperature !== null && room.currentTemperature !== undefined && <> · {celsius(room.currentTemperature)}</>}
+                  </tspan>
+                  {indicator && (
+                    <tspan dx="6" className="heat-target" fill={indicator.color}>
+                      {indicator.text}
+                      <title>{`${n.label}: ${celsius(room!.currentTemperature!)}, target ${celsius(room!.targetTemperature)}, ${indicator.title}`}</title>
+                    </tspan>
+                  )}
                 </text>
               </g>
             );
@@ -337,6 +398,9 @@ function Heat() {
         temperatures and their rating at dT50; UFH from its calibrated flow and the drop across the
         manifold. <strong>Unaccounted</strong> is heat the meter saw that the model does not place:
         pipework, emitters without probes, or model error.
+        {" "}Beside each room is its temperature and how far it is from its target:{" "}
+        <span style={{ color: COLOR_OVER }}>▲ over</span>, <span style={{ color: COLOR_UNDER }}>▼ under</span>,{" "}
+        <span style={{ color: COLOR_ON_TARGET }}>✓</span> within {(ON_TARGET_BAND / 100).toFixed(1)}°C.
         {overMeter > 0 && <> <strong>Model over meter</strong> is how far the model's total exceeds the meter.</>}
         {hasUfh && !ufhKnown && <> The UFH output is unknown, either because a manifold is not calibrated or because a probe has no reading. Rooms show their radiators only.</>}
       </p>

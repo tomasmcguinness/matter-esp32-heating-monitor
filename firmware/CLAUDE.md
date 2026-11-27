@@ -1026,6 +1026,25 @@ this: a 27-node cJSON tree plus its 15.7 KB string, all under `CONFIG_SPIRAM_MAL
   and freed one item at a time, as `/api/nodes` (`build_node_json()`), the history endpoints and the
   MCP server do. Building a whole list and then sending it holds it all through the slowest part.
 
+**Sockets: the web server must hit its own limit before lwIP does (2026-11-26):**
+
+CHIP uses lwIP's raw API (`chip_with_lwip = true`), so it takes no sockets. The sockets are used by:
+- the web server: 2 for itself, plus up to `max_open_sockets` connections;
+- MQTT: 1, always open;
+- emoncms: 1, kept open between posts;
+- MyHeatPump: 1 per post.
+
+With `CONFIG_LWIP_MAX_SOCKETS=10` and IDF's default of 7 connections, a browser's keep-alive
+connections and the WebSocket used up the last sockets while the web server still had fewer than 7
+open. `lru_purge_enable` only purges at the server's own limit, so nothing was purged: `accept()`
+failed and every request timed out. MyHeatPump and emoncms logged `esp-tls: Failed to create
+socket`, and the board looked dead for minutes until the browser dropped its idle connections. The
+board did not restart, and Matter carried on.
+
+Now `CONFIG_LWIP_MAX_SOCKETS=20` and `CONFIG_LWIP_MAX_ACTIVE_TCP=20`, in both `sdkconfig` and
+`sdkconfig.defaults`. `start_webserver()` sets `max_open_sockets = 12`, and a `static_assert` keeps
+12 + 2 + 3 below the lwIP limit. Adding an outgoing client means re-doing that sum.
+
 **Keeping the CHIP task's event queue from filling:**
 
 lwIP's task posts every incoming UDP packet to the CHIP platform event queue, and **CHIP aborts if the

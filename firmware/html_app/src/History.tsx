@@ -193,6 +193,7 @@ function History() {
 
   // Memoised because Chart rebuilds the plot whenever this array changes identity.
   const modes = useMemo(() => modeSpans(data), [data]);
+  const defrosts = useMemo(() => modes.filter((span) => span.mode === "defrost"), [modes]);
 
   const elecKwh = (data?.energyWh?.electrical ?? 0) / 1000;
 
@@ -269,7 +270,7 @@ function History() {
 
           {/* Recorded by the device each hour (TASK-45), so it costs one small file, not a read of
               every radiator's and room's day. */}
-          <HeatBalance key={date} date={date} />
+          <HeatBalance key={date} date={date} defrosts={defrosts} />
         </>
       )}
     </>

@@ -156,3 +156,11 @@ CONFIG_ENABLE_SNTP_TIME_SYNC=y
 # keeps UDP below this limit, and needs CONFIG_ENABLE_ENDPOINT_QUEUE_FILTER.
 CONFIG_MAX_EVENT_QUEUE_SIZE=128
 CONFIG_ENABLE_ENDPOINT_QUEUE_FILTER=y
+
+# Sockets. The web server takes 2 for itself plus max_open_sockets (12, set in start_webserver()),
+# and MQTT, emoncms and MyHeatPump need one each. At the default of 10, a browser's keep-alive
+# connections used up the rest while the web server was still under its own limit, so it never
+# purged an idle one: new requests and outgoing posts failed ("Failed to create socket") until the
+# browser let go, minutes later. Keep this at least max_open_sockets + 2 + 3, with headroom.
+CONFIG_LWIP_MAX_SOCKETS=20
+CONFIG_LWIP_MAX_ACTIVE_TCP=20

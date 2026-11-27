@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type uPlot from "uplot";
 import { Chart, ChartCard } from "./HistoryChart";
+import type { ModeSpan } from "./historyData";
 
 // The heat balance (TASK-45): for each 10 minutes of local clock time, the heat meter's average
 // output while space heating against the live model's -- radiators by their dT50 rating plus UFH by
@@ -29,6 +30,9 @@ type BalanceResponse = {
 
 type View = "buckets" | "hourly";
 
+// The model as one line (radiators + UFH) or as its two parts. The gap chart always uses the sum.
+type Split = "total" | "separate";
+
 // A bucket with less space heating than this is too little to compare, and is left as a gap: 3
 // minutes of a 10-minute bucket, 10 of an hour.
 const minCountedS = (bucketS: number) => Math.max(180, bucketS / 6);
@@ -37,6 +41,14 @@ const minCountedS = (bucketS: number) => Math.max(180, bucketS / 6);
 const BALANCE_SERIES = [
   { label: "Heat meter", stroke: "#d9534f" },
   { label: "Radiators + UFH", stroke: "#0275d8" },
+];
+
+// The model split into its two parts, both in the model's blue family, so the pair still reads as
+// "the model" against the meter.
+const SPLIT_SERIES = [
+  { label: "Heat meter", stroke: "#d9534f" },
+  { label: "Radiators", stroke: "#0275d8" },
+  { label: "UFH", stroke: "#5bc0de" },
 ];
 
 const GAP_SERIES = [
@@ -69,10 +81,14 @@ function byHour(buckets: BalanceBucket[]): BalanceBucket[] {
   return [...hours.values()].sort((a, b) => a.start - b.start);
 }
 
-function HeatBalance({ date }: { date: string }) {
+// `defrosts` are the day's defrost spans, drawn under both charts. Defrosts are left out of the
+// balance, so they explain a bucket that is blank or thin. They come from the History page's own
+// fetch, memoised there, since Chart rebuilds whenever the array changes identity.
+function HeatBalance({ date, defrosts }: { date: string; defrosts?: ModeSpan[] }) {
   const [body, setBody] = useState<BalanceResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("buckets");
+  const [split, setSplit] = useState<Split>("total");
 
   // History renders this keyed by date, so a new day is a fresh component with fresh state.
   useEffect(() => {
@@ -95,7 +111,7 @@ function HeatBalance({ date }: { date: string }) {
 
   const fileBucketS = body?.bucketSeconds ?? 600;
 
-  const { balanceData, gapData, dayGapPct, countedHours, bucketCount } = useMemo(() => {
+  const { balanceData, splitData, gapData, dayGapPct, countedHours, bucketCount } = useMemo(() => {
     // The day's buckets, plus the one in progress today.
     const raw: BalanceBucket[] =
       body && body.storage === "ok" ? [...(body.buckets ?? []), ...(body.current ? [body.current] : [])] : [];
@@ -107,6 +123,8 @@ function HeatBalance({ date }: { date: string }) {
     const xs: number[] = [];
     const meter: (number | null)[] = [];
     const model: (number | null)[] = [];
+    const radiators: (number | null)[] = [];
+    const ufh: (number | null)[] = [];
     const gapW: (number | null)[] = [];
     const gapPct: (number | null)[] = [];
     let meterWh = 0;
@@ -120,6 +138,8 @@ function HeatBalance({ date }: { date: string }) {
       if (b.countedSeconds < minS) {
         meter.push(null);
         model.push(null);
+        radiators.push(null);
+        ufh.push(null);
         gapW.push(null);
         gapPct.push(null);
         continue;
@@ -130,6 +150,8 @@ function HeatBalance({ date }: { date: string }) {
       const e = ((b.radiatorsWh + b.ufhWh) * 3600) / b.countedSeconds;
       meter.push(Math.round(m));
       model.push(Math.round(e));
+      radiators.push(Math.round((b.radiatorsWh * 3600) / b.countedSeconds));
+      ufh.push(Math.round((b.ufhWh * 3600) / b.countedSeconds));
       gapW.push(Math.round(m - e));
       gapPct.push(m === 0 ? null : ((m - e) / m) * 100);
 
@@ -140,6 +162,7 @@ function HeatBalance({ date }: { date: string }) {
 
     return {
       balanceData: xs.length ? ([xs, meter, model] as unknown as uPlot.AlignedData) : null,
+      splitData: xs.length ? ([xs, meter, radiators, ufh] as unknown as uPlot.AlignedData) : null,
       gapData: xs.length ? ([xs, gapW, gapPct] as unknown as uPlot.AlignedData) : null,
       dayGapPct: meterWh !== 0 ? ((meterWh - modelWh) / meterWh) * 100 : null,
       countedHours: counted / 3600,
@@ -167,7 +190,15 @@ function HeatBalance({ date }: { date: string }) {
 
   return (
     <>
-      <div className="d-flex justify-content-end mb-2">
+      <div className="d-flex justify-content-end gap-2 mb-2">
+        <div className="btn-group btn-group-sm" role="group" aria-label="Heat balance model lines">
+          <button type="button" className={`btn btn-outline-secondary${split === "total" ? " active" : ""}`} onClick={() => setSplit("total")}>
+            Total
+          </button>
+          <button type="button" className={`btn btn-outline-secondary${split === "separate" ? " active" : ""}`} onClick={() => setSplit("separate")}>
+            Radiators / UFH
+          </button>
+        </div>
         <div className="btn-group btn-group-sm" role="group" aria-label="Heat balance resolution">
           <button type="button" className={`btn btn-outline-secondary${view === "buckets" ? " active" : ""}`} onClick={() => setView("buckets")}>
             {bucketLabel}
@@ -178,8 +209,8 @@ function HeatBalance({ date }: { date: string }) {
             </button>}
         </div>
       </div>
-      <Chart title="Heat balance (average while space heating)" data={balanceData} series={BALANCE_SERIES} unit="W" decimals={0} />
-      <Chart title="Gap: heat meter − (radiators + UFH)" data={gapData} series={GAP_SERIES} unit="W" decimals={0} rightUnit="%" rightDecimals={1} />
+      <Chart title="Heat balance (average while space heating)" data={split === "total" ? balanceData : splitData} series={split === "total" ? BALANCE_SERIES : SPLIT_SERIES} unit="W" decimals={0} modes={defrosts} />
+      <Chart title="Gap: heat meter − (radiators + UFH)" data={gapData} series={GAP_SERIES} unit="W" decimals={0} rightUnit="%" rightDecimals={1} modes={defrosts} />
       <p className="text-muted small" style={{ marginBottom: "20px" }}>
         {dayGapPct === null
           ? "No period had enough space heating to compare."

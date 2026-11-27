@@ -5748,6 +5748,13 @@ httpd_handle_t start_webserver(void)
     // before adding more.
     config.max_uri_handlers = 48;
     config.lru_purge_enable = true;
+
+    // Below CONFIG_LWIP_MAX_SOCKETS (20) by the server's own 2 and the outgoing clients' 3 (MQTT,
+    // emoncms, MyHeatPump), with headroom. The point is to hit this limit first, so the server
+    // purges a browser's idle keep-alive connection; if lwIP runs out first, accept() fails, nothing
+    // is purged and the board stops answering until the browser closes one itself.
+    config.max_open_sockets = 12;
+    static_assert(12 + 2 + 3 < CONFIG_LWIP_MAX_SOCKETS, "max_open_sockets leaves no sockets for the outgoing clients");
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.stack_size = 20480;
     config.open_fn = on_socket_opened;
