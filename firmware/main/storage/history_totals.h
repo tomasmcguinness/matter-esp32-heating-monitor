@@ -48,10 +48,20 @@ void history_totals_accumulate(history_totals_t *into, const history_totals_t *f
 // `known_slots` counts slots that recorded the flag at all. While it is 0 the defrost figures are
 // unknown -- a day from before defrost was recorded, or one converted to the wider record -- not
 // zero, and callers report them as null.
+//
+// `events` counts defrosts: a slot flagged as defrosting after one that was not. `in_defrost` is
+// the flag of the last known slot, so a defrost spanning several slots is one event; slots with
+// the sentinel leave it alone. Within a day only: each day's count starts afresh, so a defrost
+// running across midnight is counted on both days.
+//
+// This is also the cop-totals cache's defrost record, so its layout is fixed at 32 bytes.
 typedef struct {
     uint32_t      known_slots;
     uint32_t      defrost_slots;
     uint32_t      seconds;     // defrost_slots times the interval
+    uint16_t      events;
+    uint8_t       in_defrost;
+    uint8_t       reserved;
     energy_pair_t energy;
 } history_defrost_t;
 
@@ -59,14 +69,18 @@ typedef struct {
 // on its own.
 void history_defrost_add(history_defrost_t *defrost, const uint8_t *rec, uint16_t interval_s);
 
-// Totals for one whole home day file. False if it cannot be opened or is not a home series this
-// firmware can read, in which case `out` is left zeroed.
-bool history_totals_scan_file(const char *path, history_totals_t *out);
+// Adds one day's (or stretch's) defrost figures to a sum. `in_defrost` is not carried over.
+void history_defrost_accumulate(history_defrost_t *into, const history_defrost_t *from);
+
+// Totals for one whole home day file, and what defrosting used in it when `defrost` is not NULL.
+// False if it cannot be opened or is not a home series this firmware can read, in which case both
+// are left zeroed.
+bool history_totals_scan_file(const char *path, history_totals_t *out, history_defrost_t *defrost);
 
 // The per-day cache, /sdcard/cop-totals.
 //
 // A season cannot be re-read on every request -- a day is 484 KB at the 5 s default -- so each
-// completed day is scanned once and its totals appended here, 64 bytes a day. It is a cache of
+// completed day is scanned once and its totals appended here, 96 bytes a day. It is a cache of
 // derived values and nothing else: every figure in it comes from the day files, so deleting it
 // loses nothing and it refills -- from the next restart or midnight if it had already caught up. HISTORY_TOTALS_VERSION is bumped when the arithmetic above
 // changes, which discards the file the same way.
@@ -78,9 +92,12 @@ bool history_totals_scan_file(const char *path, history_totals_t *out);
 // rather than stalling the sampler behind hours of reads. Does nothing once caught up.
 void history_totals_backfill_one(void);
 
-// Sums every cached day into `sum`. `first_date` gets the earliest (YYYY-MM-DD, at least 11
+// Sums every cached day into `sum`, and their defrost figures into `defrost`. `defrost_days`
+// gets how many of those days recorded the defrost flag at all, since days from before it was
+// recorded add nothing and are not zero. `first_date` gets the earliest (YYYY-MM-DD, at least 11
 // bytes) and is left empty when there are none. Returns the number of days.
-uint32_t history_totals_sum_cached(history_totals_t *sum, char *first_date, size_t first_date_len);
+uint32_t history_totals_sum_cached(history_totals_t *sum, history_defrost_t *defrost, uint32_t *defrost_days,
+                                   char *first_date, size_t first_date_len);
 
 #ifdef __cplusplus
 }

@@ -18,7 +18,9 @@ static const char *TAG = "history_totals";
 #define TOTALS_PATH SD_CARD_MOUNT_POINT "/cop-totals"
 
 #define HISTORY_TOTALS_MAGIC   0x31544F43u // 'COT1' little-endian
-#define HISTORY_TOTALS_VERSION 1
+// Version 2 added each day's defrost figures, so the cache is summarised again from the day files
+// after this firmware is first flashed, one day a minute.
+#define HISTORY_TOTALS_VERSION 2
 
 // Records read per disk pass while scanning a day. Allocated per scan rather than static,
 // because a scan runs on the flush task and on the httpd task and the two can overlap.
@@ -36,10 +38,12 @@ typedef struct __attribute__((packed)) {
 // date is padded to 16 bytes so the totals sit 8-byte aligned without packing the struct.
 typedef struct {
     char             date[16]; // YYYY-MM-DD, NUL-terminated
-    history_totals_t totals;
+    history_totals_t  totals;
+    history_defrost_t defrost;
 } totals_record_t;
 
-HIST_STATIC_ASSERT(sizeof(totals_record_t) == 64, "totals_record_t must stay 64 bytes");
+HIST_STATIC_ASSERT(sizeof(history_defrost_t) == 32, "history_defrost_t is part of the cache record");
+HIST_STATIC_ASSERT(sizeof(totals_record_t) == 96, "totals_record_t must stay 96 bytes");
 
 // rec_home_t field positions.
 #define FIELD_HEAT_POWER      0
@@ -106,8 +110,14 @@ void history_defrost_add(history_defrost_t *defrost, const uint8_t *rec, uint16_
     defrost->known_slots++;
 
     if (flag != 1) {
+        defrost->in_defrost = 0;
         return;
     }
+
+    if (!defrost->in_defrost && defrost->events < UINT16_MAX) {
+        defrost->events++;
+    }
+    defrost->in_defrost = 1;
 
     defrost->defrost_slots++;
     defrost->seconds += interval_s;
@@ -134,9 +144,22 @@ void history_totals_accumulate(history_totals_t *into, const history_totals_t *f
     into->hot_water.elec_ws += from->hot_water.elec_ws;
 }
 
-bool history_totals_scan_file(const char *path, history_totals_t *out)
+void history_defrost_accumulate(history_defrost_t *into, const history_defrost_t *from)
+{
+    into->known_slots    += from->known_slots;
+    into->defrost_slots  += from->defrost_slots;
+    into->seconds        += from->seconds;
+    into->events          = (uint16_t)((uint32_t)into->events + from->events > UINT16_MAX ? UINT16_MAX : into->events + from->events);
+    into->energy.heat_ws += from->energy.heat_ws;
+    into->energy.elec_ws += from->energy.elec_ws;
+}
+
+bool history_totals_scan_file(const char *path, history_totals_t *out, history_defrost_t *defrost)
 {
     memset(out, 0, sizeof(*out));
+    if (defrost) {
+        memset(defrost, 0, sizeof(*defrost));
+    }
 
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -160,6 +183,9 @@ bool history_totals_scan_file(const char *path, history_totals_t *out)
     while ((got = fread(buf, sizeof(rec_home_t), SCAN_CHUNK_RECORDS, f)) > 0) {
         for (size_t i = 0; i < got; i++) {
             history_totals_add(out, buf + i * sizeof(rec_home_t), hdr.interval_s);
+            if (defrost) {
+                history_defrost_add(defrost, buf + i * sizeof(rec_home_t), hdr.interval_s);
+            }
         }
     }
 
@@ -310,7 +336,7 @@ void history_totals_backfill_one(void)
             ESP_LOGW(TAG, "Not summarising %s until it is converted", next);
             return;
         }
-        history_totals_scan_file(path, &rec.totals);
+        history_totals_scan_file(path, &rec.totals, &rec.defrost);
     }
 
     FILE *f = fopen(TOTALS_PATH, "ab");
@@ -327,11 +353,14 @@ void history_totals_backfill_one(void)
     }
 }
 
-uint32_t history_totals_sum_cached(history_totals_t *sum, char *first_date, size_t first_date_len)
+uint32_t history_totals_sum_cached(history_totals_t *sum, history_defrost_t *defrost, uint32_t *defrost_days,
+                                   char *first_date, size_t first_date_len)
 {
     uint32_t days = 0;
 
     memset(sum, 0, sizeof(*sum));
+    memset(defrost, 0, sizeof(*defrost));
+    *defrost_days = 0;
     if (first_date_len) {
         first_date[0] = '\0';
     }
@@ -350,6 +379,10 @@ uint32_t history_totals_sum_cached(history_totals_t *sum, char *first_date, size
             strlcpy(first_date, rec.date, first_date_len);
         }
         history_totals_accumulate(sum, &rec.totals);
+        if (rec.defrost.known_slots > 0) {
+            history_defrost_accumulate(defrost, &rec.defrost);
+            (*defrost_days)++;
+        }
         days++;
     }
 

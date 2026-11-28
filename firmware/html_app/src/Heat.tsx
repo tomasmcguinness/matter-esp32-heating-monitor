@@ -223,6 +223,10 @@ function Heat() {
         ? "The heat pump is defrosting"
         : null;
 
+  // A defrost runs the heat pump in reverse, so the meter reads negative: heat being taken back out
+  // of the heating water, and so out of the house, to melt the ice on the outdoor coil.
+  const pullingOut = notHeating && meter < 0 ? -meter : null;
+
   if (notHeating) {
     return (
       <>
@@ -230,8 +234,9 @@ function Heat() {
         <HeatLoss home={home} rooms={rooms} />
         <FlowCard>
         <div className="alert alert-info mb-0">
-          {notHeating}, so the radiators and underfloor heating are not being given any heat. The
-          heat meter reads {watts(meter)}.
+          {pullingOut !== null
+            ? <>{notHeating}, taking <strong>{watts(pullingOut)}</strong> back out of the heating water to melt the ice on the outdoor coil. That heat has to be put back once the defrost ends.</>
+            : <>{notHeating}, so the radiators and underfloor heating are not being given any heat. The heat meter reads {watts(meter)}.</>}
         </div>
         </FlowCard>
       </>

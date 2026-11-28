@@ -387,14 +387,26 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   `from`, `to` and `days`. It is routed inside the `/api/history/*` wildcard, so it costs no URI
   handler.
 
-  It also carries **`defrost`**: `{heatWh, electricalWh, minutes}` over the slots flagged as
+  It also carries **`defrost`**: `{heatWh, electricalWh, minutes, count}` over the slots flagged as
   defrosting (`history_defrost_add()` in `history_totals.c`). That energy is **part of** `energyWh`
   and of whichever mode it happened in, not in addition to them, and its heat is net, normally
   negative. It is **null** when no slot of the day recorded the flag -- a converted day, or a heat
   pump without a defrost endpoint -- since unknown is not zero. A day on which recording began
-  part-way covers only the recorded part. `history_defrost_t` is kept out of `history_totals_t`
-  on purpose: that struct is the 64-byte `cop-totals` cache record, so `/api/history/totals` has
-  no defrost figures.
+  part-way covers only the recorded part. `count` is the number of defrosts: a flagged slot after
+  an unflagged one, with sentinel slots leaving the state alone, so a defrost running across
+  midnight counts on both days.
+
+  `/api/history/totals` carries **`defrost`** as well (2026-11-28): the same fields plus `days`,
+  the days that recorded the flag at all, which can be fewer than the COP figures' `days`. It is
+  null when none did. The cache record (`totals_record_t`, 96 bytes) holds each day's
+  `history_defrost_t` (fixed at 32 bytes) beside its `history_totals_t`; `HISTORY_TOTALS_VERSION` 2
+  added it, so the first boot of that firmware discards the cache and refills it one day a minute.
+  Until it catches up, the season figures cover fewer days.
+
+  The History page shows both as a **Defrost** card: the heat pulled out as a positive kWh, then
+  the electricity, time, count and that heat as a share of the heat delivered. One sits in the
+  day's energy row and one, "Defrost, all days", beside SCOP. The Heat tab's defrost message gives
+  the live figure: the heat meter's negative reading, as the heat being taken back out.
 
   **The API is a chart endpoint and is lossy**: buckets average across `stride` slots and
   `MAX_POINTS` is 2000 against 17280 slots in a 5 s day. The exception is **`points=0`, which
@@ -403,6 +415,24 @@ only stamped once `clock_is_valid()`, because before the first SNTP sync `time(N
   use it. It is about 2 MB for a 5 s day and blocks the single httpd task while it streams, so it
   is for a caller that fetches a completed day once and keeps it -- never for a chart. For ML, the raw files off the card are still the better source.
 
+- `history_comfort.{h,c}` — **time at target** per room per day (2026-11-28): seconds under, on
+  (within `COMFORT_BAND_C100`, 0.2 °C, the Heat tab's band) and over the room's target, and the
+  mean distance from it. Each figure comes twice: `all` slots, and `heating` -- only the slots the
+  home series has as space heating (`heating_running` 1, `dhw_running` not 1), joined on time, so
+  a room cooling overnight with the heating off does not read as cold. Completed days are cached
+  in `/sdcard/comfort-days` (64-byte `comfort_record_t` per room per day, plus a `COMFORT_DAY_DONE`
+  record per day so a day with no rooms still moves the cursor), filled one day a minute from the
+  flush task like `cop-totals`, and today's figures are rescanned every 10 minutes into PSRAM.
+  `GET /api/history/comfort?days=N` (default 7, max 62) streams them, today included.
+  - **The target is recorded per slot**, in `rec_room_t.target_temp_c100` (was `reserved1`) from
+    2026-11-28. It is configuration, the one exception to rooms recording measurements only, so
+    retargeting a room does not rewrite its past. Older days have the sentinel there and are judged
+    against the room's target now (`history_logger_room_target()`), flagged `targetEstimated`.
+  - The web app: the Rooms table's **Last 7 Days** bar and sortable **Avg vs Target**, and a
+    rooms-by-day grid (last 4 weeks, coloured by mean distance) under it; the room page's **Time at
+    target** card, one stacked column per day. All have an **All hours / While heating** switch.
+    The room temperature charts (today and history) draw the target as a dashed line.
+    `Comfort.tsx` holds the components and `comfortData.ts` the hook and helpers.
 - `history_totals.{h,c}` — heat and electrical energy split by heat pump mode, behind the three
   COPs on the History page: heating, hot water and overall (SCOP). Every COP is **energy out over
   energy in for the slots covered**, never a mean of the `cop_x100` column. A slot is hot water if

@@ -8,7 +8,7 @@ import {
   fieldsMatch,
   loadRadiatorSeries,
   roomTempByTs,
-  toPlotData,
+  roomTemperatureWithTarget,
   todayISO,
   type HistoryResponse,
   type Radiator,
@@ -26,7 +26,10 @@ import { useHeatPumpModes } from "./useHeatPumpModes";
 // always reads null.
 
 // Module-level, because Chart compares its series prop by identity.
-const TEMP_SERIES = [{ label: "Temperature", stroke: "#0275d8" }];
+const TEMP_SERIES = [
+  { label: "Temperature", stroke: "#0275d8" },
+  { label: "Target", stroke: "#6c757d", dash: [6, 4] },
+];
 
 // A room id keys the room's history directory on the card, and the firmware validates it as
 // 0-255. Checking here as well keeps a hand-typed URL from reaching the API at all.
@@ -70,6 +73,8 @@ function RoomHistory() {
   const [date, setDate] = useState<string>(todayISO());
   const [data, setData] = useState<HistoryResponse | null>(null);
   const [name, setName] = useState<string | null>(null);
+  // The room's target now, drawn for slots recorded before the target was.
+  const [target, setTarget] = useState<number | null>(null);
   const [radiators, setRadiators] = useState<Radiator[]>([]);
   const [radiatorData, setRadiatorData] = useState<RadiatorSeries[]>([]);
   const [ratedOutputs, setRatedOutputs] = useState<Map<number, number>>(new Map());
@@ -132,6 +137,7 @@ function RoomHistory() {
       .then((room) => {
         if (!cancelled && room) {
           setName(room.name);
+          setTarget(room.targetTemperature ?? null);
           setRadiators(
             (room.radiators ?? []).map((r: { radiatorId: number; name: string }) => ({
               radiatorId: r.radiatorId,
@@ -203,8 +209,8 @@ function RoomHistory() {
 
   // Memoised because Chart rebuilds the plot whenever this array changes identity.
   const tempData = useMemo(
-    () => (hasPoints ? toPlotData(points, [ROOM_COL.currentTemp], [0.01]) : null),
-    [points, hasPoints]
+    () => (hasPoints ? roomTemperatureWithTarget(data, points, target) : null),
+    [data, points, hasPoints, target]
   );
 
   const stats = useMemo(() => (hasPoints ? temperatureStats(points) : null), [points, hasPoints]);

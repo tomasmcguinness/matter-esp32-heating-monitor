@@ -37,7 +37,8 @@ export type HistoryResponse = {
 export type ModeEnergy = { heatWh: number; electricalWh: number; cop: number | null };
 
 // Heat is the heat meter's net figure while defrosting, normally negative.
-export type DefrostEnergy = { heatWh: number; electricalWh: number; minutes: number };
+// `count` is the number of defrosts, absent from older firmware.
+export type DefrostEnergy = { heatWh: number; electricalWh: number; minutes: number; count?: number };
 
 // The response from GET /api/history/totals: every recorded day summed. `from`, `to` and the
 // three figures are absent when `days` is 0.
@@ -49,6 +50,9 @@ export type TotalsResponse = {
   overall?: ModeEnergy;
   heating?: ModeEnergy;
   hotWater?: ModeEnergy;
+  // Over the `days` that recorded the defrost flag, which can be fewer than the COP figures cover.
+  // Null when none did; absent from older firmware.
+  defrost?: (DefrostEnergy & { days: number }) | null;
 };
 
 // The leading columns each page charts, named as history_api.c's field_names_for() names them.
@@ -60,6 +64,92 @@ export type TotalsResponse = {
 // are named precisely so "a field added to the reserved tail shows up as a named column without
 // the UI needing to be rebuilt". Comparing the full list would reject exactly that case.
 export const ROOM_CHART_FIELDS = ["currentTempC100"];
+
+// A room's temperature with its target beside it, as two plot columns. The target is the one
+// recorded in each slot (targetTempC100, from 2026-11-28 on); where a slot has none, the room's
+// target now. Always two columns, so the series list can stay a constant.
+export function roomTemperatureWithTarget(
+  body: HistoryResponse | null,
+  points: (number | null)[][],
+  fallbackTargetC100: number | null | undefined
+): uPlot.AlignedData {
+  const temp = toPlotData(points, [1], [0.01]);
+  const targetCol = (body?.fields?.indexOf("targetTempC100") ?? -1) + 1;
+  const fallback = fallbackTargetC100 === null || fallbackTargetC100 === undefined ? null : fallbackTargetC100 / 100;
+
+  const target = points.map((p) => {
+    const v = targetCol > 0 ? p[targetCol] : null;
+    return v === null || v === undefined ? fallback : v / 100;
+  });
+
+  return [temp[0], temp[1], target] as unknown as uPlot.AlignedData;
+}
+
+// GET /api/history/comfort: time at target, one record per room per day. Each split is
+// [under seconds, on seconds, over seconds, mean distance from target in 0.01 degC or null].
+// See firmware/main/storage/history_comfort.h.
+export type ComfortSplit = [number, number, number, number | null];
+
+export type ComfortRecord = {
+  roomId: number;
+  date: string;
+  // Some of the day was judged against today's target, because the target was not yet recorded.
+  targetEstimated: boolean;
+  // False when the home series could not be read, so `heating` is empty.
+  heatingKnown: boolean;
+  all: ComfortSplit;
+  heating: ComfortSplit;
+};
+
+export type ComfortResponse = {
+  storage: string;
+  bandC100?: number;
+  from?: string;
+  records?: ComfortRecord[];
+};
+
+// Every slot, or only while the heat pump was space heating.
+export type ComfortScope = "all" | "heating";
+
+export type ComfortSummary = {
+  under: number;
+  on: number;
+  over: number;
+  total: number;
+  meanC100: number | null;
+  estimated: boolean;
+};
+
+// Adds days up: seconds summed, and the mean weighted by each day's counted seconds.
+export function summariseComfort(records: ComfortRecord[], scope: ComfortScope): ComfortSummary {
+  let under = 0;
+  let on = 0;
+  let over = 0;
+  let weighted = 0;
+  let estimated = false;
+
+  for (const r of records) {
+    const [u, o, v, mean] = r[scope];
+    const total = u + o + v;
+    under += u;
+    on += o;
+    over += v;
+    if (mean !== null && total > 0) {
+      weighted += mean * total;
+    }
+    estimated ||= r.targetEstimated && total > 0;
+  }
+
+  const total = under + on + over;
+  return { under, on, over, total, meanC100: total > 0 ? weighted / total : null, estimated };
+}
+
+// The ISO date `days` before an ISO date, by calendar.
+export function isoDaysBefore(iso: string, days: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d - days));
+  return t.toISOString().slice(0, 10);
+}
 export const RADIATOR_CHART_FIELDS = ["flowTempC100", "returnTempC100"];
 
 // Column indices within a point row. Element 0 is the timestamp, so a field's index is its

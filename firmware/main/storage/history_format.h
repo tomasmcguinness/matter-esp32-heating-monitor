@@ -166,7 +166,11 @@ HIST_STATIC_ASSERT(offsetof(rec_home_t, defrosting) == HISTORY_HOME_V2_RECORD_SI
 typedef struct __attribute__((packed)) {
     int16_t current_temp_c100;   // room air temperature, 0.01 degC
     int16_t reserved0;           // earmarked for age_s -- see the freshness note below
-    int16_t reserved1;
+    // The room's target, 0.01 degC, from 2026-11-28 on. Configuration rather than a measurement,
+    // the one exception to the note above: time at target (history_comfort.h) has to judge each
+    // slot against the target in force then, and a retargeted room would otherwise rewrite its
+    // past. The sentinel on older days, which history_comfort.c judges against today's target.
+    int16_t target_temp_c100;
     int16_t reserved2;
 } rec_room_t;
 

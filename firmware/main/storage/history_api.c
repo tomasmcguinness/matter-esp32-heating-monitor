@@ -11,6 +11,7 @@
 #include "history_format.h"
 #include "history_paths.h"
 #include "history_totals.h"
+#include "history_comfort.h"
 #include "heat_balance_api.h"
 #include "subscription_log.h"
 #include "sd_card.h"
@@ -133,7 +134,7 @@ static const char *field_names_for(uint8_t kind)
                            "\"heatingRunning\",\"outdoorHumidityC100\",\"reserved2\","
                            "\"defrosting\",\"reserved3\",\"reserved4\",\"reserved5\","
                            "\"reserved6\",\"reserved7\"";
-    case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"reserved1\",\"reserved2\"";
+    case KIND_ROOM: return "\"currentTempC100\",\"reserved0\",\"targetTempC100\",\"reserved2\"";
     case KIND_RADIATOR: return "\"flowTempC100\",\"returnTempC100\","
                                "\"reserved0\",\"reserved1\"";
     default:        return "";
@@ -357,9 +358,9 @@ static esp_err_t stream_file(httpd_req_t *req, uint8_t kind, const char *path, i
             snprintf(tail + n, sizeof(tail) - n, ",\"defrost\":null}");
         } else {
             snprintf(tail + n, sizeof(tail) - n,
-                         ",\"defrost\":{\"heatWh\":%.1f,\"electricalWh\":%.1f,\"minutes\":%.1f}}",
+                         ",\"defrost\":{\"heatWh\":%.1f,\"electricalWh\":%.1f,\"minutes\":%.1f,\"count\":%u}}",
                          (double)defrost.energy.heat_ws / 3600.0, (double)defrost.energy.elec_ws / 3600.0,
-                         (double)defrost.seconds / 60.0);
+                         (double)defrost.seconds / 60.0, (unsigned)defrost.events);
         }
     } else {
         snprintf(tail, sizeof(tail), "]}");
@@ -556,21 +557,32 @@ static esp_err_t instance_series_handler(httpd_req_t *req, uint8_t kind, uint8_t
 // Completed days come from the cache the flush task keeps (see history_totals.h) and today is
 // scanned here, so the figure is current without the cache holding a day that is still growing.
 // While the cache is still filling after a first flash, `days` and `from` show how far it has got.
+//
+// "defrost" is what defrosting used over the days that recorded the defrost flag -- its own
+// `days`, which can be fewer than the COP figures cover -- and null when none did. Like the
+// per-day figure, it is inside the totals above, not in addition to them.
 static esp_err_t totals_handler(httpd_req_t *req)
 {
-    history_totals_t sum;
-    char             from[16];
-    uint32_t         days = history_totals_sum_cached(&sum, from, sizeof(from));
+    history_totals_t  sum;
+    history_defrost_t defrost;
+    uint32_t          defrost_days = 0;
+    char              from[16];
+    uint32_t          days = history_totals_sum_cached(&sum, &defrost, &defrost_days, from, sizeof(from));
 
     char to[16] = "";
     if (clock_is_valid()) {
         local_date_string((uint32_t)time(NULL), to, sizeof(to));
 
         char             path[HISTORY_PATH_MAX];
-        history_totals_t today;
+        history_totals_t  today;
+        history_defrost_t today_defrost;
         if (history_path_for_date(KIND_HOME, 0, to, path, sizeof(path)) &&
-            history_totals_scan_file(path, &today)) {
+            history_totals_scan_file(path, &today, &today_defrost)) {
             history_totals_accumulate(&sum, &today);
+            if (today_defrost.known_slots > 0) {
+                history_defrost_accumulate(&defrost, &today_defrost);
+                defrost_days++;
+            }
             if (days == 0) {
                 strlcpy(from, to, sizeof(from));
             }
@@ -585,7 +597,7 @@ static esp_err_t totals_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    char   body[512];
+    char   body[768];
     int    w = snprintf(body, sizeof(body),
                         "{\"storage\":\"ok\",\"from\":\"%s\",\"to\":\"%s\",\"days\":%lu,",
                         from, to[0] ? to : from, (unsigned long)days);
@@ -596,16 +608,124 @@ static esp_err_t totals_handler(httpd_req_t *req)
     n += format_energy(body + n, sizeof(body) - n, "heating", &sum.heating);
     n += strlcpy(body + n, ",", sizeof(body) - n);
     n += format_energy(body + n, sizeof(body) - n, "hotWater", &sum.hot_water);
-    strlcpy(body + n, "}", sizeof(body) - n);
+
+    if (defrost_days == 0) {
+        strlcpy(body + n, ",\"defrost\":null}", sizeof(body) - n);
+    } else {
+        snprintf(body + n, sizeof(body) - n,
+                 ",\"defrost\":{\"days\":%lu,\"heatWh\":%.1f,\"electricalWh\":%.1f,\"minutes\":%.1f,\"count\":%u}}",
+                 (unsigned long)defrost_days, (double)defrost.energy.heat_ws / 3600.0,
+                 (double)defrost.energy.elec_ws / 3600.0, (double)defrost.seconds / 60.0, (unsigned)defrost.events);
+    }
 
     httpd_resp_sendstr(req, body);
     return ESP_OK;
+}
+
+// GET /api/history/comfort[?days=N] -- time at target for every room, one record per room per
+// day, over the last N days (default 7, at most 62) including today so far. See
+// history_comfort.h. Each record:
+//
+//   {"roomId":1,"date":"2026-11-27","targetEstimated":false,"heatingKnown":true,
+//    "all":[under_s,on_s,over_s,meanOffsetC100],"heating":[...]}
+//
+// meanOffsetC100 is null when no slot counted. A room appears only on days it has a file for.
+#define COMFORT_DEFAULT_DAYS 7
+#define COMFORT_MAX_DAYS     62
+
+static void comfort_split_json(char *buf, size_t len, const comfort_split_t *s)
+{
+    uint32_t total = s->under_s + s->on_s + s->over_s;
+
+    if (total == 0) {
+        snprintf(buf, len, "[0,0,0,null]");
+    } else {
+        snprintf(buf, len, "[%lu,%lu,%lu,%lld]", (unsigned long)s->under_s, (unsigned long)s->on_s,
+                 (unsigned long)s->over_s, (long long)(s->offset_cs / (int64_t)total));
+    }
+}
+
+typedef struct {
+    json_out_t out;
+    bool       first;
+} comfort_ctx_t;
+
+static void comfort_emit(const comfort_record_t *rec, void *ctx)
+{
+    comfort_ctx_t *c = (comfort_ctx_t *)ctx;
+    char           all[64];
+    char           heating[64];
+    char           line[256];
+
+    comfort_split_json(all, sizeof(all), &rec->all);
+    comfort_split_json(heating, sizeof(heating), &rec->heating);
+
+    snprintf(line, sizeof(line),
+             "%s{\"roomId\":%u,\"date\":\"%s\",\"targetEstimated\":%s,\"heatingKnown\":%s,\"all\":%s,\"heating\":%s}",
+             c->first ? "" : ",", (unsigned)rec->room_id, rec->date,
+             (rec->flags & COMFORT_TARGET_ESTIMATED) ? "true" : "false",
+             (rec->flags & COMFORT_HEATING_UNKNOWN) ? "false" : "true", all, heating);
+    c->first = false;
+    out_str(&c->out, line);
+}
+
+static esp_err_t comfort_handler(httpd_req_t *req)
+{
+    int  days = COMFORT_DEFAULT_DAYS;
+    char buf[16];
+
+    if (query_param(req, "days", buf, sizeof(buf))) {
+        days = atoi(buf);
+        if (days < 1)                days = 1;
+        if (days > COMFORT_MAX_DAYS) days = COMFORT_MAX_DAYS;
+    }
+
+    if (!clock_is_valid()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"storage\":\"ok\",\"records\":[]}");
+        return ESP_OK;
+    }
+
+    // N days including today, counted in local calendar days at noon, so a DST change cannot push
+    // the subtraction into the wrong day.
+    time_t    now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    tm.tm_mday -= days - 1;
+    tm.tm_hour  = 12;
+    tm.tm_min   = 0;
+    tm.tm_sec   = 0;
+    tm.tm_isdst = -1;
+    char from[16];
+    local_date_string((uint32_t)mktime(&tm), from, sizeof(from));
+
+    httpd_resp_set_type(req, "application/json");
+
+    // Static: json_out_t carries a kilobyte, too much for the httpd task's stack beside the rest.
+    // The httpd server runs one request at a time.
+    static comfort_ctx_t ctx;
+    out_init(&ctx.out, req);
+    ctx.first = true;
+
+    snprintf(buf, sizeof(buf), "%d", COMFORT_BAND_C100);
+    out_str(&ctx.out, "{\"storage\":\"ok\",\"bandC100\":");
+    out_str(&ctx.out, buf);
+    out_str(&ctx.out, ",\"from\":\"");
+    out_str(&ctx.out, from);
+    out_str(&ctx.out, "\",\"records\":[");
+
+    history_comfort_each(from, comfort_emit, &ctx);
+
+    out_str(&ctx.out, "]}");
+    out_flush(&ctx.out);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 // GET /api/history/* -- routes to the sub-resources above.
 //
 //   /api/history/dates
 //   /api/history/totals
+//   /api/history/comfort[?days=N]                 -- see history_comfort.h
 //   /api/history/subscriptions[?date=]            -- see subscription_log.h
 //   /api/history/room?id=N[&date=&points=]        /api/history/room/dates?id=N
 //   /api/history/radiator?id=N[&date=&points=]    /api/history/radiator/dates?id=N
@@ -625,6 +745,10 @@ static esp_err_t history_sub_handler(httpd_req_t *req)
 
     if (strncmp(req->uri, "/api/history/subscriptions", 26) == 0) {
         return subscription_log_get_handler(req);
+    }
+
+    if (strncmp(req->uri, "/api/history/comfort", 20) == 0) {
+        return comfort_handler(req);
     }
 
     if (strncmp(req->uri, "/api/history/balance", 20) == 0) {

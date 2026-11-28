@@ -133,6 +133,7 @@ static void test_defrosts_in_both_modes(void)
 
     CHECK(d.known_slots == 60 + 24 + 60 + 60 + 12 + 30);
     CHECK(d.defrost_slots == 36);
+    CHECK(d.events == 2);
     CHECK(d.seconds == 180);
     CHECK(d.energy.elec_ws == (2000LL * 24 + 1800LL * 12) * INTERVAL);
     CHECK(d.energy.heat_ws == (-3000LL * 24 + -2000LL * 12) * INTERVAL);
@@ -175,8 +176,35 @@ static void test_flag_starts_part_way(void)
     CHECK(d.energy.elec_ws == 2000LL * 6 * INTERVAL);
 }
 
+// One defrost is one event however many slots it spans; an unknown slot inside it does not split
+// it in two; and the sum of two days adds their counts.
+static void test_defrost_events(void)
+{
+    history_totals_t  t = {0};
+    history_defrost_t d = {0};
+
+    add(&t, &d, slot(6000, 1500, 1, 0, 0), 10);
+    add(&t, &d, slot(-3000, 2000, 1, 0, 1), 6);
+    add(&t, &d, slot(HIST_NULL_I16, HIST_NULL_I16, HIST_NULL_I16, HIST_NULL_I16, HIST_NULL_I16), 2);
+    add(&t, &d, slot(-3000, 2000, 1, 0, 1), 6);
+    add(&t, &d, slot(6000, 1500, 1, 0, 0), 10);
+    add(&t, &d, slot(-3000, 2000, 1, 0, 1), 3);
+
+    CHECK(d.events == 2);
+    CHECK(d.defrost_slots == 15);
+
+    history_defrost_t sum = {0};
+    history_defrost_accumulate(&sum, &d);
+    history_defrost_accumulate(&sum, &d);
+
+    CHECK(sum.events == 4);
+    CHECK(sum.seconds == 2 * 15 * INTERVAL);
+    CHECK(sum.energy.heat_ws == 2 * -3000LL * 15 * INTERVAL);
+}
+
 int main(void)
 {
+    test_defrost_events();
     test_day_without_flag();
     test_day_without_defrost();
     test_defrosts_in_both_modes();

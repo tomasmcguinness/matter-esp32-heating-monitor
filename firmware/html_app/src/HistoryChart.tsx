@@ -9,6 +9,8 @@ export type ChartSeries = {
   // Series on the right-hand axis, for a quantity that cannot share the left one's scale --
   // watts against degrees, say. Everything else shares the left axis.
   axis?: "right";
+  // A dashed line, e.g. a target to read the measured line against: uPlot's dash pattern in px.
+  dash?: number[];
 };
 
 // Every chart joins this group, so hovering one draws the cursor at the same time on the others
@@ -189,6 +191,7 @@ export function Chart({
                 label: s.label,
                 stroke: s.stroke,
                 width: 1.5,
+                ...(s.dash ? { dash: s.dash } : {}),
                 spanGaps: false,
                 scale: right ? "y2" : "y",
                 ...(smooth ? { paths: uPlot.paths.spline!() } : {}),

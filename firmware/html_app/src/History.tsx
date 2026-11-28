@@ -7,6 +7,7 @@ import {
   type HistoryResponse,
   type ModeEnergy,
   type TotalsResponse,
+  type DefrostEnergy,
 } from "./historyData";
 import PageHeader from "./PageHeader";
 import HeatBalance from "./HeatBalance";
@@ -72,6 +73,47 @@ const TEMP_SERIES = [
 const COP_SERIES = [{ label: "COP", stroke: "#9354d9" }];
 
 const HUMIDITY_SERIES = [{ label: "Outdoor", stroke: "#5cb85c" }];
+
+// How much heat defrosting took back out of the heating water, which is negative on the heat
+// meter, shown as a positive "pulled out" figure. Below it, what the defrosts cost besides: the
+// electricity, the time, and how many there were. `share` is that heat as a percentage of the
+// heat delivered over the same days. A dash for days that never recorded the defrost flag.
+function DefrostCard({ title, defrost, share, days }: {
+  title: string;
+  defrost: DefrostEnergy | null | undefined;
+  share: number | null;
+  days?: number;
+}) {
+  const out = defrost ? Math.max(-defrost.heatWh, 0) / 1000 : null;
+  const minutes = defrost?.minutes ?? 0;
+  const time = minutes >= 120 ? `${(minutes / 60).toFixed(1)} h` : `${Math.round(minutes)} min`;
+  const parts = defrost
+    ? [
+        `${(defrost.electricalWh / 1000).toFixed(1)} kWh electricity`,
+        time,
+        ...(defrost.count !== undefined ? [`${defrost.count} ${defrost.count === 1 ? "defrost" : "defrosts"}`] : []),
+        ...(share !== null ? [`${share.toFixed(1)}% of the heat`] : []),
+        ...(days !== undefined ? [`${days} ${days === 1 ? "day" : "days"}`] : []),
+      ]
+    : [];
+
+  return (
+    <div className="card">
+      <div className="card-header">{title}</div>
+      <div className="card-body">
+        <p className="card-title">
+          <h3>{out !== null ? `${out.toFixed(1)} kWh` : "-"}</h3>
+        </p>
+        {defrost && <p className="card-text text-muted small mb-0">pulled out · {parts.join(" · ")}</p>}
+      </div>
+    </div>
+  );
+}
+
+// The defrost heat as a share of the heat delivered, or null with nothing to compare against.
+function defrostShare(defrost: DefrostEnergy | null | undefined, heatWh: number | undefined) {
+  return defrost && heatWh && heatWh > 0 ? (Math.max(-defrost.heatWh, 0) / heatWh) * 100 : null;
+}
 
 // A COP is energy out over energy in for the slots it covers. A dash means there was no
 // electricity to divide by -- a day with no hot water run, or one recorded before the heat pump's
@@ -235,6 +277,14 @@ function History() {
             <CopCard title="Heating COP, all days" cop={totals.heating?.cop} />
             <CopCard title="Hot water COP, all days" cop={totals.hotWater?.cop} />
             <CopCard title="SCOP" cop={totals.overall?.cop} />
+            {totals.defrost && (
+              <DefrostCard
+                title="Defrost, all days"
+                defrost={totals.defrost}
+                share={defrostShare(totals.defrost, totals.overall?.heatWh)}
+                days={totals.defrost.days}
+              />
+            )}
           </div>
           <p className="text-muted small" style={{ marginBottom: "20px" }}>
             {totals.days} {totals.days === 1 ? "day" : "days"} recorded since {totals.from}.
@@ -250,6 +300,9 @@ function History() {
             <EnergyCard title="Heating" kwh={modeHeatKwh(data?.modes?.heating)} />
             <EnergyCard title="Hot water" kwh={modeHeatKwh(data?.modes?.hotWater)} />
             <EnergyCard title="Electricity in" kwh={elecKwh} note={defrostNote} />
+            {data?.defrost && (
+              <DefrostCard title="Defrost" defrost={data.defrost} share={defrostShare(data.defrost, data.energyWh?.heat)} />
+            )}
           </div>
 
           {/* The day's energy out over energy in: for the slots recorded as heating, for those

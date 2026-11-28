@@ -3,6 +3,7 @@ import { NavLink, useNavigate, useParams } from "react-router"
 import Temperature from "./Temperature";
 import Power from "./Power";
 import RoomTodayChart from "./RoomTodayChart";
+import RoomComfort from "./RoomComfort";
 import RadiatorType from "./RadiatorType";
 
 function Room() {
@@ -89,7 +90,9 @@ function Room() {
         </div>}
       </div>
 
-      <RoomTodayChart roomId={room.roomId} />
+      <RoomTodayChart roomId={room.roomId} targetTemperature={room.targetTemperature} />
+
+      <RoomComfort roomId={room.roomId} />
 
       <div className="card" style={{ marginBottom: '5px' }}>
         <div className="card-header">

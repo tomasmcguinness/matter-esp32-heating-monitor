@@ -4,21 +4,20 @@ import { Chart, ChartCard } from "./HistoryChart";
 import {
   ROOM_CHART_FIELDS,
   fieldsMatch,
-  toPlotData,
+  roomTemperatureWithTarget,
   type HistoryResponse,
 } from "./historyData";
 import { useHeatPumpModes } from "./useHeatPumpModes";
 
 // Module-level, because Chart compares its series prop by identity.
-const TODAY_SERIES = [{ label: "Temperature", stroke: "#0275d8" }];
+const TODAY_SERIES = [
+  { label: "Temperature", stroke: "#0275d8" },
+  { label: "Target", stroke: "#6c757d", dash: [6, 4] },
+];
 
 // Chart supplies the card, so every state here has to supply its own to match -- otherwise the
 // panel vanishes when there is nothing to draw and the page shifts under whatever is below it.
 const CARD_TITLE = "Temperature today";
-
-// Column index within a point row. Element 0 is the timestamp, so a field's index is its
-// record position plus one.
-const CURRENT_TEMP_COL = 1;
 
 // Today's recorded room temperature on the room page, and the way through to the room's full
 // history.
@@ -29,7 +28,8 @@ const CURRENT_TEMP_COL = 1;
 //
 // 200 points rather than the history page's 800. This is a glance, and every point is read off an
 // SD card by a web server with a single task.
-function RoomTodayChart({ roomId }: { roomId: number }) {
+// `targetTemperature` (0.01 degC) is drawn for slots recorded before the target was.
+function RoomTodayChart({ roomId, targetTemperature }: { roomId: number; targetTemperature?: number }) {
   const navigate = useNavigate();
 
   const [data, setData] = useState<HistoryResponse | null>(null);
@@ -97,8 +97,8 @@ function RoomTodayChart({ roomId }: { roomId: number }) {
 
   // Memoised because Chart rebuilds the plot whenever this array changes identity.
   const plotData = useMemo(
-    () => (hasPoints ? toPlotData(points, [CURRENT_TEMP_COL], [0.01]) : null),
-    [points, hasPoints]
+    () => (hasPoints ? roomTemperatureWithTarget(data, points, targetTemperature) : null),
+    [data, points, hasPoints, targetTemperature]
   );
 
   const openHistory = () => navigate(`/rooms/${roomId}/history`);

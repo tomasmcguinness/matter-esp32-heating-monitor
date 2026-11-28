@@ -18,6 +18,7 @@
 #include "history_format.h"
 #include "history_paths.h"
 #include "history_totals.h"
+#include "history_comfort.h"
 #include "subscription_log.h"
 #include "sd_card.h"
 #include "time_sync.h"
@@ -66,6 +67,7 @@ struct room_snap_t {
     uint8_t id;
     bool    has_temp;     // false with no sensor assigned, or while the sensor has no reading
     int16_t temp_c100;
+    int16_t target_c100;
 };
 
 struct rad_snap_t {
@@ -212,6 +214,9 @@ static size_t build_room_record(const room_snap_t *snap, uint8_t *out)
         r.current_temp_c100 = clamp_i16(snap->temp_c100);
     }
 
+    // Always: a room has a target whether or not it has a sensor.
+    r.target_temp_c100 = clamp_i16(snap->target_c100);
+
     memcpy(out, &r, sizeof(r));
     return sizeof(r);
 }
@@ -256,6 +261,7 @@ void history_logger_snapshot(room_manager_t *room_manager, radiator_manager_t *r
             s_rooms[s_room_count].id        = r->room_id;
             s_rooms[s_room_count].has_temp  = r->room_temperature_node_id != 0 && r->has_current_temperature;
             s_rooms[s_room_count].temp_c100 = r->current_temperature;
+            s_rooms[s_room_count].target_c100 = r->target_temperature;
             s_room_count++;
         }
     }
@@ -329,6 +335,27 @@ bool history_logger_room_reading(uint8_t room_id, bool *has_temp, int16_t *temp_
             *has_temp  = s_rooms[i].has_temp;
             *temp_c100 = s_rooms[i].temp_c100;
             found      = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_snap_mutex);
+    return found;
+}
+
+// Declared in history_comfort.h, which judges days recorded before the target was against this.
+extern "C" bool history_logger_room_target(uint8_t room_id, int16_t *target_c100)
+{
+    bool found = false;
+
+    if (!s_snap_mutex) {
+        return false;
+    }
+
+    xSemaphoreTake(s_snap_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_room_count; i++) {
+        if (s_rooms[i].id == room_id) {
+            *target_c100 = s_rooms[i].target_c100;
+            found        = true;
             break;
         }
     }
@@ -695,6 +722,9 @@ static void flush_task(void *arg)
         // After the flush, so a day that ended since the last cycle has its final samples on
         // the card before it is summarised.
         history_totals_backfill_one();
+
+        // And time at target, per room.
+        history_comfort_backfill_one();
     }
 }
 
